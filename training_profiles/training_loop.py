@@ -40,6 +40,7 @@ def train_epoch(model, dataloader, optimizer, device, config):
             tqdm.tqdm.write(f"4. After backward: {mem_4:.2f}GB (+{mem_4-mem_3:.2f}GB)")
 
         optimizer.step()
+        torch.cuda.empty_cache()  # Release cache to CUDA
 
         if log_detailed:
             mem_5 = torch.cuda.memory_allocated() / 1e9
