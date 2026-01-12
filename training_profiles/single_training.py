@@ -100,7 +100,7 @@ def single_worker(config):
         train_loss = train_epoch(model, train_loader, optimizer, device, config)
         valid_loss = validate_epoch(model, val_loader, device, config)
 
-        print(f"Epoch {epoch}/{config['Training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e}")
+        print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e}")
 
         if valid_loss < best_valid_loss:
             best_valid_loss = valid_loss
