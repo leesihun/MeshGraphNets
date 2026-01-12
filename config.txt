@@ -20,4 +20,5 @@ Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 gpu_ids -1      # -1 for CPU, GPU ids for multi-GPU training
 std_noise   0.01
+verbose     False
 '

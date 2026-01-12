@@ -6,12 +6,14 @@ def train_epoch(model, dataloader, optimizer, device, config):
     total_loss = 0.0
     num_batches = 0
 
+    verbose = config.get('verbose')
+
     pbar = tqdm.tqdm(dataloader)
     for batch_idx, graph in enumerate(pbar):
         # Detailed memory logging for first 5 batches and every 100 batches
         log_detailed = (batch_idx < 5) or (batch_idx % 100 == 0)
 
-        if log_detailed:
+        if log_detailed and verbose:
             mem_1 = torch.cuda.memory_allocated() / 1e9
             mem_reserved = torch.cuda.memory_reserved() / 1e9
             tqdm.tqdm.write(f"\n=== Batch {batch_idx} ===")
@@ -19,13 +21,13 @@ def train_epoch(model, dataloader, optimizer, device, config):
 
         graph = graph.to(device)
 
-        if log_detailed:
+        if log_detailed and verbose:
             mem_2 = torch.cuda.memory_allocated() / 1e9
             tqdm.tqdm.write(f"2. After .to(device): {mem_2:.2f}GB (+{mem_2-mem_1:.2f}GB)")
 
         predicted_acc, target_acc = model(graph)
 
-        if log_detailed:
+        if log_detailed and verbose:
             mem_3 = torch.cuda.memory_allocated() / 1e9
             tqdm.tqdm.write(f"3. After forward: {mem_3:.2f}GB (+{mem_3-mem_2:.2f}GB)")
 
@@ -35,14 +37,13 @@ def train_epoch(model, dataloader, optimizer, device, config):
         optimizer.zero_grad()
         loss.backward()
 
-        if log_detailed:
+        if log_detailed and verbose:
             mem_4 = torch.cuda.memory_allocated() / 1e9
             tqdm.tqdm.write(f"4. After backward: {mem_4:.2f}GB (+{mem_4-mem_3:.2f}GB)")
 
         optimizer.step()
-        torch.cuda.empty_cache()  # Release cache to CUDA
 
-        if log_detailed:
+        if log_detailed and verbose:
             mem_5 = torch.cuda.memory_allocated() / 1e9
             mem_reserved_end = torch.cuda.memory_reserved() / 1e9
             tqdm.tqdm.write(f"5. After optimizer.step: {mem_5:.2f}GB (+{mem_5-mem_4:.2f}GB)")
@@ -56,7 +57,7 @@ def train_epoch(model, dataloader, optimizer, device, config):
             mem_reserved_after_gc = torch.cuda.memory_reserved() / 1e9
             tqdm.tqdm.write(f"8. After torch.cuda.empty_cache(): {mem_after_gc:.2f}GB (reserved: {mem_reserved_after_gc:.2f}GB)\n")
 
-            if batch_idx >= 5:
+            if batch_idx >= 5 and verbose:
                 torch.cuda.reset_peak_memory_stats()
 
         # Update progress bar with current memory
@@ -76,6 +77,8 @@ def train_epoch(model, dataloader, optimizer, device, config):
 def validate_epoch(model, dataloader, device, config):
     model.eval()
 
+    verbose = config.get('verbose')
+
     with torch.no_grad():
         total_loss = 0.0
         num_batches = 0
@@ -83,7 +86,7 @@ def validate_epoch(model, dataloader, device, config):
         pbar = tqdm.tqdm(dataloader)
         for batch_idx, graph in enumerate(pbar):
             # Memory tracking for first 3 validation batches
-            if batch_idx < 3:
+            if batch_idx < 3 and verbose:
                 mem_before = torch.cuda.memory_allocated() / 1e9
                 tqdm.tqdm.write(f"\n=== Validation Batch {batch_idx} ===")
                 tqdm.tqdm.write(f"Before: {mem_before:.2f}GB")
@@ -94,7 +97,7 @@ def validate_epoch(model, dataloader, device, config):
             errors = ((predicted_nodal_features - target_nodal_features) ** 2)
             loss = torch.mean(errors) # MSE Loss
 
-            if batch_idx < 3:
+            if batch_idx < 3 and verbose:
                 mem_after = torch.cuda.memory_allocated() / 1e9
                 tqdm.tqdm.write(f"After: {mem_after:.2f}GB (+{mem_after-mem_before:.2f}GB)")
                 tqdm.tqdm.write(f"Peak: {torch.cuda.max_memory_allocated()/1e9:.2f}GB\n")
