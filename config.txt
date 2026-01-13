@@ -2,7 +2,7 @@ model   MeshGraphNets
 mode    Train  # Train / Inference
 %   Common params
 Dim1		2138 # number of parameters
-Dim2		50 # number of timesteps
+Dim2		1   # number of timesteps
 %   Dim3		95008 # num nodes, unused in GNN
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress
@@ -15,10 +15,10 @@ norm_max    0.7   # Normalization range maximum
 message_passing_num 15
 Training_epochs	2002
 Batch_size	1
-LearningR	0.001
-Latent_dim	128	# MeshGraphNets latent dimension
+LearningR	0.0001
+Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 2
 gpu_ids -1      # -1 for CPU, GPU ids for multi-GPU training
-std_noise   0.01
+std_noise   0.0001
 verbose     False
 '

@@ -1,197 +1,194 @@
 """
-Interactive 3D Dataset Visualization
+3D Dataset Visualization using Matplotlib
 
-Visualizes mesh structure and features using PyVista.
-Shows: displacement magnitude, stress, and individual displacement components.
-
-Requirements:
-    pip install pyvista
+Visualizes mesh as triangulated surface with physical field coloring.
 
 Usage:
-    python visualize_dataset.py [sample_id]
+    python visualize_dataset.py [sample_id] [--field stress|displacement|dx|dy|dz]
 
 Example:
     python visualize_dataset.py 1
-    python visualize_dataset.py 100
+    python visualize_dataset.py 1 --field displacement
 """
 
 import sys
+import argparse
 import numpy as np
 import h5py
 from pathlib import Path
-
-try:
-    import pyvista as pv
-except ImportError:
-    print("ERROR: PyVista not installed.")
-    print("Install with: pip install pyvista")
-    sys.exit(1)
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from collections import defaultdict
 
 
 def load_sample(h5_path, sample_id):
-    """
-    Load a single mesh sample from H5 file.
-
-    Returns:
-        nodes: (N, 3) node coordinates
-        edges: (2, E) edge connectivity
-        features: (N, 7) node features [x, y, z, dx, dy, dz, stress]
-        feature_names: list of feature names
-    """
+    """Load a single mesh sample from H5 file."""
     with h5py.File(h5_path, 'r') as f:
-        # Load nodal data
         nodal_data = f[f'data/{sample_id}/nodal_data'][:]  # (7, 1, N)
         nodal_data = nodal_data[:, 0, :].T  # (N, 7)
-
-        # Load edges
         edges = f[f'data/{sample_id}/mesh_edge'][:]  # (2, E)
-
-        # Feature names
         feature_names = [name.decode() for name in f['metadata/feature_names'][:]]
 
-    # Extract coordinates
-    nodes = nodal_data[:, :3]  # (N, 3)
-
-    return nodes, edges, nodal_data, feature_names
+    return nodal_data, edges, feature_names
 
 
-def create_mesh(nodes, edges):
+def find_triangles_from_edges(edges):
     """
-    Create PyVista mesh from nodes and edges.
+    Reconstruct triangular faces from edge connectivity.
 
-    Args:
-        nodes: (N, 3) node coordinates
-        edges: (2, E) edge connectivity
-
-    Returns:
-        pyvista.PolyData mesh
+    For each edge (u, v), find nodes w that form triangles (u, v, w)
+    where edges (u, w) and (v, w) also exist.
     """
-    # Create point cloud
-    mesh = pv.PolyData(nodes)
+    print("  Reconstructing triangular faces from edges...")
 
-    # Add edges as lines
-    lines = []
+    # Build adjacency set for fast lookup
+    adj = defaultdict(set)
+    edge_set = set()
+
     for i in range(edges.shape[1]):
-        lines.append(2)  # Number of points in line
-        lines.append(edges[0, i])
-        lines.append(edges[1, i])
+        u, v = edges[0, i], edges[1, i]
+        adj[u].add(v)
+        adj[v].add(u)
+        edge_set.add((min(u, v), max(u, v)))
 
-    mesh.lines = lines
+    # Find triangles
+    triangles = set()
+    for i in range(edges.shape[1]):
+        u, v = edges[0, i], edges[1, i]
+        # Find common neighbors
+        common = adj[u] & adj[v]
+        for w in common:
+            # Sort to avoid duplicates
+            tri = tuple(sorted([u, v, w]))
+            triangles.add(tri)
 
-    return mesh
+    triangles = np.array(list(triangles))
+    print(f"  Found {len(triangles):,} triangular faces")
+    return triangles
 
 
-def visualize_sample(h5_path, sample_id):
+def visualize_sample(h5_path, sample_id, field='stress'):
     """
-    Create interactive visualization of a mesh sample.
+    Visualize mesh as triangulated surface.
     """
     print(f"Loading sample {sample_id}...")
-    nodes, edges, features, feature_names = load_sample(h5_path, sample_id)
+    features, edges, feature_names = load_sample(h5_path, sample_id)
 
-    num_nodes = nodes.shape[0]
+    num_nodes = features.shape[0]
     num_edges = edges.shape[1]
 
     print(f"  Nodes: {num_nodes:,}")
     print(f"  Edges: {num_edges:,}")
-    print(f"  Features: {feature_names}")
 
-    # Create mesh
-    mesh = create_mesh(nodes, edges)
-
-    # Compute derived quantities
-    dx = features[:, 3]
-    dy = features[:, 4]
-    dz = features[:, 5]
+    # Extract coordinates and fields
+    coords = features[:, :3]  # (N, 3)
+    dx, dy, dz = features[:, 3], features[:, 4], features[:, 5]
     stress = features[:, 6]
+    displacement = np.sqrt(dx**2 + dy**2 + dz**2)
 
-    displacement_mag = np.sqrt(dx**2 + dy**2 + dz**2)
+    # Select field to visualize
+    field_map = {
+        'stress': (stress, 'Stress (MPa)', 'coolwarm'),
+        'displacement': (displacement, 'Displacement Magnitude (mm)', 'viridis'),
+        'dx': (dx, 'X-Displacement (mm)', 'RdBu_r'),
+        'dy': (dy, 'Y-Displacement (mm)', 'RdBu_r'),
+        'dz': (dz, 'Z-Displacement (mm)', 'RdBu_r'),
+    }
 
-    # Add scalar fields to mesh
-    mesh['dx'] = dx
-    mesh['dy'] = dy
-    mesh['dz'] = dz
-    mesh['stress'] = stress
-    mesh['displacement'] = displacement_mag
+    if field not in field_map:
+        print(f"Unknown field: {field}. Using 'stress'.")
+        field = 'stress'
 
-    # Print statistics
-    print(f"\nFeature Statistics:")
-    print(f"  Displacement magnitude: [{displacement_mag.min():.6f}, {displacement_mag.max():.6f}]")
-    print(f"  Stress: [{stress.min():.2f}, {stress.max():.2f}]")
-    print(f"  dx: [{dx.min():.6f}, {dx.max():.6f}]")
-    print(f"  dy: [{dy.min():.6f}, {dy.max():.6f}]")
-    print(f"  dz: [{dz.min():.6f}, {dz.max():.6f}]")
+    values, label, cmap_name = field_map[field]
 
-    # Create plotter
-    plotter = pv.Plotter(shape=(2, 2), window_size=[1600, 1200])
+    # Print field statistics
+    print(f"\n{label}:")
+    print(f"  Min: {values.min():.4f}")
+    print(f"  Max: {values.max():.4f}")
+    print(f"  Mean: {values.mean():.4f}")
 
-    # Subplot 1: Displacement magnitude
-    plotter.subplot(0, 0)
-    plotter.add_mesh(mesh, scalars='displacement', cmap='viridis',
-                     show_edges=True, edge_color='gray', opacity=0.8,
-                     scalar_bar_args={'title': 'Displacement Magnitude (mm)'})
-    plotter.add_text(f"Sample {sample_id}: Displacement Magnitude", font_size=10)
+    # Find triangular faces
+    triangles = find_triangles_from_edges(edges)
 
-    # Subplot 2: Stress
-    plotter.subplot(0, 1)
-    plotter.add_mesh(mesh, scalars='stress', cmap='coolwarm',
-                     show_edges=True, edge_color='gray', opacity=0.8,
-                     scalar_bar_args={'title': 'Stress (MPa)'})
-    plotter.add_text(f"Sample {sample_id}: Stress (MPa)", font_size=10)
+    # Create figure
+    fig = plt.figure(figsize=(14, 10))
+    ax = fig.add_subplot(111, projection='3d')
 
-    # Subplot 3: X-displacement
-    plotter.subplot(1, 0)
-    plotter.add_mesh(mesh, scalars='dx', cmap='RdBu_r',
-                     show_edges=True, edge_color='gray', opacity=0.8,
-                     scalar_bar_args={'title': 'X-Displacement (mm)'})
-    plotter.add_text(f"Sample {sample_id}: X-Displacement", font_size=10)
+    # Get triangle vertices
+    tri_verts = coords[triangles]  # (num_triangles, 3, 3)
 
-    # Subplot 4: Combined Y and Z displacement
-    plotter.subplot(1, 1)
-    yz_displacement = np.sqrt(dy**2 + dz**2)
-    mesh['yz_displacement'] = yz_displacement
-    plotter.add_mesh(mesh, scalars='yz_displacement', cmap='plasma',
-                     show_edges=True, edge_color='gray', opacity=0.8,
-                     scalar_bar_args={'title': 'YZ-Displacement (mm)'})
-    plotter.add_text(f"Sample {sample_id}: YZ-Displacement", font_size=10)
+    # Compute face colors (average of vertex values)
+    face_values = values[triangles].mean(axis=1)  # (num_triangles,)
 
-    # Link camera across all subplots
-    plotter.link_views()
+    # Normalize values for colormap
+    cmap = plt.get_cmap(cmap_name)
+    vmin, vmax = values.min(), values.max()
+    norm_values = (face_values - vmin) / (vmax - vmin + 1e-10)
+    face_colors = cmap(norm_values)
 
-    print("\n" + "="*60)
-    print("Interactive Visualization Controls:")
-    print("  - Left click + drag: Rotate")
-    print("  - Right click + drag: Pan")
-    print("  - Scroll: Zoom")
-    print("  - 'q': Quit")
-    print("="*60)
+    # Create mesh collection
+    mesh = Poly3DCollection(
+        tri_verts,
+        facecolors=face_colors,
+        edgecolors='black',
+        linewidths=0.1,
+        alpha=0.9
+    )
+    ax.add_collection3d(mesh)
 
-    plotter.show()
+    # Set axis limits
+    x, y, z = coords[:, 0], coords[:, 1], coords[:, 2]
+    max_range = max(x.max() - x.min(), y.max() - y.min(), z.max() - z.min()) / 2
+    mid_x = (x.max() + x.min()) / 2
+    mid_y = (y.max() + y.min()) / 2
+    mid_z = (z.max() + z.min()) / 2
+    ax.set_xlim(mid_x - max_range, mid_x + max_range)
+    ax.set_ylim(mid_y - max_range, mid_y + max_range)
+    ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
+    # Labels
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    ax.set_title(f'Sample {sample_id}: {label}')
+
+    # Add colorbar
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, shrink=0.6, pad=0.1)
+    cbar.set_label(label)
+
+    plt.tight_layout()
+    print("\nControls: drag to rotate, right-drag to zoom")
+    plt.show()
 
 
 def main():
-    h5_path = "./dataset/dataset.h5"
+    parser = argparse.ArgumentParser(description='Visualize mesh dataset')
+    parser.add_argument('sample_id', nargs='?', default='1', help='Sample ID to visualize')
+    parser.add_argument('--field', default='stress',
+                        choices=['stress', 'displacement', 'dx', 'dy', 'dz'],
+                        help='Field to visualize')
+    args = parser.parse_args()
 
-    if not Path(h5_path).exists():
+    # Get project root
+    project_root = Path(__file__).parent.parent
+    h5_path = project_root / "dataset" / "dataset.h5"
+
+    if not h5_path.exists():
         print(f"ERROR: Dataset not found at {h5_path}")
         sys.exit(1)
-
-    # Get sample ID from command line or use default
-    if len(sys.argv) > 1:
-        sample_id = sys.argv[1]
-    else:
-        sample_id = '1'
-        print(f"No sample ID provided, using default: {sample_id}")
-        print(f"Usage: python visualize_dataset.py [sample_id]\n")
 
     # Verify sample exists
     with h5py.File(h5_path, 'r') as f:
         available_samples = sorted(f['data'].keys(), key=int)
-        if sample_id not in available_samples:
-            print(f"ERROR: Sample {sample_id} not found.")
-            print(f"Available samples: {available_samples[:10]} ... {available_samples[-5:]}")
+        if args.sample_id not in available_samples:
+            print(f"ERROR: Sample {args.sample_id} not found.")
+            print(f"Available: {available_samples[:5]} ... {available_samples[-3:]}")
             sys.exit(1)
 
-    visualize_sample(h5_path, sample_id)
+    visualize_sample(h5_path, args.sample_id, field=args.field)
 
 
 if __name__ == "__main__":
