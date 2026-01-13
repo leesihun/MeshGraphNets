@@ -88,20 +88,37 @@ def single_worker(config):
     print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+    # Initialize learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=0.5,
+        patience=10,
+        min_lr=1e-6,
+        verbose=True
+    )
+    print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=10)")
+
     if torch.cuda.is_available():
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
         print(f'Peak memory so far: {torch.cuda.max_memory_allocated()/1e9:.2f}GB')
-        print("\n" + "="*60)
-        print("Starting training loop...")
-        print("="*60 + "\n")
+
+    print("\n" + "="*60)
+    print("Starting training loop...")
+    print("="*60 + "\n")
 
     for epoch in range(config.get('training_epochs')):
     
         train_loss = train_epoch(model, train_loader, optimizer, device, config)
         valid_loss = validate_epoch(model, val_loader, device, config)
 
+        # Step the learning rate scheduler based on validation loss
+        scheduler.step(valid_loss)
+
         # Per epoch, batch-averaged train, validation losses.
-        print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e}")
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} LR: {current_lr:.2e}")
 
         if valid_loss < best_valid_loss:
             best_valid_loss = valid_loss
@@ -111,6 +128,8 @@ def single_worker(config):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'train_loss': train_loss,
                 'valid_loss': valid_loss,
             }, checkpoint_path)
             print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")

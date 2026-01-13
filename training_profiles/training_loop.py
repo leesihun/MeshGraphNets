@@ -92,10 +92,9 @@ def validate_epoch(model, dataloader, device, config):
                 tqdm.tqdm.write(f"Before: {mem_before:.2f}GB")
 
             graph = graph.to(device)
-            predicted_nodal_features = model(graph)
-            target_nodal_features = graph.y
-            errors = ((predicted_nodal_features - target_nodal_features) ** 2)
-            loss = torch.mean(errors) # MSE Loss
+            predicted, target = model(graph)
+            errors = ((predicted - target) ** 2)
+            loss = torch.mean(errors)  # MSE Loss
 
             if batch_idx < 3 and verbose:
                 mem_after = torch.cuda.memory_allocated() / 1e9

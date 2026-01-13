@@ -3,7 +3,6 @@ import torch.nn.init as init
 import torch.nn as nn
 import torch
 from torch_geometric.data import Data
-from general_modules import normalization
 from model.blocks import EdgeBlock, NodeBlock
 
 def init_weights(m):
@@ -16,81 +15,36 @@ class MeshGraphNets(nn.Module):
     def __init__(self, config, device: str):
         super(MeshGraphNets, self).__init__()
         self.config = config
-
         self.device = device
-
-        self.input_var = config['input_var']
-        self.output_var = config['output_var']
-        self.edge_var = config['edge_var']
-
-        self._output_normalizer = normalization.Normalizer(
-            size=self.output_var, name='output_normalizer', device=device
-        )
-        self._node_normalizer = normalization.Normalizer(
-            size=self.input_var, name='node_normalizer', device=device
-        )
-        self.edge_normalizer = normalization.Normalizer(
-            size=self.edge_var, name='edge_normalizer', device=device
-        )
 
         self.model = EncoderProcessorDecoder(config).to(device)
         self.model.apply(init_weights)
         print('MeshGraphNets model created successfully')
 
-        self.training = config.get('mode') == 'Train'
-
-    def update_node_attr(self, nodal_features: torch.Tensor) -> torch.Tensor:
-        normalized_features = self._node_normalizer(nodal_features, self.training)
-        return normalized_features
-
     def forward(self, graph):
         """
         Forward pass of the simulator.
 
-        During training:
-            - Inject noise into velocity
-            - Predict normalized acceleration
-            - Return prediction and normalized target acceleration
+        Expects pre-normalized inputs from the dataloader:
+            - graph.x: normalized node features [N, input_var]
+            - graph.edge_attr: normalized edge features [E, edge_var]
+            - graph.y: normalized target delta (y_t+1 - x_t) [N, output_var]
 
-        During inference:
-            - Use clean velocity
-            - Denormalize predicted acceleration to get velocity update
-            - Return predicted next-step velocity
+        Returns:
+            predicted: predicted normalized delta [N, output_var]
+            target: normalized target delta [N, output_var]
         """
-        nodal_features = graph.x[:, :]         # [N, input_var-xyz] — current variable of interest
-
+        # Optional noise injection during training
         if self.training:
-            noise = torch.randn_like(nodal_features) * self.config.get('std_noise')
-            noised_nodal_features = nodal_features + noise
-            node_attr = self.update_node_attr(noised_nodal_features)
-            graph.x = node_attr
+            noise_std = self.config.get('std_noise', 0.0)
+            if noise_std > 0:
+                noise = torch.randn_like(graph.x) * noise_std
+                graph.x = graph.x + noise
 
-            edge_attr = graph.edge_attr  # [E, 4] (3D)
-            edge_attr = self.edge_normalizer(edge_attr, self.training)
-            graph.edge_attr = edge_attr
+        # Forward through encoder-processor-decoder
+        predicted = self.model(graph)
 
-            predicted_norm = self.model(graph)
-
-            target = graph.y
-            # Learn the difference between nodal features @ t+1 and t
-            target = target-noised_nodal_features 
-            target_norm = self._output_normalizer(target, self.training)
-
-            return predicted_norm, target_norm
-
-        else:
-            # Inference mode
-            node_attr = self.update_node_attr(nodal_features)
-            graph.x = node_attr
-            
-            edge_attr = graph.edge_attr  # [E, 4] (3D)
-            edge_attr = self.edge_normalizer(edge_attr, self.training)
-            graph.edge_attr = edge_attr
-            
-            predicted_norm = self.model(graph)  # [N, input_var]
-            diff_update = self._output_normalizer.inverse(predicted_norm)  # [N, 2]
-            predicted_nodal_features = nodal_features + diff_update
-            return predicted_nodal_features
+        return predicted, graph.y
 
 class EncoderProcessorDecoder(nn.Module):
     def __init__(self, config):

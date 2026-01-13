@@ -1,7 +1,7 @@
 import h5py
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 from typing import Dict
 from torch_geometric.data import Data
 
@@ -16,6 +16,9 @@ class MeshGraphDataset(Dataset):
     Data format:
         Input: HDF5 file with structure data/sample_id/data [features, time, nodes], mesh_edge
         Output: torch_geometric.data.Data with node features, edge features, and targets
+
+    Normalization:
+        Uses precomputed global statistics from metadata/normalization_params/
     """
 
     def __init__(self, h5_file: str, config: Dict):
@@ -37,7 +40,7 @@ class MeshGraphDataset(Dataset):
         print(f"Loading MeshGraphDataset: {h5_file}")
         print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}")
 
-        # Load sample IDs and determine number of timesteps
+        # Load sample IDs, timesteps, and normalization params
         with h5py.File(h5_file, 'r') as f:
             if 'data' not in f:
                 raise ValueError(f"HDF5 file missing 'data' group")
@@ -49,8 +52,36 @@ class MeshGraphDataset(Dataset):
             data_shape = f[f'data/{sample_id}/nodal_data'].shape
             self.num_timesteps = data_shape[1]  # Shape: (features, time, nodes)
 
+            # Load precomputed normalization parameters
+            # Shape: (7,) for [x, y, z, disp_x, disp_y, disp_z, stress]
+            self.norm_mean = f['metadata/normalization_params/mean'][:]
+            self.norm_std = f['metadata/normalization_params/std'][:]
+
+            # Add small epsilon to avoid division by zero
+            self.norm_std = np.maximum(self.norm_std, 1e-8)
+
+        # Extract stats for node features (indices 3:7 = physical fields)
+        self.node_mean = self.norm_mean[3:3+self.input_dim]
+        self.node_std = self.norm_std[3:3+self.input_dim]
+
+        # Extract stats for edge features (relative positions use coord std)
+        # Edge features: [dx, dy, dz, distance]
+        # For relative positions, mean is ~0, std is similar to coord std
+        self.edge_mean = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        # Use coordinate std for dx, dy, dz; use mean distance for distance normalization
+        coord_std_mean = np.mean(self.norm_std[:3])  # Average std of x, y, z
+        self.edge_std = np.array([
+            self.norm_std[0],  # std for dx
+            self.norm_std[1],  # std for dy
+            self.norm_std[2],  # std for dz
+            coord_std_mean     # std for distance (approximate)
+        ], dtype=np.float32)
+
         print(f"Found {len(self.sample_ids)} samples")
         print(f"  num_timesteps: {self.num_timesteps}")
+        print(f"  node_mean: {self.node_mean}")
+        print(f"  node_std: {self.node_std}")
+        print(f"  edge_std: {self.edge_std}")
 
     def __len__(self) -> int:
         """
@@ -78,20 +109,22 @@ class MeshGraphDataset(Dataset):
             data/{sample_id}/mesh_edge: [2, M]
 
         Single timestep (T=1):
-            x: [N, 4] physical features (all zeros)
-            pos: [N, 3] positions
-            y: [N, 4] physical features (targets)
+            x: [N, 4] normalized physical features (all zeros -> zeros)
+            pos: [N, 3] positions (unnormalized)
+            y: [N, 4] normalized target delta (target - input)
 
         Multi-timestep (T>1):
-            x: [N, 4] physical features at time t
+            x: [N, 4] normalized physical features at time t
             pos: [N, 3] positions at time t
-            y: [N, 4] physical features at time t+1
+            y: [N, 4] normalized target delta (state_t+1 - state_t)
+
+        All features are normalized using precomputed global statistics.
 
         Args:
             idx: Sample index
 
         Returns:
-            Data object with x, y, pos, edge_index, edge_attr
+            Data object with normalized x, y, edge_attr, plus pos and edge_index
         """
         # Calculate sample and timestep indices
         if self.num_timesteps > 1:
@@ -116,29 +149,44 @@ class MeshGraphDataset(Dataset):
             # Single timestep: geometry → physics
             data_t = data[:, 0, :]  # [N, 7]
             pos = data_t[:, :3]  # [N, 3]
-            x = np.zeros((data_t.shape[0], self.input_dim), dtype=np.float32)  # [N, 4] zeros
-            y = data_t[:, 3:3+self.output_dim]  # [N, 4]
+            x_raw = np.zeros((data_t.shape[0], self.input_dim), dtype=np.float32)  # [N, 4] zeros
+            y_raw = data_t[:, 3:3+self.output_dim]  # [N, 4]
+            # Target delta: y - x (for single timestep, x is zeros so delta = y)
+            target_delta = y_raw - x_raw  # [N, 4]
         else:
             # Multi-timestep: state t → state t+1
             data_t = data[:, time_idx, :]  # [N, 7]
             data_t1 = data[:, time_idx + 1, :]  # [N, 7]
             pos = data_t[:, :3]  # [N, 3]
-            x = data_t[:, 3:3+self.input_dim]  # [N, 4]
-            y = data_t1[:, 3:3+self.output_dim]  # [N, 4]
+            x_raw = data_t[:, 3:3+self.input_dim]  # [N, 4]
+            y_raw = data_t1[:, 3:3+self.output_dim]  # [N, 4]
+            # Target delta: difference between next and current state
+            target_delta = y_raw - x_raw  # [N, 4]
 
-        # Compute edge features
+        # Compute edge features (before normalization)
         src_idx = edge_index[0]
         dst_idx = edge_index[1]
         relative_pos = pos[dst_idx] - pos[src_idx]  # [M, 3]
         distance = np.linalg.norm(relative_pos, axis=1, keepdims=True)  # [M, 1]
-        edge_attr = np.concatenate([relative_pos, distance], axis=1)  # [M, 4]
+        edge_attr_raw = np.concatenate([relative_pos, distance], axis=1)  # [M, 4]
+
+        # Apply normalization
+        # Node features: (x - mean) / std
+        x_norm = (x_raw - self.node_mean) / self.node_std
+
+        # Target delta: normalize using same stats (predicting change in normalized space)
+        # The delta should be normalized by the std (mean doesn't apply to deltas)
+        target_norm = target_delta / self.node_std
+
+        # Edge features: (edge - mean) / std
+        edge_attr_norm = (edge_attr_raw - self.edge_mean) / self.edge_std
 
         # Convert to tensors
-        pos = torch.from_numpy(pos).float()
-        x = torch.from_numpy(x).float()
-        y = torch.from_numpy(y).float()
+        pos = torch.from_numpy(pos.astype(np.float32))
+        x = torch.from_numpy(x_norm.astype(np.float32))
+        y = torch.from_numpy(target_norm.astype(np.float32))
         edge_index = torch.from_numpy(edge_index).long()
-        edge_attr = torch.from_numpy(edge_attr).float()
+        edge_attr = torch.from_numpy(edge_attr_norm.astype(np.float32))
 
         # Create PyG Data object
         return Data(
@@ -185,7 +233,7 @@ class MeshGraphDataset(Dataset):
         val_ids = shuffled_ids[n_train:n_train + n_val]
         test_ids = shuffled_ids[n_train + n_val:]
 
-        # Create subset datasets
+        # Create subset datasets (copy all attributes including normalization params)
         train_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         train_dataset.h5_file = self.h5_file
         train_dataset.config = self.config
@@ -193,6 +241,12 @@ class MeshGraphDataset(Dataset):
         train_dataset.output_dim = self.output_dim
         train_dataset.sample_ids = train_ids
         train_dataset.num_timesteps = self.num_timesteps
+        train_dataset.norm_mean = self.norm_mean
+        train_dataset.norm_std = self.norm_std
+        train_dataset.node_mean = self.node_mean
+        train_dataset.node_std = self.node_std
+        train_dataset.edge_mean = self.edge_mean
+        train_dataset.edge_std = self.edge_std
 
         val_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         val_dataset.h5_file = self.h5_file
@@ -201,6 +255,12 @@ class MeshGraphDataset(Dataset):
         val_dataset.output_dim = self.output_dim
         val_dataset.sample_ids = val_ids
         val_dataset.num_timesteps = self.num_timesteps
+        val_dataset.norm_mean = self.norm_mean
+        val_dataset.norm_std = self.norm_std
+        val_dataset.node_mean = self.node_mean
+        val_dataset.node_std = self.node_std
+        val_dataset.edge_mean = self.edge_mean
+        val_dataset.edge_std = self.edge_std
 
         test_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         test_dataset.h5_file = self.h5_file
@@ -209,6 +269,12 @@ class MeshGraphDataset(Dataset):
         test_dataset.output_dim = self.output_dim
         test_dataset.sample_ids = test_ids
         test_dataset.num_timesteps = self.num_timesteps
+        test_dataset.norm_mean = self.norm_mean
+        test_dataset.norm_std = self.norm_std
+        test_dataset.node_mean = self.node_mean
+        test_dataset.node_std = self.node_std
+        test_dataset.edge_mean = self.edge_mean
+        test_dataset.edge_std = self.edge_std
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
 
