@@ -141,6 +141,11 @@ class MeshGraphDataset(Dataset):
             data = f[f'data/{sample_id}/nodal_data'][:]  # [7, time, nodes]
             edge_index = f[f'data/{sample_id}/mesh_edge'][:]  # [2, M]
 
+        # Make edges bidirectional (like DeepMind's MeshGraphNets implementation)
+        # Original: only (src, dst) where src < dst
+        # Bidirectional: both (src, dst) and (dst, src)
+        edge_index = np.concatenate([edge_index, edge_index[[1, 0], :]], axis=1)  # [2, 2M]
+
         # Transpose to [nodes, time, 7]
         data = np.transpose(data, (2, 1, 0))
 
@@ -164,11 +169,13 @@ class MeshGraphDataset(Dataset):
             target_delta = y_raw - x_raw  # [N, 4]
 
         # Compute edge features (before normalization)
+        # Edge features are computed for all edges (including reverse edges)
+        # Reverse edges naturally get negated relative_pos since src/dst are swapped
         src_idx = edge_index[0]
         dst_idx = edge_index[1]
-        relative_pos = pos[dst_idx] - pos[src_idx]  # [M, 3]
-        distance = np.linalg.norm(relative_pos, axis=1, keepdims=True)  # [M, 1]
-        edge_attr_raw = np.concatenate([relative_pos, distance], axis=1)  # [M, 4]
+        relative_pos = pos[dst_idx] - pos[src_idx]  # [2M, 3]
+        distance = np.linalg.norm(relative_pos, axis=1, keepdims=True)  # [2M, 1]
+        edge_attr_raw = np.concatenate([relative_pos, distance], axis=1)  # [2M, 4]
 
         # Apply normalization
         # Node features: (x - mean) / std

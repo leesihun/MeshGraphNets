@@ -1,5 +1,6 @@
 model   MeshGraphNets
 mode    Train  # Train / Inference
+log_file_dir    ./train.log
 %   Common params
 Dim1		2138 # number of parameters
 Dim2		1   # number of timesteps

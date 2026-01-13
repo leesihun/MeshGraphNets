@@ -11,6 +11,8 @@ from training_profiles.training_loop import train_epoch, validate_epoch
 import torch
 import tqdm
 import numpy as np
+import os
+import time
 
 def single_worker(config):
     # Single GPU/CPU training
@@ -107,6 +109,16 @@ def single_worker(config):
     print("Starting training loop...")
     print("="*60 + "\n")
 
+    start_time = time.time()
+
+    log_file_dir = config.get('log_file_dir')
+    if log_file_dir:
+        log_file = os.path.join(log_file_dir, 'train_epoch.log')
+        with open(log_file, 'w') as f:
+            f.write(f"Training epoch log file\n")
+            f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Log file directory: {log_file_dir}\n")
+
     for epoch in range(config.get('training_epochs')):
     
         train_loss = train_epoch(model, train_loader, optimizer, device, config)
@@ -131,6 +143,10 @@ def single_worker(config):
                 'train_loss': train_loss,
                 'valid_loss': valid_loss,
             }, checkpoint_path)
-            print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
+            print(f"  -> New best mo1del saved at epoch {epoch} with valid loss {valid_loss:.2e}")
+
+        if log_file_dir:
+            with open(log_file, 'a') as f:
+                f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} LR: {current_lr:.2e}\n")
 
     print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
