@@ -113,7 +113,7 @@ def single_worker(config):
 
     log_file_dir = config.get('log_file_dir')
     if log_file_dir:
-        log_file = os.path.join(log_file_dir, 'train_epoch.log')
+        log_file = log_file_dir
         with open(log_file, 'w') as f:
             f.write(f"Training epoch log file\n")
             f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
