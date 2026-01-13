@@ -19,7 +19,7 @@ def single_worker(config):
 
     # Set device using the first (and only) GPU from gpu_ids
     if torch.cuda.is_available():
-        gpu_id = 0
+        gpu_id = gpu_ids
         torch.cuda.set_device(gpu_id)
         device = torch.device(f'cuda:{gpu_id}')
         print(f'Using physical GPU {gpu_id}, device: {device}')
