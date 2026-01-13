@@ -95,8 +95,7 @@ def single_worker(config):
         mode='min',
         factor=0.5,
         patience=10,
-        min_lr=1e-6,
-        verbose=True
+        min_lr=1e-6
     )
     print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=10)")
 

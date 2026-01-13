@@ -170,7 +170,7 @@ class Decoder(nn.Module):
 
     def __init__(self, latent_dim, node_output_size):
         super(Decoder, self).__init__()
-        self.decode_module = build_mlp(latent_dim, latent_dim, node_output_size, layer_norm=True)
+        self.decode_module = build_mlp(latent_dim, latent_dim, node_output_size, layer_norm=False)
 
     def forward(self, graph):
         return self.decode_module(graph.x)

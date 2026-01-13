@@ -122,7 +122,7 @@ def train_worker(rank, world_size, config, gpu_ids):
     # Initialize learning rate scheduler (optional)
     if config.get('use_scheduler', False):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=5, verbose=(rank == 0)
+            optimizer, mode='min', factor=0.5, patience=5
         )
     else:
         scheduler = None
