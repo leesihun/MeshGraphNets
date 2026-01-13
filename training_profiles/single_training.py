@@ -117,7 +117,7 @@ def single_worker(config):
         with open(log_file, 'w') as f:
             f.write(f"Training epoch log file\n")
             f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Log file directory: {log_file_dir}\n")
+            f.write(f"Log file absolute path: {os.path.abspath(log_file)}\n")
 
     for epoch in range(config.get('training_epochs')):
     
@@ -147,6 +147,6 @@ def single_worker(config):
 
         if log_file_dir:
             with open(log_file, 'a') as f:
-                f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} LR: {current_lr:.2e}\n")
+                f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
 
     print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
