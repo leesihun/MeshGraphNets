@@ -89,7 +89,7 @@ def single_worker(config):
     # Initialize optimizer
     print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-5)
 
     # Initialize learning rate scheduler
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -143,7 +143,7 @@ def single_worker(config):
                 'train_loss': train_loss,
                 'valid_loss': valid_loss,
             }, checkpoint_path)
-            print(f"  -> New best mo1del saved at epoch {epoch} with valid loss {valid_loss:.2e}")
+            print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
 
         if log_file_dir:
             with open(log_file, 'a') as f:

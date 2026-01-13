@@ -37,6 +37,9 @@ def train_epoch(model, dataloader, optimizer, device, config):
         optimizer.zero_grad()
         loss.backward()
 
+        # Gradient clipping to stabilize training with deep message passing
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
         if log_detailed and verbose:
             mem_4 = torch.cuda.memory_allocated() / 1e9
             tqdm.tqdm.write(f"4. After backward: {mem_4:.2f}GB (+{mem_4-mem_3:.2f}GB)")
