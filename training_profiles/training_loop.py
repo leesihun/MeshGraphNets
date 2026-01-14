@@ -138,11 +138,10 @@ def infer_model(model, dataloader, device, config, epoch):
             num_batches += 1
 
             # Save results with mesh reconstruction
-            output_path = f'outputs/test/{epoch}/results_{batch_idx}.h5'
-            predicted_np = predicted.cpu().numpy() if hasattr(predicted, 'cpu') else predicted
-            target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
-            save_inference_results(output_path, graph, predicted_np, target_np)
             if batch_idx==1:
-                break
+                output_path = f'outputs/test/{epoch}/results_{batch_idx}.h5'
+                predicted_np = predicted.cpu().numpy() if hasattr(predicted, 'cpu') else predicted
+                target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
+                save_inference_results(output_path, graph, predicted_np, target_np)
 
     return total_loss / num_batches if num_batches > 0 else 0.0

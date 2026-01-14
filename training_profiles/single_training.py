@@ -61,7 +61,8 @@ def single_worker(config):
     test_loader = DataLoader(
         test_dataset,
         batch_size=1,
-        shuffle=False
+        shuffle=False,
+        pin_memory=True
     )
     if torch.cuda.is_available():
         print(f'After dataloader creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
