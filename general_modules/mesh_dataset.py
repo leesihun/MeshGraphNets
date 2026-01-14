@@ -155,10 +155,10 @@ class MeshGraphDataset(Dataset):
         edge_attr_raw = np.concatenate([relative_pos, distance], axis=1)  # [2M, 4]
 
         # Apply normalization
-        # Node features: (x - mean) / std
+        # Node features: min-max normalization to [-1, 1]
         # x_norm = (x_raw - self.node_mean) / self.node_std
-        x_norm = (((x_raw - self.node_min) / (self.node_max - self.node_min)) * 2 - 1)*self.norm_max
-        # Normalized to [norm_min, norm_max]
+        x_norm = ((x_raw - self.node_min) / (self.node_max - self.node_min)) * 2 - 1
+        # Normalized to [-1, 1]
 
         # target_norm Need to be normalized to [norm_min, norm_max]
         feature_range = self.node_max - self.node_min
