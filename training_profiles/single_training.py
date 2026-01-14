@@ -121,7 +121,7 @@ def single_worker(config):
 
     for epoch in range(config.get('training_epochs')):
     
-        train_loss = train_epoch(model, train_loader, optimizer, device, config)
+        train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
         valid_loss = validate_epoch(model, val_loader, device, config)
 
         # Step the learning rate scheduler based on validation loss

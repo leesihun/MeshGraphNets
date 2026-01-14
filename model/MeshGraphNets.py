@@ -44,6 +44,9 @@ class MeshGraphNets(nn.Module):
         # Forward through encoder-processor-decoder
         predicted = self.model(graph)
 
+        print(f"Predicted: {predicted}")
+        print(f"Graph.y: {graph.y}")
+
         return predicted, graph.y
 
 class EncoderProcessorDecoder(nn.Module):
@@ -153,8 +156,12 @@ class GnBlock(nn.Module):
 
         graph = self.eb_module(graph) # Update edge features
         # First go through the edge block to update the edge features
+        # input: nodal attribute: sender, receiver, edge latent dim
+        # output: edge latent dim
         graph = self.nb_module(graph)
         # Then go through the node block to update the node features based on the connectivity
+        # input: receiver nodal attribute, aggregated edge latent dim
+        # output: updated receiver nodal latent dim
 
         x = x + graph.x
         edge_attr = edge_attr + graph.edge_attr

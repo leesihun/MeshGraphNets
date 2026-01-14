@@ -6,31 +6,8 @@ from typing import Dict
 from torch_geometric.data import Data
 
 class MeshGraphDataset(Dataset):
-    """
-    Graph-based dataset for MeshGraphNet training
-
-    This dataset produces graph-structured data for GNN processing:
-    - Node features (physical variables, etc.)
-    - Edge features (dx, dy, dz, distance)
-
-    Data format:
-        Input: HDF5 file with structure data/sample_id/data [features, time, nodes], mesh_edge
-        Output: torch_geometric.data.Data with node features, edge features, and targets
-
-    Normalization:
-        Uses precomputed global statistics from metadata/normalization_params/
-    """
 
     def __init__(self, h5_file: str, config: Dict):
-        """
-        Initialize MeshGraphDataset
-
-        Args:
-            h5_file: Path to HDF5 dataset file
-            config: Configuration dictionary with:
-                - input_var: Number of input features (physical fields only)
-                - output_var: Number of output features (physical fields only)
-        """
         self.h5_file = h5_file
         self.config = config
         # Graph and feature parameters
@@ -150,7 +127,7 @@ class MeshGraphDataset(Dataset):
         data = np.transpose(data, (2, 1, 0))
 
         # Extract data based on timesteps
-        if self.num_timesteps == 1:
+        if self.num_timesteps == 1: # Static case
             # Single timestep: geometry → physics
             data_t = data[:, 0, :]  # [N, 7]
             pos = data_t[:, :3]  # [N, 3]

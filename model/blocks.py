@@ -21,7 +21,7 @@ class EdgeBlock(nn.Module):
         edges_to_collect = []
 
         senders_attr = node_attr[senders_idx]   # sender nodal features 
-        receivers_attr = node_attr[receivers_idx]# REceiver nodal features
+        receivers_attr = node_attr[receivers_idx]# Receiver nodal features
 
         edges_to_collect.append(senders_attr)
         edges_to_collect.append(receivers_attr)
@@ -31,7 +31,8 @@ class EdgeBlock(nn.Module):
 
         collected_edges = torch.cat(edges_to_collect, dim=1)
         
-        edge_attr = self.net(collected_edges)   # Update
+        edge_attr = self.net(collected_edges)   
+        # Update edge features via Edge block w.r.t. sender, receiver nodal attribute and its edge attribute
 
         return Data(x=node_attr, edge_attr=edge_attr, edge_index=graph.edge_index)
 

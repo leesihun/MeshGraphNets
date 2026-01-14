@@ -1,7 +1,8 @@
+import time
 import tqdm
 import torch
 
-def train_epoch(model, dataloader, optimizer, device, config):
+def train_epoch(model, dataloader, optimizer, device, config, epoch):
     model.train()
     total_loss = 0.0
     num_batches = 0
@@ -25,7 +26,18 @@ def train_epoch(model, dataloader, optimizer, device, config):
             mem_2 = torch.cuda.memory_allocated() / 1e9
             tqdm.tqdm.write(f"2. After .to(device): {mem_2:.2f}GB (+{mem_2-mem_1:.2f}GB)")
 
+        if epoch==0 and batch_idx==0:
+            print(f"Batch {batch_idx} of epoch {epoch} is being processed")
+            print(f"Graph: {graph}")
+            print(f"Graph.x: {graph.x}")
+            print(f"Graph.edge_attr: {graph.edge_attr}")
+            print(f"Graph.edge_index: {graph.edge_index}")
+            print(f"Graph.y: {graph.y}")
+
         predicted_acc, target_acc = model(graph)
+
+        import time
+        time.sleep(10000)
 
         if log_detailed and verbose:
             mem_3 = torch.cuda.memory_allocated() / 1e9

@@ -131,15 +131,10 @@ def collate_variable_length(batch):
 def create_dataloader(dataset, config, is_training=True):
     """Create dataloader for dataset"""
 
-    # Check dataset type
-    if hasattr(dataset, 'mesh_template'):
-        print(f"Using MeshGraphDataset dataloader")
-        return create_mesh_dataloader(dataset, config, is_training)
-
     # Fallback for other dataset types
     print(f"Using standard dataloader")
-    batch_size = config.get('Batch_size', 1)
-    num_workers = config.get('num_workers', 0)
+    batch_size = config.get('batch_size')
+    num_workers = config.get('num_workers')
 
     return DataLoader(
         dataset,
