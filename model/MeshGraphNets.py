@@ -83,7 +83,7 @@ class EncoderProcessorDecoder(nn.Module):
 
         return output
 
-def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu'):
+def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu', decoder=False):
 
     if activation == 'relu':
         activation_func = nn.ReLU()
@@ -108,14 +108,16 @@ def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu'
             nn.LayerNorm(normalized_shape=hidden_size),
             nn.Linear(hidden_size, out_size)
         )
-    else:
+    elif decoder:
         module = nn.Sequential(
             nn.Linear(in_size, hidden_size), 
             activation_func,
             nn.Linear(hidden_size, hidden_size),
             activation_func,
             nn.Linear(hidden_size, out_size)
+            nn.Tanh()
         )
+
     return module
 
 class Encoder(nn.Module):
@@ -177,7 +179,7 @@ class Decoder(nn.Module):
 
     def __init__(self, latent_dim, node_output_size):
         super(Decoder, self).__init__()
-        self.decode_module = build_mlp(latent_dim, latent_dim, node_output_size, layer_norm=False)
+        self.decode_module = build_mlp(latent_dim, latent_dim, node_output_size, layer_norm=False, decoder=True)
 
     def forward(self, graph):
         return self.decode_module(graph.x)
