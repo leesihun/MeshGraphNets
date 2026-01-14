@@ -45,12 +45,12 @@ class MeshGraphNets(nn.Module):
         predicted = self.model(graph)
 
         
-        print(f"Graph: {graph}")
-        print(f"Graph.x: {graph.x}")
-        print(f"Graph.edge_attr: {graph.edge_attr}")
-        print(f"Graph.edge_index: {graph.edge_index}")
-        print(f"Graph.y: {graph.y}")
-        print(f"Predicted: {predicted}")
+        # print(f"Graph: {graph}")
+        # print(f"Graph.x: {graph.x}")
+        # print(f"Graph.edge_attr: {graph.edge_attr}")
+        # print(f"Graph.edge_index: {graph.edge_index}")
+        # print(f"Graph.y: {graph.y}")
+        # print(f"Predicted: {predicted}")
 
         return predicted, graph.y
 
