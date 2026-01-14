@@ -148,8 +148,8 @@ class GnBlock(nn.Module):
 
     def forward(self, graph):
     
-        x = graph.x # Input nodal features
-        edge_attr = graph.edge_attr # Input edge features
+        x = graph.x.clone() # Input nodal features
+        edge_attr = graph.edge_attr.clone() # Input edge features
 
         graph = self.eb_module(graph) # Update edge features
         # First go through the edge block to update the edge features
