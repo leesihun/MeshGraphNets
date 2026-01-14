@@ -154,7 +154,7 @@ class MeshGraphDataset(Dataset):
             # Single timestep: geometry → physics
             data_t = data[:, 0, :]  # [N, 7]
             pos = data_t[:, :3]  # [N, 3]
-            x_raw = np.ones((data_t.shape[0], self.input_dim), dtype=np.float32)*0.1  # [N, 4] zeros
+            x_raw = np.ones((data_t.shape[0], self.input_dim), dtype=np.float32)  # [N, 4] zeros
             y_raw = data_t[:, 3:3+self.output_dim]  # [N, 4]
             # Target delta: y - x (for single timestep, x is zeros so delta = y)
             target_delta = y_raw - x_raw  # [N, 4]

@@ -98,14 +98,11 @@ def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu'
             nn.Linear(hidden_size, hidden_size),
             activation_func,
             nn.LayerNorm(normalized_shape=hidden_size),
-            nn.Linear(hidden_size, out_size),
-            nn.LayerNorm(normalized_shape=out_size)
+            nn.Linear(hidden_size, out_size)
         )
     else:
         module = nn.Sequential(
             nn.Linear(in_size, hidden_size), 
-            activation_func,
-            nn.Linear(hidden_size, hidden_size),
             activation_func,
             nn.Linear(hidden_size, hidden_size),
             activation_func,
