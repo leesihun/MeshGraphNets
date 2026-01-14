@@ -31,35 +31,35 @@ class MeshGraphDataset(Dataset):
 
             # Load precomputed normalization parameters
             # Shape: (7,) for [x, y, z, disp_x, disp_y, disp_z, stress]
-            self.norm_mean = f['metadata/normalization_params/mean'][:]
-            self.norm_std = f['metadata/normalization_params/std'][:]
-
+            # self.norm_mean = f['metadata/normalization_params/mean'][:]
+            # self.norm_std = f['metadata/normalization_params/std'][:]
+            self.norm_max = f['metadata/normalization_params/max'][:]
+            self.norm_min = f['metadata/normalization_params/min'][:]
             # Add small epsilon to avoid division by zero
-            self.norm_std = np.maximum(self.norm_std, 1e-8)
+            # self.norm_std = np.maximum(self.norm_std, 1e-8)
 
         # Extract stats for node features (indices 3:7 = physical fields)
-        self.node_mean = self.norm_mean[3:3+self.input_dim]
-        self.node_std = self.norm_std[3:3+self.input_dim]
-
+        # self.node_mean = self.norm_mean[3:3+self.input_dim]
+        # self.node_std = self.norm_std[3:3+self.input_dim]
+        self.node_max = self.norm_max[3:3+self.input_dim]
+        self.node_min = self.norm_min[3:3+self.input_dim]
+        
         # Extract stats for edge features (relative positions use coord std)
         # Edge features: [dx, dy, dz, distance]
         # For relative positions, mean is ~0, std is similar to coord std
-        self.edge_mean = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        # self.edge_mean = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
         # Use coordinate std for dx, dy, dz; use mean distance for distance normalization
-        coord_std_mean = np.mean(self.norm_std[:3])  # Average std of x, y, z
-        self.edge_std = np.array([
-            self.norm_std[0],  # std for dx
-            self.norm_std[1],  # std for dy
-            self.norm_std[2],  # std for dz
-            coord_std_mean     # std for distance (approximate)
-        ], dtype=np.float32)
+        # coord_std_mean = np.mean(self.norm_std[:3])  # Average std of x, y, z
+        # self.edge_std = np.array([
+        #     self.norm_std[0],  # std for dx
+        #     self.norm_std[1],  # std for dy
+        #     self.norm_std[2],  # std for dz
+        #     coord_std_mean     # std for distance (approximate)
+        # ], dtype=np.float32)
 
         print(f"Found {len(self.sample_ids)} samples")
         print(f"  num_timesteps: {self.num_timesteps}")
-        print(f"  node_mean: {self.node_mean}")
-        print(f"  node_std: {self.node_std}")
-        print(f"  edge_std: {self.edge_std}")
-
+        
     def __len__(self) -> int:
         """
         Calculate total number of samples.
@@ -131,7 +131,7 @@ class MeshGraphDataset(Dataset):
             # Single timestep: geometry → physics
             data_t = data[:, 0, :]  # [N, 7]
             pos = data_t[:, :3]  # [N, 3]
-            x_raw = np.ones((data_t.shape[0], self.input_dim), dtype=np.float32)  # [N, 4] zeros
+            x_raw = np.zeros((data_t.shape[0], self.input_dim), dtype=np.float32)  # [N, 4] zeros
             y_raw = data_t[:, 3:3+self.output_dim]  # [N, 4]
             # Target delta: y - x (for single timestep, x is zeros so delta = y)
             target_delta = y_raw - x_raw  # [N, 4]
@@ -156,11 +156,13 @@ class MeshGraphDataset(Dataset):
 
         # Apply normalization
         # Node features: (x - mean) / std
-        x_norm = (x_raw - self.node_mean) / self.node_std
+        # x_norm = (x_raw - self.node_mean) / self.node_std
+        x_norm = (((x_raw - self.node_min) / (self.node_max - self.node_min)) * 2 - 1)*self.norm_max
+        # Normalized to [norm_min, norm_max]
 
-        # Target delta: normalize using same stats (predicting change in normalized space)
-        # The delta should be normalized by the std (mean doesn't apply to deltas)
-        target_norm = target_delta / self.node_std
+        # target_norm Need to be normalized to [norm_min, norm_max]
+        feature_range = self.node_max - self.node_min
+        target_norm = target_delta / feature_range
 
         # Edge features: (edge - mean) / std
         edge_attr_norm = (edge_attr_raw - self.edge_mean) / self.edge_std

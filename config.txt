@@ -13,11 +13,11 @@ edge_var    4   # dx, dy, dz, disp
 dataset_dir ./dataset/dataset.h5
 norm_min    -0.7  # Normalization range minimum
 norm_max    0.7   # Normalization range maximum
-message_passing_num 15
+message_passing_num 10
 Training_epochs	2002
-Batch_size	1
+Batch_size	2
 LearningR	0.001
-Latent_dim	128	# MeshGraphNets latent dimension
+Latent_dim	64	# MeshGraphNets latent dimension
 num_workers 2
 gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
 std_noise   0.001
