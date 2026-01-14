@@ -227,13 +227,6 @@ class MeshGraphDataset(Dataset):
         train_dataset.output_dim = self.output_dim
         train_dataset.sample_ids = train_ids
         train_dataset.num_timesteps = self.num_timesteps
-        train_dataset.norm_mean = self.norm_mean
-        train_dataset.norm_std = self.norm_std
-        train_dataset.node_mean = self.node_mean
-        train_dataset.node_std = self.node_std
-        train_dataset.edge_mean = self.edge_mean
-        train_dataset.edge_std = self.edge_std
-
         val_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         val_dataset.h5_file = self.h5_file
         val_dataset.config = self.config
@@ -241,12 +234,6 @@ class MeshGraphDataset(Dataset):
         val_dataset.output_dim = self.output_dim
         val_dataset.sample_ids = val_ids
         val_dataset.num_timesteps = self.num_timesteps
-        val_dataset.norm_mean = self.norm_mean
-        val_dataset.norm_std = self.norm_std
-        val_dataset.node_mean = self.node_mean
-        val_dataset.node_std = self.node_std
-        val_dataset.edge_mean = self.edge_mean
-        val_dataset.edge_std = self.edge_std
 
         test_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         test_dataset.h5_file = self.h5_file
@@ -255,12 +242,6 @@ class MeshGraphDataset(Dataset):
         test_dataset.output_dim = self.output_dim
         test_dataset.sample_ids = test_ids
         test_dataset.num_timesteps = self.num_timesteps
-        test_dataset.norm_mean = self.norm_mean
-        test_dataset.norm_std = self.norm_std
-        test_dataset.node_mean = self.node_mean
-        test_dataset.node_std = self.node_std
-        test_dataset.edge_mean = self.edge_mean
-        test_dataset.edge_std = self.edge_std
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
 
