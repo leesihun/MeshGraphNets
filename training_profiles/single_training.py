@@ -6,7 +6,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from general_modules.data_loader import load_data
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
-from training_profiles.training_loop import train_epoch, validate_epoch
+from training_profiles.training_loop import train_epoch, validate_epoch, infer_model
 
 import torch
 import tqdm
@@ -60,7 +60,7 @@ def single_worker(config):
 
     test_loader = DataLoader(
         test_dataset,
-        batch_size=config['batch_size'],
+        batch_size=1,
         shuffle=False
     )
     if torch.cuda.is_available():
@@ -148,5 +148,9 @@ def single_worker(config):
         if log_file_dir:
             with open(log_file, 'a') as f:
                 f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
+
+        # For each 10 epochs, test the model on the test set and save the results with the ground truth in a file
+        if epoch % 10 == 0:
+            test_loss = infer_model(model, test_loader, device, config, epoch)
 
     print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")

@@ -1,6 +1,6 @@
-import time
 import tqdm
 import torch
+from general_modules.mesh_utils import save_inference_results
 
 def train_epoch(model, dataloader, optimizer, device, config, epoch):
     model.train()
@@ -111,5 +111,36 @@ def validate_epoch(model, dataloader, device, config):
 
             total_loss += loss.item()
             num_batches += 1
+
+    return total_loss / num_batches
+
+
+def infer_model(model, dataloader, device, config, epoch):
+    model.eval()
+
+    with torch.no_grad():
+        total_loss = 0.0
+        num_batches = 0
+
+        pbar = tqdm.tqdm(dataloader)
+        for batch_idx, graph in enumerate(pbar):
+            
+            graph = graph.to(device)
+            predicted, target = model(graph)
+            errors = ((predicted - target) ** 2)
+            loss = torch.mean(errors)  # MSE Loss
+
+            # Update progress bar
+            mem_gb = torch.cuda.memory_allocated() / 1e9
+            pbar.set_postfix({'loss': f'{loss.item():.2e}', 'mem': f'{mem_gb:.1f}GB'})
+
+            total_loss += loss.item()
+            num_batches += 1
+
+            # Save results with mesh reconstruction
+            output_path = f'outputs/test/{epoch}/results_{batch_idx}.h5'
+            predicted_np = predicted.cpu().numpy() if hasattr(predicted, 'cpu') else predicted
+            target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
+            save_inference_results(output_path, graph, predicted_np, target_np)
 
     return total_loss / num_batches
