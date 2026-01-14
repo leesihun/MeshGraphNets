@@ -98,7 +98,9 @@ def save_inference_results(output_path, graph, predicted, target):
         target: (N, D) numpy array of target node features
     """
     # Ensure output directory exists
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
     # Convert tensors to numpy if needed
     pos = graph.pos.cpu().numpy() if hasattr(graph.pos, 'cpu') else np.array(graph.pos)
@@ -203,6 +205,12 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path, fe
     y_min, y_max = pos[:, 1].min(), pos[:, 1].max()
     z_min, z_max = pos[:, 2].min(), pos[:, 2].max()
 
+    # Compute ranges with epsilon to avoid zero-size dimensions
+    eps = 1e-6
+    x_range = max(x_max - x_min, eps)
+    y_range = max(y_max - y_min, eps)
+    z_range = max(z_max - z_min, eps)
+
     for ax, title in [(ax1, 'Predicted'), (ax2, 'Ground Truth')]:
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
@@ -213,7 +221,7 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path, fe
         ax.set_title(title)
         # Isometric view: equal angles
         ax.view_init(elev=30, azim=45)
-        ax.set_box_aspect([x_max - x_min, y_max - y_min, z_max - z_min])
+        ax.set_box_aspect([x_range, y_range, z_range])
 
     # Add colorbar
     sm = ScalarMappable(cmap=cmap, norm=norm)

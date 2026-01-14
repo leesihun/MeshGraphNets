@@ -143,4 +143,4 @@ def infer_model(model, dataloader, device, config, epoch):
             target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
             save_inference_results(output_path, graph, predicted_np, target_np)
 
-    return total_loss / num_batches
+    return total_loss / num_batches if num_batches > 0 else 0.0
