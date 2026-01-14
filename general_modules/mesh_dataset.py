@@ -164,8 +164,8 @@ class MeshGraphDataset(Dataset):
         feature_range = self.node_max - self.node_min
         target_norm = target_delta / feature_range
 
-        # Edge features: (edge - mean) / std
-        edge_attr_norm = (edge_attr_raw - self.edge_mean) / self.edge_std
+        # Edge features: no normalization (edge_mean/edge_std not implemented)
+        edge_attr_norm = edge_attr_raw
 
         # Convert to tensors
         pos = torch.from_numpy(pos.astype(np.float32))
@@ -227,6 +227,11 @@ class MeshGraphDataset(Dataset):
         train_dataset.output_dim = self.output_dim
         train_dataset.sample_ids = train_ids
         train_dataset.num_timesteps = self.num_timesteps
+        train_dataset.norm_max = self.norm_max
+        train_dataset.norm_min = self.norm_min
+        train_dataset.node_max = self.node_max
+        train_dataset.node_min = self.node_min
+
         val_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         val_dataset.h5_file = self.h5_file
         val_dataset.config = self.config
@@ -234,6 +239,10 @@ class MeshGraphDataset(Dataset):
         val_dataset.output_dim = self.output_dim
         val_dataset.sample_ids = val_ids
         val_dataset.num_timesteps = self.num_timesteps
+        val_dataset.norm_max = self.norm_max
+        val_dataset.norm_min = self.norm_min
+        val_dataset.node_max = self.node_max
+        val_dataset.node_min = self.node_min
 
         test_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         test_dataset.h5_file = self.h5_file
@@ -242,6 +251,10 @@ class MeshGraphDataset(Dataset):
         test_dataset.output_dim = self.output_dim
         test_dataset.sample_ids = test_ids
         test_dataset.num_timesteps = self.num_timesteps
+        test_dataset.norm_max = self.norm_max
+        test_dataset.norm_min = self.norm_min
+        test_dataset.node_max = self.node_max
+        test_dataset.node_min = self.node_min
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
 
