@@ -114,7 +114,7 @@ def single_worker(config):
 
     log_file_dir = config.get('log_file_dir')
     if log_file_dir:
-        log_file = 'outputs/'+config.get('gpu_ids')+'/'+log_file_dir
+        log_file = 'outputs/'+str(config.get('gpu_ids'))+'/'+log_file_dir
         # if log_file doesn't exist, create it
         if not os.path.exists(log_file):
             os.makedirs(os.path.dirname(log_file), exist_ok=True)
