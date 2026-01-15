@@ -96,9 +96,9 @@ def single_worker(config):
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
-        factor=0.5,
-        patience=10,
-        min_lr=1e-6
+        factor=0.8,
+        patience=20,
+        min_lr=1e-8
     )
     print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=10)")
 
@@ -114,11 +114,18 @@ def single_worker(config):
 
     log_file_dir = config.get('log_file_dir')
     if log_file_dir:
-        log_file = log_file_dir
+        log_file = 'outputs/'+config.get('gpu_ids')+'/'+log_file_dir
+        # if log_file doesn't exist, create it
+        if not os.path.exists(log_file):
+            os.makedirs(os.path.dirname(log_file), exist_ok=True)
         with open(log_file, 'w') as f:
             f.write(f"Training epoch log file\n")
             f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Log file absolute path: {os.path.abspath(log_file)}\n")
+            # Write the whole config.txt file here:
+            with open('config.txt', 'r') as fc:
+                f.write(fc.read())
+            fc.close()
 
     for epoch in range(config.get('training_epochs')):
     

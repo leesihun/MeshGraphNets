@@ -1,7 +1,7 @@
 model   MeshGraphNets
 mode    Train  # Train / Inference
 gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
-log_file_dir    ./train0.log
+log_file_dir    train.log
 %   Common params
 Dim1		2138 # number of parameters
 Dim2		1   # number of timesteps
@@ -14,12 +14,12 @@ edge_var    4   # dx, dy, dz, disp
 dataset_dir ./dataset/dataset.h5
 norm_min    -0.7  # Normalization range minimum
 norm_max    0.7   # Normalization range maximum
-message_passing_num 10
+message_passing_num 15
 Training_epochs	2002
 Batch_size	2
-LearningR	0.001
-Latent_dim	256	# MeshGraphNets latent dimension
+LearningR	0.0005
+Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
-std_noise   0.001
+std_noise   0.0000000001
 verbose     False
 '
