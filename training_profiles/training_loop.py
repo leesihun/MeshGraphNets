@@ -139,7 +139,7 @@ def infer_model(model, dataloader, device, config, epoch):
 
             # Save results with mesh reconstruction
             if batch_idx==1:
-                gpu_ids = config.get('gpu_ids')
+                gpu_ids = str(config.get('gpu_ids'))
                 output_path = f'outputs/test/{gpu_ids}/{epoch}/results_{batch_idx}.h5'
                 predicted_np = predicted.cpu().numpy() if hasattr(predicted, 'cpu') else predicted
                 target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
