@@ -2,37 +2,13 @@
 
 ## Overview
 
-This document describes the HDF5 dataset format for Graph Neural Network (GNN) training on finite element analysis (FEA) mesh data with **corner-node-only** representation.
+This document describes the HDF5 dataset format for Graph Neural Network (GNN) training on finite element analysis (FEA) mesh data representation.
 
 **File Format**: HDF5 (`.h5`)
 **Primary Library**: `h5py` for Python ML pipelines
 **Structure**: Single file containing all samples with global metadata
-**Node Selection**: Corner nodes only (mid-edge nodes excluded)
-**Edge Extraction**: From triangular face connectivity (geometrically accurate)
-
----
-
-## Key Design Decisions
-
-### Why Corner Nodes Only?
-
-The source FEA meshes use **quadratic tetrahedral elements (TET10)** with:
-- 4 corner vertices
-- 6 mid-edge nodes (positioned at edge midpoints)
-
-**Our approach:**
-- ✅ **Include**: Corner nodes (~36% of total nodes)
-- ❌ **Exclude**: Mid-edge nodes (~64% of total nodes)
-
-**Benefits:**
-- **64% reduction** in node count (faster training, lower memory)
-- **91% reduction** in edge count (from corrected topology)
-- Geometrically accurate edge connectivity from face data
-- Element-type agnostic (works for any mesh with face data)
-
-**Trade-off:**
-- Loses quadratic field resolution within elements
-- Linear interpolation assumption between corners
+**Node Selection**: FEM mesh nodes
+**Edge Extraction**: FEM mesh connectivity (geometrically accurate)
 
 ---
 
@@ -47,11 +23,10 @@ dataset.h5
 │
 ├── data/                                  # Main data group
 │   ├── 1/                                 # Sample 1 (sequential ID)
-│   │   ├── nodal_data                     # Dataset: (7, 1, nodes) float32
+│   │   ├── nodal_data                     # Dataset: (8, timesteps, nodes) float32
 │   │   │                                  # Only corner nodes included
-│   │   │                                  # Features: [x, y, z, tor_x_disp, tor_y_disp, tor_z_disp, tor_stress]
+│   │   │                                  # Features: [x, y, z, x_disp, y_disp, z_disp, stress, part number]
 │   │   ├── mesh_edge                      # Dataset: (2, edges) int64
-│   │   │                                  # Edges extracted from triangular faces
 │   │   │                                  # Node indices remapped to compact numbering
 │   │   └── metadata/                      # Sample-specific metadata group
 │   │       ├── [Attributes]
@@ -62,24 +37,24 @@ dataset.h5
 │   │       │   ├── num_cells: int         # Number of cells in source mesh
 │   │       │   ├── num_corner_nodes: int  # Same as num_nodes (corner nodes)
 │   │       │   └── num_total_nodes: int   # Total nodes in original FEA mesh
-│   │       ├── feature_min                # Dataset: (7,) float32 - per-feature minimums
-│   │       ├── feature_max                # Dataset: (7,) float32 - per-feature maximums
-│   │       ├── feature_mean               # Dataset: (7,) float32 - per-feature means
-│   │       └── feature_std                # Dataset: (7,) float32 - per-feature std devs
+│   │       ├── feature_min                # Dataset: (8,) float32 - per-feature minimums
+│   │       ├── feature_max                # Dataset: (8,) float32 - per-feature maximums
+│   │       ├── feature_mean               # Dataset: (8,) float32 - per-feature means
+│   │       └── feature_std                # Dataset: (8,) float32 - per-feature std devs
 │   ├── 2/                                 # Sample 2
 │   │   └── ...
 │   └── 2138/                              # Sample 2138
 │
 └── metadata/                              # Global metadata group
-    ├── feature_names                      # Dataset: (7,) variable-length string
+    ├── feature_names                      # Dataset: (8,) variable-length string
     │                                      # ['x_coord', 'y_coord', 'z_coord',
-    │                                      #  'tor_x_disp(mm)', 'tor_y_disp(mm)',
-    │                                      #  'tor_z_disp(mm)', 'tor_stress(MPa)']
+    │                                      #  'x_disp(mm)', 'y_disp(mm)',
+    │                                      #  'z_disp(mm)', 'stress(MPa)', 'Part No.']
     ├── normalization_params/              # Global normalization statistics
-    │   ├── min                            # Dataset: (7,) float32 - global minimums
-    │   ├── max                            # Dataset: (7,) float32 - global maximums
-    │   ├── mean                           # Dataset: (7,) float32 - global means
-    │   └── std                            # Dataset: (7,) float32 - global std devs
+    │   ├── min                            # Dataset: (8,) float32 - global minimums
+    │   ├── max                            # Dataset: (8,) float32 - global maximums
+    │   ├── mean                           # Dataset: (8,) float32 - global means
+    │   └── std                            # Dataset: (8,) float32 - global std devs
     └── splits/                            # Train/validation/test splits
         ├── train                          # Dataset: (N_train,) int64 - sample IDs
         ├── val                            # Dataset: (N_val,) int64 - sample IDs
@@ -96,33 +71,22 @@ dataset.h5
 **Shape**: `(num_features, num_timesteps, num_nodes)`
 **Dtype**: `float32`
 
-**Important**: `num_nodes` represents **corner nodes only** (not all FEA nodes).
-
 **Feature Order** (index-based):
 - `[0]` x_coord - X coordinate in 3D space
 - `[1]` y_coord - Y coordinate in 3D space
 - `[2]` z_coord - Z coordinate in 3D space
-- `[3]` tor_x_disp(mm) - Torsional displacement in X direction (mm)
-- `[4]` tor_y_disp(mm) - Torsional displacement in Y direction (mm)
-- `[5]` tor_z_disp(mm) - Torsional displacement in Z direction (mm)
-- `[6]` tor_stress(MPa) - Torsional stress (MPa)
+- `[3]` x_disp(mm) -  displacement in X direction (mm)
+- `[4]` y_disp(mm) -  displacement in Y direction (mm)
+- `[5]` z_disp(mm) -  displacement in Z direction (mm)
+- `[6]` stress(MPa) -  stress (MPa)
+- `[7]` Part number -  Part number
 
 **Typical Dimensions**:
-- Features: 7
-- Timesteps: 1
+- Features: 8
+- Timesteps: 100
 - Nodes: ~60,000-90,000 (varies by sample)
 
-**Example Access**:
-```python
-# Get all features for node 0 at timestep 0
-node_0_features = nodal_data[:, 0, 0]  # Shape: (7,)
 
-# Get stress values for all nodes at timestep 0
-stress = nodal_data[6, 0, :]  # Shape: (num_nodes,)
-
-# Get XYZ coordinates for all nodes
-xyz = nodal_data[:3, 0, :]  # Shape: (3, num_nodes)
-```
 
 ### 2. Mesh Edges
 
@@ -148,23 +112,6 @@ xyz = nodal_data[:3, 0, :]  # Shape: (3, num_nodes)
 3. Deduplicate across all faces
 4. Remap node indices to compact corner-node numbering
 
-**Typical Dimensions**:
-- Edges: ~180,000-260,000 (varies by sample)
-- Average edge-to-node ratio: **~3.0** (characteristic of triangular surface meshes)
-
-**Example Access**:
-```python
-source_nodes = mesh_edge[0, :]  # All source nodes
-target_nodes = mesh_edge[1, :]  # All target nodes
-
-# First edge: node mesh_edge[0, 0] connects to mesh_edge[1, 0]
-edge_0 = (mesh_edge[0, 0], mesh_edge[1, 0])
-
-# Check edge properties
-num_edges = mesh_edge.shape[1]
-has_self_loops = (mesh_edge[0] == mesh_edge[1]).any()  # Should be False
-properly_sorted = (mesh_edge[0] <= mesh_edge[1]).all()  # Should be True
-```
 
 ### 3. Sample Metadata
 
@@ -180,7 +127,7 @@ properly_sorted = (mesh_edge[0] <= mesh_edge[1]).all()  # Should be True
 - `num_corner_nodes`: Number of corner nodes (same as num_nodes)
 - `num_total_nodes`: Total nodes in original FEA mesh (including mid-edge)
 
-**Datasets** (all shape `(7,)`, dtype `float32`):
+**Datasets** (all shape `(8,)`, dtype `float32`):
 - `feature_min`: Per-feature minimum values for this sample
 - `feature_max`: Per-feature maximum values for this sample
 - `feature_mean`: Per-feature mean values for this sample
@@ -198,7 +145,7 @@ print(f"Reduction: {100 * (1 - meta['num_corner_nodes']/meta['num_total_nodes'])
 
 #### Feature Names
 **Path**: `metadata/feature_names`
-**Shape**: `(7,)`
+**Shape**: `(8,)`
 **Dtype**: Variable-length byte string
 
 **Usage**:
@@ -287,7 +234,7 @@ f = h5py.File('dataset.h5', 'r')
 
 # Load file-level info
 num_samples = f.attrs['num_samples']  # 2138
-num_features = f.attrs['num_features']  # 7
+num_features = f.attrs['num_features']  # 8
 num_timesteps = f.attrs['num_timesteps']  # 1
 
 # Load feature names
@@ -461,7 +408,7 @@ create_splits('dataset.h5', train_ratio=0.8, val_ratio=0.1, seed=42)
 | Total samples | 2,138 |
 | Total file size | 10.3 GB |
 | Avg per sample | 4.9 MB |
-| Features per node | 7 |
+| Features per node | 8 |
 | Timesteps | 1 |
 
 **Per-sample statistics:**
