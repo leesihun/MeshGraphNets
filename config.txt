@@ -11,7 +11,7 @@ output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/dataset.h5
+dataset_dir ./dataset/deforming_plate.h5
 norm_min    -0.7  # Normalization range minimum
 norm_max    0.7   # Normalization range maximum
 message_passing_num 15
@@ -23,3 +23,9 @@ num_workers 2
 std_noise   0.0000000001
 verbose     False
 '
+% Memory Optimization
+use_checkpointing   True
+'
+% World Edge Parameters
+use_world_edges         True
+world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (auto-computed)

@@ -58,7 +58,38 @@ class NodeBlock(nn.Module):
         
         x = self.net(collected_nodes)
         return Data(x=x, edge_attr=edge_attr, edge_index=graph.edge_index)
-       
-            
-            
-        
+
+class HybridNodeBlock(nn.Module):
+    """Node block that aggregates from both mesh and world edges."""
+
+    def __init__(self, custom_func: nn.Module):
+        super(HybridNodeBlock, self).__init__()
+        self.net = custom_func
+
+    def forward(self, graph):
+        # Aggregate mesh edges
+        mesh_edge_attr = graph.edge_attr
+        _, mesh_receivers = graph.edge_index
+        num_nodes = graph.num_nodes
+        mesh_agg = scatter(mesh_edge_attr, mesh_receivers, dim=0, dim_size=num_nodes, reduce='sum')
+
+        # Aggregate world edges (if present)
+        if (hasattr(graph, 'world_edge_attr') and hasattr(graph, 'world_edge_index')
+            and graph.world_edge_attr is not None and graph.world_edge_index.shape[1] > 0):
+            world_edge_attr = graph.world_edge_attr
+            _, world_receivers = graph.world_edge_index
+            world_agg = scatter(world_edge_attr, world_receivers, dim=0, dim_size=num_nodes, reduce='sum')
+        else:
+            world_agg = torch.zeros_like(mesh_agg)
+
+        # Concatenate node features with both aggregations
+        collected_nodes = torch.cat([graph.x, mesh_agg, world_agg], dim=-1)
+        x = self.net(collected_nodes)
+
+        return Data(
+            x=x,
+            edge_attr=mesh_edge_attr,
+            edge_index=graph.edge_index,
+            world_edge_attr=graph.world_edge_attr if hasattr(graph, 'world_edge_attr') else None,
+            world_edge_index=graph.world_edge_index if hasattr(graph, 'world_edge_index') else None
+        )

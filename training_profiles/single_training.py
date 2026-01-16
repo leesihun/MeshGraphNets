@@ -78,6 +78,8 @@ def single_worker(config):
     print(model)
     print('\n'*2)
     print("Model initialized successfully")
+    if config.get('use_checkpointing', False):
+        print("Gradient checkpointing: ENABLED")
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total_params:,}")

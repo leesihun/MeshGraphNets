@@ -2,8 +2,9 @@ import h5py
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from typing import Dict
+from typing import Dict, Optional, Set, Tuple
 from torch_geometric.data import Data
+from scipy.spatial import KDTree
 
 class MeshGraphDataset(Dataset):
 
@@ -14,8 +15,15 @@ class MeshGraphDataset(Dataset):
         self.input_dim = config.get('input_var')  # Physical features only (4)
         self.output_dim = config.get('output_var')  # Physical features only (4)
 
+        # World edge parameters
+        self.use_world_edges = config.get('use_world_edges', False)
+        self.world_radius_multiplier = config.get('world_radius_multiplier', 1.5)
+        self.world_edge_radius = None  # Computed from mesh statistics
+        self.min_edge_length = None    # Computed from first sample
+
         print(f"Loading MeshGraphDataset: {h5_file}")
         print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}")
+        print(f"  use_world_edges: {self.use_world_edges}")
 
         # Load sample IDs, timesteps, and normalization params
         with h5py.File(h5_file, 'r') as f:
@@ -59,7 +67,46 @@ class MeshGraphDataset(Dataset):
 
         print(f"Found {len(self.sample_ids)} samples")
         print(f"  num_timesteps: {self.num_timesteps}")
-        
+
+        if self.use_world_edges:
+            self._compute_world_edge_radius()
+
+    def _compute_world_edge_radius(self) -> None:
+        print('Computing world edge radius...')
+        num_samples = min(10, len(self.sample_ids))
+        min_lengths = []
+        with h5py.File(self.h5_file, 'r') as f:
+            for i in range(num_samples):
+                sid = self.sample_ids[i]
+                nd = f[f'data/{sid}/nodal_data'][:]
+                me = f[f'data/{sid}/mesh_edge'][:]
+                pos = nd[:3, 0, :].T
+                lens = np.linalg.norm(pos[me[1]] - pos[me[0]], axis=1)
+                min_lengths.append(np.min(lens))
+        self.min_edge_length = np.min(min_lengths)
+        self.world_edge_radius = self.world_radius_multiplier * self.min_edge_length
+        print(f'  min_edge_length: {self.min_edge_length:.6f}')
+        print(f'  world_edge_radius: {self.world_edge_radius:.6f}')
+
+    def _compute_world_edges(self, pos, mesh_edges):
+        if not self.world_edge_radius:
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+        tree = KDTree(pos)
+        pairs = tree.query_pairs(r=self.world_edge_radius, output_type='ndarray')
+        if len(pairs) == 0:
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+        mesh_set = {(int(mesh_edges[0,i]), int(mesh_edges[1,i])) for i in range(mesh_edges.shape[1])}
+        we = []
+        for s, r in pairs:
+            if (s, r) not in mesh_set: we.append([s, r])
+            if (r, s) not in mesh_set: we.append([r, s])
+        if not we:
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+        wei = np.array(we, dtype=np.int64).T
+        rel = pos[wei[1]] - pos[wei[0]]
+        dist = np.linalg.norm(rel, axis=1, keepdims=True)
+        return wei, np.concatenate([rel, dist], axis=1).astype(np.float32)
+
     def __len__(self) -> int:
         """
         Calculate total number of samples.
@@ -174,8 +221,8 @@ class MeshGraphDataset(Dataset):
         edge_index = torch.from_numpy(edge_index).long()
         edge_attr = torch.from_numpy(edge_attr_norm.astype(np.float32))
 
-        # Create PyG Data object
-        return Data(
+        # Create base Data object
+        graph_data = Data(
             x=x,
             y=y,
             pos=pos,
@@ -184,6 +231,20 @@ class MeshGraphDataset(Dataset):
             sample_id=sample_id,
             time_idx=time_idx if self.num_timesteps > 1 else None
         )
+
+        # Compute world edges if enabled
+        if self.use_world_edges:
+            world_edge_index, world_edge_attr = self._compute_world_edges(
+                pos.numpy() if isinstance(pos, torch.Tensor) else pos,
+                edge_index.numpy() if isinstance(edge_index, torch.Tensor) else edge_index
+            )
+            graph_data.world_edge_index = torch.from_numpy(world_edge_index).long()
+            graph_data.world_edge_attr = torch.from_numpy(world_edge_attr)
+        else:
+            graph_data.world_edge_index = torch.zeros((2, 0), dtype=torch.long)
+            graph_data.world_edge_attr = torch.zeros((0, 4), dtype=torch.float32)
+
+        return graph_data
 
     def split(self, train_ratio: float, val_ratio: float, test_ratio: float, seed: int = 42):
         """
@@ -231,6 +292,10 @@ class MeshGraphDataset(Dataset):
         train_dataset.norm_min = self.norm_min
         train_dataset.node_max = self.node_max
         train_dataset.node_min = self.node_min
+        train_dataset.use_world_edges = self.use_world_edges
+        train_dataset.world_radius_multiplier = self.world_radius_multiplier
+        train_dataset.world_edge_radius = self.world_edge_radius
+        train_dataset.min_edge_length = self.min_edge_length
 
         val_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         val_dataset.h5_file = self.h5_file
@@ -243,6 +308,10 @@ class MeshGraphDataset(Dataset):
         val_dataset.norm_min = self.norm_min
         val_dataset.node_max = self.node_max
         val_dataset.node_min = self.node_min
+        val_dataset.use_world_edges = self.use_world_edges
+        val_dataset.world_radius_multiplier = self.world_radius_multiplier
+        val_dataset.world_edge_radius = self.world_edge_radius
+        val_dataset.min_edge_length = self.min_edge_length
 
         test_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         test_dataset.h5_file = self.h5_file
@@ -255,6 +324,10 @@ class MeshGraphDataset(Dataset):
         test_dataset.norm_min = self.norm_min
         test_dataset.node_max = self.node_max
         test_dataset.node_min = self.node_min
+        test_dataset.use_world_edges = self.use_world_edges
+        test_dataset.world_radius_multiplier = self.world_radius_multiplier
+        test_dataset.world_edge_radius = self.world_edge_radius
+        test_dataset.min_edge_length = self.min_edge_length
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
 
