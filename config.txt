@@ -6,8 +6,8 @@ log_file_dir    train.log
 Dim1		2138 # number of parameters
 Dim2		1   # number of timesteps
 %   Dim3		95008 # num nodes, unused in GNN
-input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress
-output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress
+input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
+output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
@@ -25,6 +25,9 @@ verbose     False
 '
 % Memory Optimization
 use_checkpointing   True
+'
+% Node Type Parameters
+use_node_types  False    # Add one-hot encoded node types to node features
 '
 % World Edge Parameters
 use_world_edges         False

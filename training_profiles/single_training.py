@@ -36,6 +36,12 @@ def single_worker(config):
     if torch.cuda.is_available():
         print(f'After dataset load: {torch.cuda.memory_allocated()/1e9:.2f}GB')
 
+    # Update config with actual input dimension (includes node types if enabled)
+    if config.get('use_node_types', False) and dataset.num_node_types is not None:
+        actual_input_dim = config['input_var'] + dataset.num_node_types
+        print(f"  Node types enabled: input_var {config['input_var']} + {dataset.num_node_types} types = {actual_input_dim} total")
+        config['input_var'] = actual_input_dim
+
     # Divide the dataset into training, validation, and test sets
     print("\nSplitting dataset...")
     train_dataset, val_dataset, test_dataset = dataset.split(0.8, 0.1, 0.1)

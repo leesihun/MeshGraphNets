@@ -15,6 +15,10 @@ class MeshGraphDataset(Dataset):
         self.input_dim = config.get('input_var')  # Physical features only (4)
         self.output_dim = config.get('output_var')  # Physical features only (4)
 
+        # Node type parameters
+        self.use_node_types = config.get('use_node_types', False)
+        self.num_node_types = None  # Will be computed from dataset if node types exist
+
         # World edge parameters
         self.use_world_edges = config.get('use_world_edges', False)
         self.world_radius_multiplier = config.get('world_radius_multiplier', 1.5)
@@ -23,6 +27,7 @@ class MeshGraphDataset(Dataset):
 
         print(f"Loading MeshGraphDataset: {h5_file}")
         print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}")
+        print(f"  use_node_types: {self.use_node_types}")
         print(f"  use_world_edges: {self.use_world_edges}")
 
         # Load sample IDs, timesteps, and normalization params
@@ -68,8 +73,28 @@ class MeshGraphDataset(Dataset):
         print(f"Found {len(self.sample_ids)} samples")
         print(f"  num_timesteps: {self.num_timesteps}")
 
+        if self.use_node_types:
+            self._compute_node_type_info()
+
         if self.use_world_edges:
             self._compute_world_edge_radius()
+
+    def _compute_node_type_info(self) -> None:
+        """Compute the number of unique node types from the dataset."""
+        print('Computing node type information...')
+        with h5py.File(self.h5_file, 'r') as f:
+            # Collect unique node types from first few samples
+            # Node types are always the last feature
+            unique_types = set()
+            num_samples = min(10, len(self.sample_ids))
+            for i in range(num_samples):
+                sid = self.sample_ids[i]
+                nodal_data = f[f'data/{sid}/nodal_data'][:]
+                node_types = nodal_data[-1, 0, :].astype(np.int32)  # Last feature, first timestep
+                unique_types.update(node_types)
+
+            self.num_node_types = len(unique_types)
+            print(f'  Found {self.num_node_types} unique node types: {sorted(unique_types)}')
 
     def _compute_world_edge_radius(self) -> None:
         print('Computing world edge radius...')
@@ -162,8 +187,15 @@ class MeshGraphDataset(Dataset):
 
         # Load data from HDF5
         with h5py.File(self.h5_file, 'r') as f:
-            data = f[f'data/{sample_id}/nodal_data'][:]  # [7, time, nodes]
+            data = f[f'data/{sample_id}/nodal_data'][:]  # [7 or 8, time, nodes]
             edge_index = f[f'data/{sample_id}/mesh_edge'][:]  # [2, M]
+
+        # Extract node types if enabled (before transpose)
+        # Node types are always the last feature, constant across time
+        if self.use_node_types:
+            node_types = data[-1, 0, :].astype(np.int32)  # [nodes]
+        else:
+            node_types = None
 
         # Make edges bidirectional (like DeepMind's MeshGraphNets implementation)
         # Original: only (src, dst) where src < dst
@@ -206,6 +238,14 @@ class MeshGraphDataset(Dataset):
         # x_norm = (x_raw - self.node_mean) / self.node_std
         x_norm = ((x_raw - self.node_min) / (self.node_max - self.node_min)) * 2 - 1
         # Normalized to [-1, 1]
+
+        # Add node types if enabled
+        if self.use_node_types and node_types is not None:
+            # One-hot encode node types: [N] -> [N, num_node_types]
+            node_type_onehot = np.zeros((len(node_types), self.num_node_types), dtype=np.float32)
+            node_type_onehot[np.arange(len(node_types)), node_types] = 1.0
+            # Concatenate with physical features: [N, 4] + [N, num_node_types] = [N, 4+num_node_types]
+            x_norm = np.concatenate([x_norm, node_type_onehot], axis=1)
 
         # target_norm Need to be normalized to [norm_min, norm_max]
         feature_range = self.node_max - self.node_min
@@ -292,6 +332,8 @@ class MeshGraphDataset(Dataset):
         train_dataset.norm_min = self.norm_min
         train_dataset.node_max = self.node_max
         train_dataset.node_min = self.node_min
+        train_dataset.use_node_types = self.use_node_types
+        train_dataset.num_node_types = self.num_node_types
         train_dataset.use_world_edges = self.use_world_edges
         train_dataset.world_radius_multiplier = self.world_radius_multiplier
         train_dataset.world_edge_radius = self.world_edge_radius
@@ -308,6 +350,8 @@ class MeshGraphDataset(Dataset):
         val_dataset.norm_min = self.norm_min
         val_dataset.node_max = self.node_max
         val_dataset.node_min = self.node_min
+        val_dataset.use_node_types = self.use_node_types
+        val_dataset.num_node_types = self.num_node_types
         val_dataset.use_world_edges = self.use_world_edges
         val_dataset.world_radius_multiplier = self.world_radius_multiplier
         val_dataset.world_edge_radius = self.world_edge_radius
@@ -324,6 +368,8 @@ class MeshGraphDataset(Dataset):
         test_dataset.norm_min = self.norm_min
         test_dataset.node_max = self.node_max
         test_dataset.node_min = self.node_min
+        test_dataset.use_node_types = self.use_node_types
+        test_dataset.num_node_types = self.num_node_types
         test_dataset.use_world_edges = self.use_world_edges
         test_dataset.world_radius_multiplier = self.world_radius_multiplier
         test_dataset.world_edge_radius = self.world_edge_radius
