@@ -63,9 +63,7 @@ def main():
     import os
     # Display the current absolute path
     print(f"Current absolute path: {os.path.abspath('.')}")
-    # Display the .log directory
-    print(f"Log directory: {os.path.abspath(f'outputs/{str(config.get('gpu_ids'))}')}")
-
+    
     if use_distributed==False:
         single_worker(config)
         

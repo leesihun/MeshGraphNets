@@ -260,8 +260,8 @@ Training epoch log file
 Time: 2026-01-26 10:30:00
 Log file absolute path: /path/to/outputs/0/train.log
 <config.txt contents>
-Elapsed time: 123.45s Epoch 0 Train Loss: 1.2345e-02 Valid Loss: 1.3456e-02 LR: 1.0000e-04
-Elapsed time: 246.78s Epoch 1 Train Loss: 9.8765e-03 Valid Loss: 1.1234e-02 LR: 1.0000e-04
+Elapsed time: 123.45s Epoch 0 Train Loss: A.BCDe-02 Valid Loss: A.BCDe-02 LR: 1.0000e-04
+Elapsed time: 246.78s Epoch 1 Train Loss: A.BCDe-03 Valid Loss: A.BCDe-02 LR: 1.0000e-04
 ...
 ```
 
