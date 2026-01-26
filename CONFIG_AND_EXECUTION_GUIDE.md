@@ -2,27 +2,13 @@
 
 **Purpose**: This document provides complete instructions for running MeshGraphNets training with different hyperparameter configurations. It is designed for automated hyperparameter optimization by an LLM agent.
 
----
-
-## Table of Contents
-
-1. [Quick Start](#quick-start)
-2. [Configuration File Format](#configuration-file-format)
-3. [Complete Parameter Reference](#complete-parameter-reference)
-4. [Running the Script](#running-the-script)
-5. [Hyperparameter Optimization Guidelines](#hyperparameter-optimization-guidelines)
-6. [Output and Logging](#output-and-logging)
-7. [Common Issues and Solutions](#common-issues-and-solutions)
-
----
-
 ## Quick Start
 
 ### Minimal Steps to Run Training
 
-1. Edit `config.txt` with desired parameters
+1. Edit `config.txt` with desired parameters (Note that no other file except for './config.txt' is allowed)
 2. Run: `python MeshGraphNets_main.py`
-3. Monitor: Check `outputs/<gpu_id>/train.log` for progress
+3. Monitor: Check `outputs/<log_file_dir>` for progress
 
 ### Standard Configuration
 
@@ -66,35 +52,6 @@ world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (a
 display_testset True
 test_batch_idx  0, 1, 2, 3
 ```
-
----
-
-## Configuration File Format
-
-### Syntax Rules
-
-The config parser (`general_modules/load_config.py`) uses a custom format:
-
-| Syntax | Meaning |
-|--------|---------|
-| `key value` | Parameter assignment (tab or space separated) |
-| `% comment` | Line comment (entire line ignored) |
-| `# inline comment` | Inline comment (text after `#` ignored) |
-| `'` | Section separator (ignored, just for readability) |
-| `key value1, value2` | Comma-separated list |
-| `key value1 value2` | Space-separated list (parsed as array) |
-
-### Type Inference
-
-The parser automatically converts values:
-
-| Input | Parsed As | Example |
-|-------|-----------|---------|
-| `123` | `int` | `Batch_size 16` → `{'batch_size': 16}` |
-| `0.001` | `float` | `LearningR 0.001` → `{'learningr': 0.001}` |
-| `True` / `False` | `bool` | `verbose True` → `{'verbose': True}` |
-| `a, b, c` | `list` | `gpu_ids 0, 1` → `{'gpu_ids': [0, 1]}` |
-| Other | `str` (lowercase) | `mode Train` → `{'mode': 'train'}` |
 
 ---
 
@@ -273,70 +230,30 @@ def write_config(params: dict, config_path: str = "config.txt"):
 
 ### Key Hyperparameters for Optimization
 
-These are the most impactful parameters to tune:
+These are the only parameters to tune:
 
-| Parameter | Priority | Suggested Search Space | Impact |
-|-----------|----------|------------------------|--------|
-| `LearningR` | HIGH | [1e-5, 3e-5, 1e-4, 3e-4, 1e-3] | Convergence speed and stability |
-| `Latent_dim` | HIGH | [64, 128, 256, 512] | Model capacity |
-| `message_passing_num` | HIGH | [5, 10, 15, 20, 25] | Receptive field and depth |
-| `Batch_size` | MEDIUM | [1, 2, 4, 8, 16] | Training stability and speed |
-| `world_radius_multiplier` | MEDIUM | [1.0, 1.5, 2.0, 3.0] | Long-range interactions |
-| `std_noise` | LOW | [0, 0.001, 0.01, 0.1] | Regularization |
+'LearningR'
+'Latent_dim'
+'message_passing_num'
+'Batch_size'
 
-### Parameter Dependencies and Constraints
-
-1. **Batch Size vs GPU Memory**:
-   - Each sample uses ~5-8 GB VRAM
-   - With `use_checkpointing=True`, can use larger batches
-   - Keep the batch size < 8
-
-2. **Latent_dim vs Model Size**:
-   - Total params ≈ `6 * Latent_dim^2 * message_passing_num`
-   - Example: `Latent_dim=128, message_passing_num=15` → ~14M params
-   - Example: `Latent_dim=256, message_passing_num=15` → ~57M params
+Change these parameters and nothing else.
 
 ### Recommended Search Strategy
 
 **Phase 1: Coarse Search (fewer epochs)**
-```python
 coarse_grid = {
     'learning_rate': [2e-5, 1e-4, 1e-3],
     'latent_dim': [64, 128, 256],
     'message_passing_num': [10, 15, 20],
     'training_epochs': 100  # Quick evaluation
 }
-```
 
 **Phase 2: Fine-tuning (more epochs)**
-```python
-fine_grid = {
-    'learning_rate': [best_lr * 0.5, best_lr, best_lr * 2],
-    'latent_dim': [best_dim],
-    'message_passing_num': [best_mp - 2, best_mp, best_mp + 2],
-    'training_epochs': 500
-}
-```
 
 ---
 
-## Output and Logging
-
-### Output Directory Structure
-
-```
-outputs/
-├── <gpu_ids>/
-│   └── train.log          # Training log with epoch losses
-├── best_model.pth         # Best model checkpoint
-└── inference_results/     # Inference outputs (every 10 epochs)
-    └── epoch_<N>/
-        └── sample_<id>.h5
-```
-
-### Log File Format
-
-The `train.log` file contains:
+The result file file contains:
 
 ```
 Training epoch log file
@@ -372,23 +289,6 @@ def parse_log(log_path: str) -> list[dict]:
                 })
     return results
 ```
-
-### Checkpoint Format
-
-`best_model.pth` contains:
-
-```python
-{
-    'epoch': int,                    # Best epoch number
-    'model_state_dict': dict,        # Model weights
-    'optimizer_state_dict': dict,    # Optimizer state
-    'scheduler_state_dict': dict,    # LR scheduler state
-    'train_loss': float,             # Training loss at best epoch
-    'valid_loss': float              # Validation loss at best epoch
-}
-```
-
----
 
 ## Common Issues and Solutions
 
@@ -539,6 +439,8 @@ test_batch_idx  0, 1, 2, 3
 ---
 
 ## Summary for Hyperparameter Optimization Agent
+
+For each hyperparameter set,
 
 1. **Modify** `config.txt` with new hyperparameters
 2. **Run** `python MeshGraphNets_main.py`
