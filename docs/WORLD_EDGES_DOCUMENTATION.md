@@ -772,22 +772,22 @@ class HybridMeshGraphNet(nn.Module):
         self.node_encoder = nn.Sequential(
             nn.Linear(input_node_dim, latent_dim),
             nn.ReLU(),
-            nn.Linear(latent_dim, latent_dim),
-            nn.LayerNorm(latent_dim)
+            nn.LayerNorm(latent_dim),
+            nn.Linear(latent_dim, latent_dim)
         )
 
         self.mesh_edge_encoder = nn.Sequential(
             nn.Linear(input_mesh_edge_dim, latent_dim),
             nn.ReLU(),
-            nn.Linear(latent_dim, latent_dim),
-            nn.LayerNorm(latent_dim)
+            nn.LayerNorm(latent_dim),
+            nn.Linear(latent_dim, latent_dim)
         )
 
         self.world_edge_encoder = nn.Sequential(
             nn.Linear(input_world_edge_dim, latent_dim),
             nn.ReLU(),
-            nn.Linear(latent_dim, latent_dim),
-            nn.LayerNorm(latent_dim)
+            nn.LayerNorm(latent_dim),
+            nn.Linear(latent_dim, latent_dim)
         )
 
         # Processor blocks

@@ -123,7 +123,7 @@ def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu'
         module = nn.Sequential(
             nn.Linear(in_size, hidden_size), 
             activation_func,
-            nn.LayerNorm(normalized_shape=hidden_size),
+            # nn.LayerNorm(normalized_shape=hidden_size),
             nn.Linear(hidden_size, hidden_size),
             activation_func,
             nn.LayerNorm(normalized_shape=hidden_size),
