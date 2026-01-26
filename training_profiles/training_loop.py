@@ -1,6 +1,6 @@
 import tqdm
 import torch
-from general_modules.mesh_utils import save_inference_results
+from general_modules.mesh_utils_fast import save_inference_results_fast, ParallelVisualizer
 
 def train_epoch(model, dataloader, optimizer, device, config, epoch):
     model.train()
@@ -118,31 +118,60 @@ def validate_epoch(model, dataloader, device, config):
 def infer_model(model, dataloader, device, config, epoch):
     model.eval()
 
+    # Use GPU for triangle reconstruction if available
+    use_gpu = device.type == 'cuda' if hasattr(device, 'type') else (device != 'cpu')
+    mesh_device = device if use_gpu else 'cpu'
+
+    # Setup parallel visualization (4 workers for matplotlib rendering)
+    num_viz_workers = config.get('num_visualization_workers', 4)
+
     with torch.no_grad():
         total_loss = 0.0
         num_batches = 0
 
+        # Collect plot data for parallel processing
+        plot_data_queue = []
+
         pbar = tqdm.tqdm(dataloader)
         for batch_idx, graph in enumerate(pbar):
-            
+
             graph = graph.to(device)
             predicted, target = model(graph)
             errors = ((predicted - target) ** 2)
             loss = torch.mean(errors)  # MSE Loss
 
             # Update progress bar
-            mem_gb = torch.cuda.memory_allocated() / 1e9
+            mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
             pbar.set_postfix({'loss': f'{loss.item():.2e}', 'mem': f'{mem_gb:.1f}GB'})
 
             total_loss += loss.item()
             num_batches += 1
 
-            # Save results with mesh reconstruction
-            if batch_idx==1:
+            # Save results with GPU-accelerated mesh reconstruction
+            if batch_idx in config.get('test_batch_idx',[0]):
                 gpu_ids = str(config.get('gpu_ids'))
                 output_path = f'outputs/test/{gpu_ids}/{str(epoch)}/results_{batch_idx}.h5'
                 predicted_np = predicted.cpu().numpy() if hasattr(predicted, 'cpu') else predicted
                 target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
-                save_inference_results(output_path, graph, predicted_np, target_np)
+
+                # Use fast GPU-accelerated version, collect plot data
+                plot_data = save_inference_results_fast(
+                    output_path, graph, predicted_np, target_np,
+                    skip_visualization=True,  # Don't plot in main thread
+                    device=mesh_device
+                )
+
+                if plot_data:
+                    plot_data_queue.append(plot_data)
+
+        # Now do all visualizations in parallel (after inference loop completes)
+        if len(plot_data_queue) > 0:
+            print(f"\nGenerating {len(plot_data_queue)} visualizations in parallel with {num_viz_workers} workers...")
+
+            with ParallelVisualizer(num_workers=num_viz_workers) as visualizer:
+                for plot_data in plot_data_queue:
+                    visualizer.submit(plot_data)
+
+            print("All visualizations complete!")
 
     return total_loss / num_batches if num_batches > 0 else 0.0

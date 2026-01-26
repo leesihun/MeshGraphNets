@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    Train  # Train / Inference
-gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
+gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train.log
 %   Common params
 Dim1		2138 # number of parameters
@@ -11,24 +11,27 @@ output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/deforming_plate.h5
+dataset_dir ./dataset/dataset.h5
 norm_min    -0.7  # Normalization range minimum
 norm_max    0.7   # Normalization range maximum
 message_passing_num 15
 Training_epochs	2002
-Batch_size	4
+Batch_size	1
 LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
-std_noise   0.0000000001
+std_noise   0.01
 verbose     False
 '
 % Memory Optimization
 use_checkpointing   True
 '
 % Node Type Parameters
-use_node_types  True    # Add one-hot encoded node types to node features
+use_node_types  False    # Add one-hot encoded node types to node features
 '
 % World Edge Parameters
-use_world_edges         True
+use_world_edges         False
 world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (auto-computed)
+% Test set control
+display_testset True
+test_batch_idx  0, 1, 2, 3
