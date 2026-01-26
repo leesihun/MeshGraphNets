@@ -1,7 +1,7 @@
 model   MeshGraphNets
 mode    Train  # Train / Inference
 gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
-log_file_dir    train.log
+log_file_dir    train0.log
 %   Common params
 Dim1		2138 # number of parameters
 Dim2		1   # number of timesteps
@@ -27,10 +27,10 @@ verbose     False
 use_checkpointing   True
 '
 % Node Type Parameters
-use_node_types  False    # Add one-hot encoded node types to node features
+use_node_types  True    # Add one-hot encoded node types to node features
 '
 % World Edge Parameters
-use_world_edges         False
+use_world_edges         True
 world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (auto-computed)
 % Test set control
 display_testset True
