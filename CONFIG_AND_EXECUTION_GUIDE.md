@@ -462,6 +462,7 @@ verbose     False
 use_checkpointing   True
 use_node_types  False
 use_world_edges False
+world_radius_multiplier 1.5
 '
 display_testset True
 test_batch_idx  0, 1
@@ -529,6 +530,7 @@ verbose     False
 use_checkpointing   True
 use_node_types  False
 use_world_edges False
+world_radius_multiplier 1.5
 '
 display_testset True
 test_batch_idx  0, 1, 2, 3
