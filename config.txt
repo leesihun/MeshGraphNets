@@ -11,7 +11,7 @@ output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/dataset.h5
+dataset_dir ./dataset/deforming_plate.h5
 norm_min    -0.7  # Normalization range minimum
 norm_max    0.7   # Normalization range maximum
 message_passing_num 15
