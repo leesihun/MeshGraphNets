@@ -44,12 +44,11 @@ def train_worker(rank, world_size, config, gpu_ids):
     if torch.cuda.is_available() and rank == 0:
         print(f'After dataset load: {torch.cuda.memory_allocated()/1e9:.2f}GB')
 
-    # Update config with actual input dimension (includes node types if enabled)
+    # Pass num_node_types to config for model to compute input dimension
     if config.get('use_node_types', False) and dataset.num_node_types is not None:
-        actual_input_dim = config['input_var'] + dataset.num_node_types
+        config['num_node_types'] = dataset.num_node_types
         if rank == 0:
-            print(f"  Node types enabled: input_var {config['input_var']} + {dataset.num_node_types} types = {actual_input_dim} total")
-        config['input_var'] = actual_input_dim
+            print(f"  Node types enabled: {dataset.num_node_types} types will be added to input")
 
     # Divide the dataset into training, validation, and test sets
     if rank == 0:

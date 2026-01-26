@@ -69,12 +69,23 @@ class EncoderProcessorDecoder(nn.Module):
         self.config = config
 
         self.message_passing_num = config['message_passing_num']
-        self.node_input_size = config['input_var']
-        self.node_output_size = config['output_var']
         self.edge_input_size = config['edge_var']
         self.latent_dim = config['latent_dim']
         self.use_checkpointing = config.get('use_checkpointing', False)
         self.use_world_edges = config.get('use_world_edges', False)
+
+        # Compute actual node input size (physical features + optional node types)
+        base_input_size = config['input_var']
+        use_node_types = config.get('use_node_types', False)
+        num_node_types = config.get('num_node_types', 0)
+        if use_node_types and num_node_types > 0:
+            self.node_input_size = base_input_size + num_node_types
+            print(f"  Model input: {base_input_size} physical + {num_node_types} node types = {self.node_input_size}")
+        else:
+            self.node_input_size = base_input_size
+
+        # Output is always physical features only (node types don't change)
+        self.node_output_size = config['output_var']
 
         self.encoder = Encoder(
             self.edge_input_size, self.node_input_size, self.latent_dim,

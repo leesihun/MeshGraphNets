@@ -18,6 +18,7 @@ class MeshGraphDataset(Dataset):
         # Node type parameters
         self.use_node_types = config.get('use_node_types', False)
         self.num_node_types = None  # Will be computed from dataset if node types exist
+        self.node_type_to_idx = None  # Mapping from node type values to contiguous indices
 
         # World edge parameters
         self.use_world_edges = config.get('use_world_edges', False)
@@ -93,8 +94,13 @@ class MeshGraphDataset(Dataset):
                 node_types = nodal_data[-1, 0, :].astype(np.int32)  # Last feature, first timestep
                 unique_types.update(node_types)
 
+            # Create mapping from original node type values to contiguous indices
+            # e.g., {0: 0, 1: 1, 3: 2} for node types [0, 1, 3]
+            sorted_types = sorted(unique_types)
+            self.node_type_to_idx = {t: i for i, t in enumerate(sorted_types)}
             self.num_node_types = len(unique_types)
-            print(f'  Found {self.num_node_types} unique node types: {sorted(unique_types)}')
+            print(f'  Found {self.num_node_types} unique node types: {sorted_types}')
+            print(f'  Node type mapping: {self.node_type_to_idx}')
 
     def _compute_world_edge_radius(self) -> None:
         print('Computing world edge radius...')
@@ -241,9 +247,12 @@ class MeshGraphDataset(Dataset):
 
         # Add node types if enabled
         if self.use_node_types and node_types is not None:
+            # Map node types to contiguous indices using the precomputed mapping
+            # e.g., node type 3 -> index 2 if mapping is {0:0, 1:1, 3:2}
+            node_type_indices = np.array([self.node_type_to_idx[t] for t in node_types], dtype=np.int32)
             # One-hot encode node types: [N] -> [N, num_node_types]
             node_type_onehot = np.zeros((len(node_types), self.num_node_types), dtype=np.float32)
-            node_type_onehot[np.arange(len(node_types)), node_types] = 1.0
+            node_type_onehot[np.arange(len(node_types)), node_type_indices] = 1.0
             # Concatenate with physical features: [N, 4] + [N, num_node_types] = [N, 4+num_node_types]
             x_norm = np.concatenate([x_norm, node_type_onehot], axis=1)
 
@@ -334,6 +343,7 @@ class MeshGraphDataset(Dataset):
         train_dataset.node_min = self.node_min
         train_dataset.use_node_types = self.use_node_types
         train_dataset.num_node_types = self.num_node_types
+        train_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
         train_dataset.use_world_edges = self.use_world_edges
         train_dataset.world_radius_multiplier = self.world_radius_multiplier
         train_dataset.world_edge_radius = self.world_edge_radius
@@ -352,6 +362,7 @@ class MeshGraphDataset(Dataset):
         val_dataset.node_min = self.node_min
         val_dataset.use_node_types = self.use_node_types
         val_dataset.num_node_types = self.num_node_types
+        val_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
         val_dataset.use_world_edges = self.use_world_edges
         val_dataset.world_radius_multiplier = self.world_radius_multiplier
         val_dataset.world_edge_radius = self.world_edge_radius
@@ -370,6 +381,7 @@ class MeshGraphDataset(Dataset):
         test_dataset.node_min = self.node_min
         test_dataset.use_node_types = self.use_node_types
         test_dataset.num_node_types = self.num_node_types
+        test_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
         test_dataset.use_world_edges = self.use_world_edges
         test_dataset.world_radius_multiplier = self.world_radius_multiplier
         test_dataset.world_edge_radius = self.world_edge_radius
