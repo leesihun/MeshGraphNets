@@ -155,9 +155,10 @@ def infer_model(model, dataloader, device, config, epoch):
                 target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
 
                 # Use fast GPU-accelerated version, collect plot data
+                display_testset = config.get('display_testset', True)
                 plot_data = save_inference_results_fast(
                     output_path, graph, predicted_np, target_np,
-                    skip_visualization=True,  # Don't plot in main thread
+                    skip_visualization=not display_testset,
                     device=mesh_device
                 )
 
