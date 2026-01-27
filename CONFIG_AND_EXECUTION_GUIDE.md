@@ -6,7 +6,7 @@
 
 ### Minimal Steps to Run Training
 
-1. Edit `config.txt` with desired parameters (Note that no other file except for './config.txt' is allowed)
+1. Edit `config.txt` with desired parameters (**Note that no other file except for './config.txt' is allowed**)
 2. Run: `python MeshGraphNets_main.py`
 3. Monitor: Check `outputs/<log_file_dir>` for progress
 
