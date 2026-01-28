@@ -16,10 +16,10 @@ norm_min    -0.7  # Normalization range minimum
 norm_max    0.7   # Normalization range maximum
 message_passing_num 15
 Training_epochs	2002
-Batch_size	1
+Batch_size	20
 LearningR	0.0001
-Latent_dim	128	# MeshGraphNets latent dimension
-num_workers 2
+Latent_dim	64	# MeshGraphNets latent dimension
+num_workers 10
 std_noise   0.01
 verbose     False
 '
