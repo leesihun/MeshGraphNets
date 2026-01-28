@@ -2,13 +2,16 @@
 3D Dataset Visualization using Matplotlib
 
 Visualizes mesh as triangulated surface with physical field coloring.
+By default, shows a random timestep from the selected sample.
 
 Usage:
-    python visualize_dataset.py [sample_id] [--field stress|displacement|dx|dy|dz]
+    python visualize_dataset.py [sample_id] [--field stress|displacement|dx|dy|dz] [--timestep T]
 
-Example:
-    python visualize_dataset.py 1
-    python visualize_dataset.py 1 --field displacement
+Examples:
+    python visualize_dataset.py                          # Random sample, random timestep
+    python visualize_dataset.py 1                        # Sample 1, random timestep
+    python visualize_dataset.py 1 --field displacement   # Sample 1, displacement field, random timestep
+    python visualize_dataset.py 1 --timestep 5           # Sample 1, timestep 5
 """
 
 import sys
@@ -20,6 +23,14 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from collections import defaultdict
+import random
+
+
+def get_num_timesteps(h5_path, sample_id):
+    """Get the number of timesteps available for a sample."""
+    with h5py.File(h5_path, 'r') as f:
+        num_timesteps = f[f'data/{sample_id}/nodal_data'].shape[1]
+    return num_timesteps
 
 
 def load_sample(h5_path, sample_id, timestep=0):
@@ -169,14 +180,14 @@ def visualize_sample(h5_path, sample_id, field='stress', timestep=0):
 
 def main():
     parser = argparse.ArgumentParser(description='Visualize mesh dataset')
-    parser.add_argument('sample_id', nargs='?', default='1', help='Sample ID to visualize')
+    parser.add_argument('sample_id', nargs='?', default=None, help='Sample ID to visualize (default: random)')
     parser.add_argument('--field', default='stress',
                         choices=['stress', 'displacement', 'dx', 'dy', 'dz'],
                         help='Field to visualize')
     parser.add_argument('--dataset', default='dataset.h5',
                         help='Dataset filename (default: dataset.h5)')
-    parser.add_argument('--timestep', type=int, default=0,
-                        help='Timestep to visualize (default: 0)')
+    parser.add_argument('--timestep', type=int, default=None,
+                        help='Timestep to visualize (default: random)')
     args = parser.parse_args()
 
     # Get project root
@@ -187,15 +198,31 @@ def main():
         print(f"ERROR: Dataset not found at {h5_path}")
         sys.exit(1)
 
-    # Verify sample exists
+    # Get available samples
     with h5py.File(h5_path, 'r') as f:
         available_samples = sorted(f['data'].keys(), key=int)
-        if args.sample_id not in available_samples:
-            print(f"ERROR: Sample {args.sample_id} not found.")
+
+    # Determine sample_id (random if not specified)
+    if args.sample_id is None:
+        sample_id = random.choice(available_samples)
+    else:
+        sample_id = args.sample_id
+        if sample_id not in available_samples:
+            print(f"ERROR: Sample {sample_id} not found.")
             print(f"Available: {available_samples[:5]} ... {available_samples[-3:]}")
             sys.exit(1)
 
-    visualize_sample(h5_path, args.sample_id, field=args.field, timestep=args.timestep)
+    # Determine timestep (random if not specified)
+    num_timesteps = get_num_timesteps(h5_path, sample_id)
+    if args.timestep is not None:
+        timestep = args.timestep
+    else:
+        timestep = random.randint(0, num_timesteps - 1)
+
+    print(f"\nVisualizing Sample {sample_id}, Timestep {timestep}/{num_timesteps - 1}")
+    print(f"Field: {args.field}\n")
+
+    visualize_sample(h5_path, sample_id, field=args.field, timestep=timestep)
 
 
 if __name__ == "__main__":
