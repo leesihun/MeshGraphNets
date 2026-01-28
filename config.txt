@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    Train  # Train / Inference
-gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
+gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train0.log
 %   Common params
 %   Dim1		1000 # number of parameters
