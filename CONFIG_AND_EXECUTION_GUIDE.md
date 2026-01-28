@@ -10,7 +10,11 @@
 2. Run: `python MeshGraphNets_main.py`
 3. Monitor: Check `outputs/<log_file_dir>` for progress
 
-### Standard Configuration
+### Configuration
+
+** IMPORTANT ** 
+THE CONFIGURATIONI FILE MUST BE NAMED 'config.txt' LOCATED WITH 'MeshGraphNets_main.py'.
+THE MUST BE IN SIMPLE TEXT FILE, WITH EXACT NAME, PLACE
 
 config.txt
 ```
