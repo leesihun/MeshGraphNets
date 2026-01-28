@@ -22,11 +22,11 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from collections import defaultdict
 
 
-def load_sample(h5_path, sample_id):
+def load_sample(h5_path, sample_id, timestep=0):
     """Load a single mesh sample from H5 file."""
     with h5py.File(h5_path, 'r') as f:
         nodal_data = f[f'data/{sample_id}/nodal_data'][:]  # (7 or 8, timesteps, N)
-        nodal_data = nodal_data[:, 0, :].T  # (N, 7 or 8)
+        nodal_data = nodal_data[:, timestep, :].T  # (N, 7 or 8)
         edges = f[f'data/{sample_id}/mesh_edge'][:]  # (2, E)
         feature_names = [name.decode() for name in f['metadata/feature_names'][:]]
 
@@ -68,12 +68,12 @@ def find_triangles_from_edges(edges):
     return triangles
 
 
-def visualize_sample(h5_path, sample_id, field='stress'):
+def visualize_sample(h5_path, sample_id, field='stress', timestep=0):
     """
     Visualize mesh as triangulated surface.
     """
-    print(f"Loading sample {sample_id}...")
-    features, edges, feature_names = load_sample(h5_path, sample_id)
+    print(f"Loading sample {sample_id} at timestep {timestep}...")
+    features, edges, feature_names = load_sample(h5_path, sample_id, timestep=timestep)
 
     num_nodes = features.shape[0]
     num_edges = edges.shape[1]
@@ -82,10 +82,13 @@ def visualize_sample(h5_path, sample_id, field='stress'):
     print(f"  Edges: {num_edges:,}")
 
     # Extract coordinates and fields
-    coords = features[:, :3]  # (N, 3)
+    coords_orig = features[:, :3]  # (N, 3)
     dx, dy, dz = features[:, 3], features[:, 4], features[:, 5]
     stress = features[:, 6]
     displacement = np.sqrt(dx**2 + dy**2 + dz**2)
+
+    # Apply displacement to get deformed coordinates
+    coords = coords_orig + np.column_stack([dx, dy, dz])
 
     # Select field to visualize
     field_map = {
@@ -151,7 +154,7 @@ def visualize_sample(h5_path, sample_id, field='stress'):
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
-    ax.set_title(f'Sample {sample_id}: {label}')
+    ax.set_title(f'Sample {sample_id} (t={timestep}): {label}')
 
     # Add colorbar
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
@@ -170,11 +173,15 @@ def main():
     parser.add_argument('--field', default='stress',
                         choices=['stress', 'displacement', 'dx', 'dy', 'dz'],
                         help='Field to visualize')
+    parser.add_argument('--dataset', default='dataset.h5',
+                        help='Dataset filename (default: dataset.h5)')
+    parser.add_argument('--timestep', type=int, default=0,
+                        help='Timestep to visualize (default: 0)')
     args = parser.parse_args()
 
     # Get project root
     project_root = Path(__file__).parent.parent
-    h5_path = project_root / "dataset" / "dataset.h5"
+    h5_path = project_root / "dataset" / args.dataset
 
     if not h5_path.exists():
         print(f"ERROR: Dataset not found at {h5_path}")
@@ -188,7 +195,7 @@ def main():
             print(f"Available: {available_samples[:5]} ... {available_samples[-3:]}")
             sys.exit(1)
 
-    visualize_sample(h5_path, args.sample_id, field=args.field)
+    visualize_sample(h5_path, args.sample_id, field=args.field, timestep=args.timestep)
 
 
 if __name__ == "__main__":
