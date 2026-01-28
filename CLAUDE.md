@@ -78,7 +78,7 @@ Input Mesh → Encoder → Processor (15 GN blocks) → Decoder → Output Field
 ### Structure
 ```
 data/{sample_id}/
-  ├── nodal_data: (7, 1, num_nodes) - [x, y, z, disp_x, disp_y, disp_z, stress]
+  ├── nodal_data: (7 or 8, timesteps, num_nodes) - [x, y, z, disp_x, disp_y, disp_z, stress, (part_number)]
   ├── mesh_edge: (2, num_edges) - edge connectivity [source_nodes, target_nodes]
   └── metadata/ - sample statistics and metadata
 ```

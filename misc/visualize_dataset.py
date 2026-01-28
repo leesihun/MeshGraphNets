@@ -25,8 +25,8 @@ from collections import defaultdict
 def load_sample(h5_path, sample_id):
     """Load a single mesh sample from H5 file."""
     with h5py.File(h5_path, 'r') as f:
-        nodal_data = f[f'data/{sample_id}/nodal_data'][:]  # (7, 1, N)
-        nodal_data = nodal_data[:, 0, :].T  # (N, 7)
+        nodal_data = f[f'data/{sample_id}/nodal_data'][:]  # (7 or 8, timesteps, N)
+        nodal_data = nodal_data[:, 0, :].T  # (N, 7 or 8)
         edges = f[f'data/{sample_id}/mesh_edge'][:]  # (2, E)
         feature_names = [name.decode() for name in f['metadata/feature_names'][:]]
 

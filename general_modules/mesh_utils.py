@@ -139,18 +139,35 @@ def save_inference_results(output_path, graph, predicted, target):
         f.attrs['num_faces'] = faces.shape[0]
         f.attrs['num_features'] = predicted.shape[1]
 
-        # Store sample info if available
-        if hasattr(graph, 'sample_id'):
-            f.attrs['sample_id'] = int(graph.sample_id)
+        # Store sample info if available (handle tensor or scalar)
+        sample_id = None
+        time_idx = None
+        if hasattr(graph, 'sample_id') and graph.sample_id is not None:
+            sid = graph.sample_id
+            if hasattr(sid, 'cpu'):
+                sid = sid.cpu()
+            if hasattr(sid, 'numpy'):
+                sid = sid.numpy()
+            sample_id = int(sid) if np.isscalar(sid) or sid.ndim == 0 else int(sid[0])
+            f.attrs['sample_id'] = sample_id
+
         if hasattr(graph, 'time_idx') and graph.time_idx is not None:
-            f.attrs['time_idx'] = int(graph.time_idx)
+            tid = graph.time_idx
+            if hasattr(tid, 'cpu'):
+                tid = tid.cpu()
+            if hasattr(tid, 'numpy'):
+                tid = tid.numpy()
+            time_idx = int(tid) if np.isscalar(tid) or tid.ndim == 0 else int(tid[0])
+            f.attrs['time_idx'] = time_idx
 
     # Generate side-by-side visualization
     plot_path = output_path.replace('.h5', '.png')
-    plot_mesh_comparison(pos, faces, pred_face_values, target_face_values, plot_path)
+    plot_mesh_comparison(pos, faces, pred_face_values, target_face_values, plot_path,
+                         sample_id=sample_id, time_idx=time_idx)
 
 
-def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path, feature_idx=-1):
+def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
+                         feature_idx=-1, sample_id=None, time_idx=None):
     """
     Create side-by-side mesh plots comparing predicted vs ground truth.
 
@@ -164,6 +181,8 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path, fe
         target_values: (F, D) ground truth face values
         output_path: Path to save the PNG
         feature_idx: Which feature to visualize (default -1 = last, i.e. stress)
+        sample_id: Sample ID for plot title (optional)
+        time_idx: Timestep index for plot title (optional)
     """
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     from matplotlib.colors import Normalize
@@ -229,9 +248,20 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path, fe
     cbar = fig.colorbar(sm, ax=[ax1, ax2], shrink=0.6, aspect=20, pad=0.1)
     cbar.set_label('Value')
 
-    # Add error info
+    # Build title with sample/timestep info
     mae = np.abs(pred_colors - target_colors).mean()
-    fig.suptitle(f'Face-Averaged Comparison (MAE: {mae:.4f})', fontsize=12)
+    title_parts = []
+    if sample_id is not None:
+        title_parts.append(f'Sample {sample_id}')
+    if time_idx is not None:
+        title_parts.append(f'Timestep {time_idx}')
+
+    if title_parts:
+        title_str = ', '.join(title_parts) + f' | MAE: {mae:.4f}'
+    else:
+        title_str = f'Face-Averaged Comparison (MAE: {mae:.4f})'
+
+    fig.suptitle(title_str, fontsize=12)
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')

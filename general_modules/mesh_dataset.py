@@ -159,8 +159,9 @@ class MeshGraphDataset(Dataset):
         Load a single graph sample with optional temporal prediction.
 
         Dataset structure:
-            data/{sample_id}/nodal_data: [7, time, N]
-                Features: [x, y, z, x_disp, y_disp, z_disp, stress]
+            data/{sample_id}/nodal_data: [7 or 8, time, N]
+                Features: [x, y, z, x_disp, y_disp, z_disp, stress, (part_number)]
+                Part number (index 7) is optional and used for visualization
             data/{sample_id}/mesh_edge: [2, M]
 
         Single timestep (T=1):
@@ -179,7 +180,8 @@ class MeshGraphDataset(Dataset):
             idx: Sample index
 
         Returns:
-            Data object with normalized x, y, edge_attr, plus pos and edge_index
+            Data object with normalized x, y, edge_attr, plus pos, edge_index,
+            sample_id, time_idx, and optionally part_ids
         """
         # Calculate sample and timestep indices
         if self.num_timesteps > 1:
@@ -195,6 +197,17 @@ class MeshGraphDataset(Dataset):
         with h5py.File(self.h5_file, 'r') as f:
             data = f[f'data/{sample_id}/nodal_data'][:]  # [7 or 8, time, nodes]
             edge_index = f[f'data/{sample_id}/mesh_edge'][:]  # [2, M]
+
+        # Check if dataset has part information (8 features instead of 7)
+        num_features = data.shape[0]
+        has_part_info = num_features >= 8
+
+        # Extract part_ids for visualization (if available)
+        # Part number is at index 7, constant across time
+        if has_part_info:
+            part_ids = data[7, 0, :].astype(np.int32)  # [nodes]
+        else:
+            part_ids = None
 
         # Extract node types if enabled (before transpose)
         # Node types are always the last feature, constant across time
@@ -270,6 +283,12 @@ class MeshGraphDataset(Dataset):
         edge_index = torch.from_numpy(edge_index).long()
         edge_attr = torch.from_numpy(edge_attr_norm.astype(np.float32))
 
+        # Convert part_ids to tensor if available
+        if part_ids is not None:
+            part_ids_tensor = torch.from_numpy(part_ids).long()
+        else:
+            part_ids_tensor = None
+
         # Create base Data object
         graph_data = Data(
             x=x,
@@ -278,7 +297,8 @@ class MeshGraphDataset(Dataset):
             edge_index=edge_index,
             edge_attr=edge_attr,
             sample_id=sample_id,
-            time_idx=time_idx if self.num_timesteps > 1 else None
+            time_idx=time_idx if self.num_timesteps > 1 else None,
+            part_ids=part_ids_tensor
         )
 
         # Compute world edges if enabled

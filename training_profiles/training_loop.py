@@ -150,7 +150,42 @@ def infer_model(model, dataloader, device, config, epoch):
             # Save results with GPU-accelerated mesh reconstruction
             if batch_idx in config.get('test_batch_idx',[0]):
                 gpu_ids = str(config.get('gpu_ids'))
-                output_path = f'outputs/test/{gpu_ids}/{str(epoch)}/results_{batch_idx}.h5'
+
+                # Build filename with sample_id and time_idx for clarity
+                # Extract sample_id and time_idx from graph (handle tensor or scalar)
+                sample_id = None
+                time_idx = None
+                if hasattr(graph, 'sample_id') and graph.sample_id is not None:
+                    sid = graph.sample_id
+                    if hasattr(sid, 'cpu'):
+                        sid = sid.cpu()
+                    if hasattr(sid, 'item'):
+                        sample_id = sid.item()
+                    elif hasattr(sid, '__getitem__') and len(sid) > 0:
+                        sample_id = int(sid[0])
+                    else:
+                        sample_id = int(sid)
+
+                if hasattr(graph, 'time_idx') and graph.time_idx is not None:
+                    tid = graph.time_idx
+                    if hasattr(tid, 'cpu'):
+                        tid = tid.cpu()
+                    if hasattr(tid, 'item'):
+                        time_idx = tid.item()
+                    elif hasattr(tid, '__getitem__') and len(tid) > 0:
+                        time_idx = int(tid[0])
+                    else:
+                        time_idx = int(tid)
+
+                # Build descriptive filename
+                if sample_id is not None and time_idx is not None:
+                    filename = f'sample{sample_id}_t{time_idx}'
+                elif sample_id is not None:
+                    filename = f'sample{sample_id}'
+                else:
+                    filename = f'batch{batch_idx}'
+
+                output_path = f'outputs/test/{gpu_ids}/{str(epoch)}/{filename}.h5'
                 predicted_np = predicted.cpu().numpy() if hasattr(predicted, 'cpu') else predicted
                 target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
 

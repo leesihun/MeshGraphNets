@@ -186,11 +186,15 @@ def save_inference_results_fast(output_path, graph, predicted, target,
 
     Args:
         output_path: Path to save the HDF5 file
-        graph: PyG Data object with pos, edge_index, edge_attr
+        graph: PyG Data object with pos, edge_index, edge_attr, sample_id, time_idx
+               Optional: part_ids (N,) array of part assignments per node
         predicted: (N, D) numpy array of predicted node features
         target: (N, D) numpy array of target node features
         skip_visualization: If True, skip matplotlib rendering (much faster)
         device: 'cpu' or 'cuda' for GPU acceleration
+
+    Returns:
+        dict: Plot data for parallel visualization, or None if skip_visualization=True
     """
     # Ensure output directory exists
     output_dir = os.path.dirname(output_path)
@@ -201,6 +205,37 @@ def save_inference_results_fast(output_path, graph, predicted, target,
     pos = graph.pos.cpu().numpy() if hasattr(graph.pos, 'cpu') else np.array(graph.pos)
     edge_index_np = graph.edge_index.cpu().numpy() if hasattr(graph.edge_index, 'cpu') else np.array(graph.edge_index)
     edge_attr = graph.edge_attr.cpu().numpy() if hasattr(graph.edge_attr, 'cpu') else np.array(graph.edge_attr)
+
+    # Extract sample_id and time_idx (handle both scalar and tensor cases for batch_size > 1)
+    sample_id = None
+    time_idx = None
+    if hasattr(graph, 'sample_id') and graph.sample_id is not None:
+        sid = graph.sample_id
+        if hasattr(sid, 'cpu'):
+            sid = sid.cpu()
+        if hasattr(sid, 'numpy'):
+            sid = sid.numpy()
+        # For batch_size > 1, sample_id would be an array - take first element
+        sample_id = int(sid) if np.isscalar(sid) or sid.ndim == 0 else int(sid[0])
+
+    if hasattr(graph, 'time_idx') and graph.time_idx is not None:
+        tid = graph.time_idx
+        if hasattr(tid, 'cpu'):
+            tid = tid.cpu()
+        if hasattr(tid, 'numpy'):
+            tid = tid.numpy()
+        # For batch_size > 1, time_idx would be an array - take first element
+        time_idx = int(tid) if np.isscalar(tid) or tid.ndim == 0 else int(tid[0])
+
+    # Extract part_ids if available (for multi-part visualization)
+    part_ids = None
+    if hasattr(graph, 'part_ids') and graph.part_ids is not None:
+        pid = graph.part_ids
+        if hasattr(pid, 'cpu'):
+            pid = pid.cpu()
+        if hasattr(pid, 'numpy'):
+            pid = pid.numpy()
+        part_ids = np.array(pid).astype(np.int32)
 
     # GPU-accelerated triangle reconstruction
     if device != 'cpu' and torch.cuda.is_available():
@@ -214,6 +249,18 @@ def save_inference_results_fast(output_path, graph, predicted, target,
     pred_face_values = compute_face_values_gpu(faces, predicted, device=device)
     target_face_values = compute_face_values_gpu(faces, target, device=device)
 
+    # Compute face-level part IDs if node-level part_ids are available
+    face_part_ids = None
+    if part_ids is not None and faces.shape[0] > 0:
+        # Use majority vote of the 3 vertices for each face
+        v0_parts = part_ids[faces[:, 0]]
+        v1_parts = part_ids[faces[:, 1]]
+        v2_parts = part_ids[faces[:, 2]]
+        # Stack and find mode (most common) for each face
+        face_parts_stack = np.stack([v0_parts, v1_parts, v2_parts], axis=1)
+        # Simple approach: take the first vertex's part (they should all be the same for valid meshes)
+        face_part_ids = v0_parts
+
     # Save to HDF5 (fast I/O)
     with h5py.File(output_path, 'w') as f:
         # Node data
@@ -221,6 +268,8 @@ def save_inference_results_fast(output_path, graph, predicted, target,
         nodes_grp.create_dataset('pos', data=pos, dtype=np.float32)
         nodes_grp.create_dataset('predicted', data=predicted, dtype=np.float32)
         nodes_grp.create_dataset('target', data=target, dtype=np.float32)
+        if part_ids is not None:
+            nodes_grp.create_dataset('part_ids', data=part_ids, dtype=np.int32)
 
         # Edge data
         edges_grp = f.create_group('edges')
@@ -232,6 +281,8 @@ def save_inference_results_fast(output_path, graph, predicted, target,
         faces_grp.create_dataset('index', data=faces, dtype=np.int64)
         faces_grp.create_dataset('predicted', data=pred_face_values, dtype=np.float32)
         faces_grp.create_dataset('target', data=target_face_values, dtype=np.float32)
+        if face_part_ids is not None:
+            faces_grp.create_dataset('part_ids', data=face_part_ids, dtype=np.int32)
 
         # Metadata
         f.attrs['num_nodes'] = pos.shape[0]
@@ -239,31 +290,46 @@ def save_inference_results_fast(output_path, graph, predicted, target,
         f.attrs['num_faces'] = faces.shape[0]
         f.attrs['num_features'] = predicted.shape[1]
 
-        if hasattr(graph, 'sample_id'):
-            f.attrs['sample_id'] = int(graph.sample_id)
-        if hasattr(graph, 'time_idx') and graph.time_idx is not None:
-            f.attrs['time_idx'] = int(graph.time_idx)
+        if sample_id is not None:
+            f.attrs['sample_id'] = sample_id
+        if time_idx is not None:
+            f.attrs['time_idx'] = time_idx
+        if part_ids is not None:
+            f.attrs['num_parts'] = len(np.unique(part_ids))
 
     # Optional visualization (can be deferred or skipped)
     if not skip_visualization:
         plot_path = output_path.replace('.h5', '.png')
-        # Return plot data for parallel processing
+        # Return plot data for parallel processing with full metadata
         return {
             'plot_path': plot_path,
             'pos': pos,
             'faces': faces,
             'pred_values': pred_face_values,
-            'target_values': target_face_values
+            'target_values': target_face_values,
+            'sample_id': sample_id,
+            'time_idx': time_idx,
+            'face_part_ids': face_part_ids
         }
 
     return None
 
 
-def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path, feature_idx=-1):
+def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
+                         feature_idx=-1, sample_id=None, time_idx=None, face_part_ids=None):
     """
     Create side-by-side mesh plots comparing predicted vs ground truth.
 
-    This function is identical to the original but can be called in parallel.
+    Args:
+        pos: (N, 3) node positions
+        faces: (F, 3) triangular face indices
+        pred_values: (F, D) predicted face values
+        target_values: (F, D) ground truth face values
+        output_path: Path to save the PNG
+        feature_idx: Which feature to visualize (default -1 = last, i.e. stress)
+        sample_id: Sample ID for plot title (optional)
+        time_idx: Timestep index for plot title (optional)
+        face_part_ids: (F,) array of part IDs per face for edge coloring (optional)
     """
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     from matplotlib.colors import Normalize
@@ -285,6 +351,24 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path, fe
     # Build face vertex coordinates
     face_verts = pos[faces]  # (F, 3, 3)
 
+    # Determine edge colors based on part IDs (if available)
+    if face_part_ids is not None:
+        unique_parts = np.unique(face_part_ids)
+        num_parts = len(unique_parts)
+        if num_parts > 1:
+            # Create a colormap for parts (use a qualitative colormap)
+            part_cmap = plt.cm.tab10 if num_parts <= 10 else plt.cm.tab20
+            part_to_idx = {p: i for i, p in enumerate(unique_parts)}
+            part_indices = np.array([part_to_idx[p] for p in face_part_ids])
+            edge_colors = [part_cmap(i % 10 / 10) for i in part_indices]
+            edge_linewidth = 0.3
+        else:
+            edge_colors = 'none'
+            edge_linewidth = 0
+    else:
+        edge_colors = 'none'
+        edge_linewidth = 0
+
     # Create figure with two 3D subplots
     fig = plt.figure(figsize=(16, 7))
     ax1 = fig.add_subplot(121, projection='3d')
@@ -292,12 +376,14 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path, fe
 
     # Create Poly3DCollection for predicted
     pred_facecolors = cmap(norm(pred_colors))
-    poly1 = Poly3DCollection(face_verts, facecolors=pred_facecolors, edgecolors='none', linewidths=0)
+    poly1 = Poly3DCollection(face_verts, facecolors=pred_facecolors,
+                             edgecolors=edge_colors, linewidths=edge_linewidth)
     ax1.add_collection3d(poly1)
 
     # Create Poly3DCollection for ground truth
     target_facecolors = cmap(norm(target_colors))
-    poly2 = Poly3DCollection(face_verts, facecolors=target_facecolors, edgecolors='none', linewidths=0)
+    poly2 = Poly3DCollection(face_verts, facecolors=target_facecolors,
+                             edgecolors=edge_colors, linewidths=edge_linewidth)
     ax2.add_collection3d(poly2)
 
     # Set axis limits
@@ -327,9 +413,24 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path, fe
     cbar = fig.colorbar(sm, ax=[ax1, ax2], shrink=0.6, aspect=20, pad=0.1)
     cbar.set_label('Value')
 
-    # Add error info
+    # Build title with sample/timestep info
     mae = np.abs(pred_colors - target_colors).mean()
-    fig.suptitle(f'Face-Averaged Comparison (MAE: {mae:.4f})', fontsize=12)
+    title_parts = []
+    if sample_id is not None:
+        title_parts.append(f'Sample {sample_id}')
+    if time_idx is not None:
+        title_parts.append(f'Timestep {time_idx}')
+    if face_part_ids is not None:
+        num_parts = len(np.unique(face_part_ids))
+        if num_parts > 1:
+            title_parts.append(f'{num_parts} Parts')
+
+    if title_parts:
+        title_str = ', '.join(title_parts) + f' | MAE: {mae:.4f}'
+    else:
+        title_str = f'Face-Averaged Comparison (MAE: {mae:.4f})'
+
+    fig.suptitle(title_str, fontsize=12)
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
@@ -344,7 +445,10 @@ def _plot_worker(plot_data):
             plot_data['faces'],
             plot_data['pred_values'],
             plot_data['target_values'],
-            plot_data['plot_path']
+            plot_data['plot_path'],
+            sample_id=plot_data.get('sample_id'),
+            time_idx=plot_data.get('time_idx'),
+            face_part_ids=plot_data.get('face_part_ids')
         )
         return True
     except Exception as e:
