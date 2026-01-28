@@ -66,7 +66,7 @@ def single_worker(config):
     test_loader = DataLoader(
         test_dataset,
         batch_size=1,
-        shuffle=False,
+        shuffle=True,
         pin_memory=True
     )
     if torch.cuda.is_available():

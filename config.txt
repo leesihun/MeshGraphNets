@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    Train  # Train / Inference
-gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
+gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train0.log
 %   Common params
 %   Dim1		1000 # number of parameters
@@ -18,13 +18,13 @@ message_passing_num 15
 Training_epochs	2002
 Batch_size	20
 LearningR	0.0001
-Latent_dim	64	# MeshGraphNets latent dimension
+Latent_dim	32	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.01
 verbose     False
 '
 % Memory Optimization
-use_checkpointing   True
+use_checkpointing   False
 '
 % Node Type Parameters
 use_node_types  True    # Add one-hot encoded node types to node features
