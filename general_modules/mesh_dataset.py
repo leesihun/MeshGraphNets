@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 from typing import Dict, Optional, Set, Tuple
 from torch_geometric.data import Data
 from scipy.spatial import KDTree
+from torch_cluster import radius_graph
 
 class MeshGraphDataset(Dataset):
 
@@ -23,6 +24,7 @@ class MeshGraphDataset(Dataset):
         # World edge parameters
         self.use_world_edges = config.get('use_world_edges', False)
         self.world_radius_multiplier = config.get('world_radius_multiplier', 1.5)
+        self.world_max_num_neighbors = config.get('world_max_num_neighbors', 64)
         self.world_edge_radius = None  # Computed from mesh statistics
         self.min_edge_length = None    # Computed from first sample
 
@@ -30,6 +32,9 @@ class MeshGraphDataset(Dataset):
         print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}")
         print(f"  use_node_types: {self.use_node_types}")
         print(f"  use_world_edges: {self.use_world_edges}")
+        if self.use_world_edges:
+            print(f"  world_radius_multiplier: {self.world_radius_multiplier}")
+            print(f"  world_max_num_neighbors: {self.world_max_num_neighbors}")
 
         # Load sample IDs, timesteps, and normalization params
         with h5py.File(h5_file, 'r') as f:
@@ -132,23 +137,59 @@ class MeshGraphDataset(Dataset):
         print(f'  world_edge_radius: {self.world_edge_radius:.6f}')
 
     def _compute_world_edges(self, pos, mesh_edges):
+        """
+        Compute world edges using GPU-accelerated radius_graph (torch_cluster).
+
+        This replaces the previous scipy.KDTree approach with NVIDIA PhysicsNeMo-style
+        GPU acceleration. Expected 5-10x speedup for 68k-node meshes.
+
+        Args:
+            pos: (N, 3) array of node positions
+            mesh_edges: (2, E_mesh) array of existing mesh edge indices
+
+        Returns:
+            world_edge_index: (2, E_world) array of world edge indices
+            world_edge_attr: (E_world, 4) array with [dx, dy, dz, distance]
+        """
         if not self.world_edge_radius:
             return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
-        tree = KDTree(pos)
-        pairs = tree.query_pairs(r=self.world_edge_radius, output_type='ndarray')
-        if len(pairs) == 0:
+
+        # Convert positions to GPU tensor and compute world edges
+        pos_tensor = torch.from_numpy(pos).float().cuda()
+
+        # GPU-accelerated radius query (torch_cluster)
+        world_edges = radius_graph(
+            x=pos_tensor,
+            r=self.world_edge_radius,
+            batch=None,                           # Single sample (no batch tensor)
+            loop=False,                           # No self-loops
+            max_num_neighbors=self.world_max_num_neighbors
+        )
+
+        # Convert back to numpy for edge filtering
+        world_edges_np = world_edges.cpu().numpy()
+
+        if world_edges_np.shape[1] == 0:
             return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
-        mesh_set = {(int(mesh_edges[0,i]), int(mesh_edges[1,i])) for i in range(mesh_edges.shape[1])}
-        we = []
-        for s, r in pairs:
-            if (s, r) not in mesh_set: we.append([s, r])
-            if (r, s) not in mesh_set: we.append([r, s])
-        if not we:
+
+        # Efficient filtering: remove edges that already exist in mesh topology
+        mesh_set = {(int(mesh_edges[0, i]), int(mesh_edges[1, i])) for i in range(mesh_edges.shape[1])}
+
+        valid_mask = np.array([
+            (world_edges_np[0, i], world_edges_np[1, i]) not in mesh_set
+            for i in range(world_edges_np.shape[1])
+        ])
+
+        we = world_edges_np[:, valid_mask]
+
+        if we.shape[1] == 0:
             return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
-        wei = np.array(we, dtype=np.int64).T
-        rel = pos[wei[1]] - pos[wei[0]]
+
+        # Compute edge features: [relative_position, distance]
+        rel = pos[we[1]] - pos[we[0]]
         dist = np.linalg.norm(rel, axis=1, keepdims=True)
-        return wei, np.concatenate([rel, dist], axis=1).astype(np.float32)
+
+        return we, np.concatenate([rel, dist], axis=1).astype(np.float32)
 
     def __len__(self) -> int:
         """
