@@ -180,7 +180,7 @@ def compute_face_values_gpu(faces, node_values, device='cpu'):
 
 
 def save_inference_results_fast(output_path, graph, predicted, target,
-                                  skip_visualization=False, device='cpu'):
+                                  skip_visualization=False, device='cpu', feature_idx=-1):
     """
     Fast version of save_inference_results with GPU acceleration.
 
@@ -192,6 +192,7 @@ def save_inference_results_fast(output_path, graph, predicted, target,
         target: (N, D) numpy array of target node features
         skip_visualization: If True, skip matplotlib rendering (much faster)
         device: 'cpu' or 'cuda' for GPU acceleration
+        feature_idx: Which feature to visualize (default -1 = last feature)
 
     Returns:
         dict: Plot data for parallel visualization, or None if skip_visualization=True
@@ -309,7 +310,8 @@ def save_inference_results_fast(output_path, graph, predicted, target,
             'target_values': target_face_values,
             'sample_id': sample_id,
             'time_idx': time_idx,
-            'face_part_ids': face_part_ids
+            'face_part_ids': face_part_ids,
+            'feature_idx': feature_idx
         }
 
     return None
@@ -446,6 +448,7 @@ def _plot_worker(plot_data):
             plot_data['pred_values'],
             plot_data['target_values'],
             plot_data['plot_path'],
+            feature_idx=plot_data.get('feature_idx', -1),
             sample_id=plot_data.get('sample_id'),
             time_idx=plot_data.get('time_idx'),
             face_part_ids=plot_data.get('face_part_ids')

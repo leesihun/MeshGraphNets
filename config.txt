@@ -16,7 +16,7 @@ norm_min    -0.7  # Normalization range minimum
 norm_max    0.7   # Normalization range maximum
 message_passing_num 15
 Training_epochs	2002
-Batch_size	1000
+Batch_size	100
 LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10
@@ -35,3 +35,4 @@ world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (a
 % Test set control
 display_testset True
 test_batch_idx  0, 1, 2, 3
+plot_feature_idx    -2  # Feature index to visualize in plots (-1 = last feature, i.e., stress)

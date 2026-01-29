@@ -191,10 +191,12 @@ def infer_model(model, dataloader, device, config, epoch):
 
                 # Use fast GPU-accelerated version, collect plot data
                 display_testset = config.get('display_testset', True)
+                plot_feature_idx = config.get('plot_feature_idx', -1)
                 plot_data = save_inference_results_fast(
                     output_path, graph, predicted_np, target_np,
                     skip_visualization=not display_testset,
-                    device=mesh_device
+                    device=mesh_device,
+                    feature_idx=plot_feature_idx
                 )
 
                 if plot_data:
