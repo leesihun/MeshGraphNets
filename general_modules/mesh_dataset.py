@@ -483,6 +483,8 @@ class MeshGraphDataset(Dataset):
         train_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
         train_dataset.use_world_edges = self.use_world_edges
         train_dataset.world_radius_multiplier = self.world_radius_multiplier
+        train_dataset.world_max_num_neighbors = self.world_max_num_neighbors
+        train_dataset.world_edge_backend = self.world_edge_backend
         train_dataset.world_edge_radius = self.world_edge_radius
         train_dataset.min_edge_length = self.min_edge_length
         train_dataset.delta_mean = self.delta_mean
@@ -504,6 +506,8 @@ class MeshGraphDataset(Dataset):
         val_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
         val_dataset.use_world_edges = self.use_world_edges
         val_dataset.world_radius_multiplier = self.world_radius_multiplier
+        val_dataset.world_max_num_neighbors = self.world_max_num_neighbors
+        val_dataset.world_edge_backend = self.world_edge_backend
         val_dataset.world_edge_radius = self.world_edge_radius
         val_dataset.min_edge_length = self.min_edge_length
         val_dataset.delta_mean = self.delta_mean
@@ -525,6 +529,8 @@ class MeshGraphDataset(Dataset):
         test_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
         test_dataset.use_world_edges = self.use_world_edges
         test_dataset.world_radius_multiplier = self.world_radius_multiplier
+        test_dataset.world_max_num_neighbors = self.world_max_num_neighbors
+        test_dataset.world_edge_backend = self.world_edge_backend
         test_dataset.world_edge_radius = self.world_edge_radius
         test_dataset.min_edge_length = self.min_edge_length
         test_dataset.delta_mean = self.delta_mean
