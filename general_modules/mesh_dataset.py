@@ -55,13 +55,13 @@ class MeshGraphDataset(Dataset):
             # Load delta-specific normalization parameters if available
             # These are for state differences (target values) between timesteps
             norm_params = f['metadata/normalization_params']
-            if 'delta_min' in norm_params and 'delta_max' in norm_params:
-                self.delta_min = norm_params['delta_min'][:]
-                self.delta_max = norm_params['delta_max'][:]
-                print(f"  Using delta normalization params: min={self.delta_min}, max={self.delta_max}")
+            if 'delta_mean' in norm_params and 'delta_std' in norm_params:
+                self.delta_mean = norm_params['delta_mean'][:]
+                self.delta_std = norm_params['delta_std'][:]
+                print(f"  Using delta z-score normalization: mean={self.delta_mean}, std={self.delta_std}")
             else:
-                self.delta_min = None
-                self.delta_max = None
+                self.delta_mean = None
+                self.delta_std = None
                 print(f"  WARNING: No delta normalization params found, using fallback")
 
         # Extract stats for node features (indices 3:7 = physical fields)
@@ -283,12 +283,10 @@ class MeshGraphDataset(Dataset):
 
         # Normalize targets using delta-specific parameters if available
         # This ensures proper scaling for state differences between timesteps
-        if self.delta_min is not None and self.delta_max is not None:
-            # Per-feature min-max normalization to [-1, 1] using delta statistics
-            delta_range = self.delta_max - self.delta_min
-            # Avoid division by zero
-            delta_range = np.maximum(delta_range, 1e-8)
-            target_norm = ((target_delta - self.delta_min) / delta_range) * 2 - 1
+        if self.delta_mean is not None and self.delta_std is not None:
+            # Z-score (standardization) normalization: (x - mean) / std
+            # This handles varying delta magnitudes better than min-max
+            target_norm = (target_delta - self.delta_mean) / self.delta_std
         else:
             # Fallback: simple division by absolute feature range (old behavior)
             feature_range = self.node_max - self.node_min
@@ -389,8 +387,8 @@ class MeshGraphDataset(Dataset):
         train_dataset.world_radius_multiplier = self.world_radius_multiplier
         train_dataset.world_edge_radius = self.world_edge_radius
         train_dataset.min_edge_length = self.min_edge_length
-        train_dataset.delta_min = self.delta_min
-        train_dataset.delta_max = self.delta_max
+        train_dataset.delta_mean = self.delta_mean
+        train_dataset.delta_std = self.delta_std
 
         val_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         val_dataset.h5_file = self.h5_file
@@ -410,8 +408,8 @@ class MeshGraphDataset(Dataset):
         val_dataset.world_radius_multiplier = self.world_radius_multiplier
         val_dataset.world_edge_radius = self.world_edge_radius
         val_dataset.min_edge_length = self.min_edge_length
-        val_dataset.delta_min = self.delta_min
-        val_dataset.delta_max = self.delta_max
+        val_dataset.delta_mean = self.delta_mean
+        val_dataset.delta_std = self.delta_std
 
         test_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         test_dataset.h5_file = self.h5_file
@@ -431,8 +429,8 @@ class MeshGraphDataset(Dataset):
         test_dataset.world_radius_multiplier = self.world_radius_multiplier
         test_dataset.world_edge_radius = self.world_edge_radius
         test_dataset.min_edge_length = self.min_edge_length
-        test_dataset.delta_min = self.delta_min
-        test_dataset.delta_max = self.delta_max
+        test_dataset.delta_mean = self.delta_mean
+        test_dataset.delta_std = self.delta_std
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
 
