@@ -316,7 +316,7 @@ def save_inference_results_fast(output_path, graph, predicted, target,
 
 
 def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
-                         feature_idx=-1, sample_id=None, time_idx=None, face_part_ids=None):
+                         feature_idx=-2, sample_id=None, time_idx=None, face_part_ids=None):
     """
     Create side-by-side mesh plots comparing predicted vs ground truth.
 
