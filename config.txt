@@ -33,6 +33,7 @@ use_node_types  True    # Add one-hot encoded node types to node features
 use_world_edges         True
 world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (auto-computed)
 world_max_num_neighbors 64      # Max neighbors per node in world edge radius query (prevents edge explosion)
+world_edge_backend      scipy_kdtree   # Backend: torch_cluster (GPU, fast) or scipy_kdtree (CPU, fallback)
 % Test set control
 display_testset True
 test_batch_idx  0, 1, 2, 3

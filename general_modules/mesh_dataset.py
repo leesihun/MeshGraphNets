@@ -5,7 +5,13 @@ from torch.utils.data import Dataset
 from typing import Dict, Optional, Set, Tuple
 from torch_geometric.data import Data
 from scipy.spatial import KDTree
-from torch_cluster import radius_graph
+
+# Try to import torch_cluster for GPU acceleration; fall back to scipy.KDTree if unavailable
+try:
+    from torch_cluster import radius_graph
+    HAS_TORCH_CLUSTER = True
+except ImportError:
+    HAS_TORCH_CLUSTER = False
 
 class MeshGraphDataset(Dataset):
 
@@ -28,6 +34,16 @@ class MeshGraphDataset(Dataset):
         self.world_edge_radius = None  # Computed from mesh statistics
         self.min_edge_length = None    # Computed from first sample
 
+        # Determine which world edge backend to use
+        requested_backend = config.get('world_edge_backend', 'torch_cluster').lower()
+        if requested_backend == 'torch_cluster' and HAS_TORCH_CLUSTER:
+            self.world_edge_backend = 'torch_cluster'
+        elif requested_backend == 'scipy_kdtree' or not HAS_TORCH_CLUSTER:
+            self.world_edge_backend = 'scipy_kdtree'
+        else:
+            # Invalid backend requested, default to available option
+            self.world_edge_backend = 'torch_cluster' if HAS_TORCH_CLUSTER else 'scipy_kdtree'
+
         print(f"Loading MeshGraphDataset: {h5_file}")
         print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}")
         print(f"  use_node_types: {self.use_node_types}")
@@ -35,6 +51,7 @@ class MeshGraphDataset(Dataset):
         if self.use_world_edges:
             print(f"  world_radius_multiplier: {self.world_radius_multiplier}")
             print(f"  world_max_num_neighbors: {self.world_max_num_neighbors}")
+            print(f"  world_edge_backend: {self.world_edge_backend}")
 
         # Load sample IDs, timesteps, and normalization params
         with h5py.File(h5_file, 'r') as f:
@@ -138,10 +155,11 @@ class MeshGraphDataset(Dataset):
 
     def _compute_world_edges(self, pos, mesh_edges):
         """
-        Compute world edges using GPU-accelerated radius_graph (torch_cluster).
+        Compute world edges using either torch_cluster (GPU) or scipy.KDTree (CPU).
 
-        This replaces the previous scipy.KDTree approach with NVIDIA PhysicsNeMo-style
-        GPU acceleration. Expected 5-10x speedup for 68k-node meshes.
+        Supports two backends:
+        - 'torch_cluster': GPU-accelerated (5-10x faster for 68k nodes)
+        - 'scipy_kdtree': CPU-based fallback (original implementation)
 
         Args:
             pos: (N, 3) array of node positions
@@ -154,7 +172,17 @@ class MeshGraphDataset(Dataset):
         if not self.world_edge_radius:
             return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
 
-        # Convert positions to GPU tensor and compute world edges
+        if self.world_edge_backend == 'torch_cluster':
+            return self._compute_world_edges_torch_cluster(pos, mesh_edges)
+        else:
+            return self._compute_world_edges_scipy_kdtree(pos, mesh_edges)
+
+    def _compute_world_edges_torch_cluster(self, pos, mesh_edges):
+        """
+        Compute world edges using GPU-accelerated torch_cluster.radius_graph().
+        Expected 5-10x speedup for 68k-node meshes compared to scipy.KDTree.
+        """
+        # Convert positions to GPU tensor
         pos_tensor = torch.from_numpy(pos).float().cuda()
 
         # GPU-accelerated radius query (torch_cluster)
@@ -190,6 +218,35 @@ class MeshGraphDataset(Dataset):
         dist = np.linalg.norm(rel, axis=1, keepdims=True)
 
         return we, np.concatenate([rel, dist], axis=1).astype(np.float32)
+
+    def _compute_world_edges_scipy_kdtree(self, pos, mesh_edges):
+        """
+        Compute world edges using scipy.spatial.KDTree (CPU fallback).
+        Original implementation, slower but always available.
+        """
+        tree = KDTree(pos)
+        pairs = tree.query_pairs(r=self.world_edge_radius, output_type='ndarray')
+
+        if len(pairs) == 0:
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+
+        # Filter out existing mesh edges
+        mesh_set = {(int(mesh_edges[0, i]), int(mesh_edges[1, i])) for i in range(mesh_edges.shape[1])}
+        we = []
+        for s, r in pairs:
+            if (s, r) not in mesh_set:
+                we.append([s, r])
+            if (r, s) not in mesh_set:
+                we.append([r, s])
+
+        if not we:
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+
+        wei = np.array(we, dtype=np.int64).T
+        rel = pos[wei[1]] - pos[wei[0]]
+        dist = np.linalg.norm(rel, axis=1, keepdims=True)
+
+        return wei, np.concatenate([rel, dist], axis=1).astype(np.float32)
 
     def __len__(self) -> int:
         """
