@@ -12,7 +12,7 @@
 python MeshGraphNets_main.py
 
 # 3. Check results
-cat outputs/<gpu_id>/train.log
+cat outputs/<gpu_ids>/<log_file_dir>
 ```
 
 ---
@@ -21,7 +21,7 @@ cat outputs/<gpu_id>/train.log
 
 **CRITICAL**: Configuration rules are strict and non-negotiable:
 
-- **File name**: Must be `config.txt` (exact name, case-sensitive)
+- **File name**: Must be `config.txt` located with MeshGraphNets_main.py (exact name, case-sensitive, and location-sensitivye)
 - **Location**: Same directory as `MeshGraphNets_main.py`
 - **Format**: Plain text with custom syntax
   - Lines starting with `%` are comments

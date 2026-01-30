@@ -108,11 +108,65 @@ class MeshGraphDataset(Dataset):
         print(f"Found {len(self.sample_ids)} samples")
         print(f"  num_timesteps: {self.num_timesteps}")
 
+        # Compute z-score normalization statistics for node and edge features
+        self._compute_zscore_stats()
+
         if self.use_node_types:
             self._compute_node_type_info()
 
         if self.use_world_edges:
             self._compute_world_edge_radius()
+
+    def _compute_zscore_stats(self) -> None:
+        """Compute z-score normalization statistics (mean, std) for node and edge features."""
+        print('Computing z-score normalization statistics...')
+
+        # Sample a subset for efficiency
+        num_samples = min(50, len(self.sample_ids))
+
+        all_node_features = []
+        all_edge_features = []
+
+        with h5py.File(self.h5_file, 'r') as f:
+            for i in range(num_samples):
+                sid = self.sample_ids[i]
+                data = f[f'data/{sid}/nodal_data'][:]  # [features, time, nodes]
+                mesh_edge = f[f'data/{sid}/mesh_edge'][:]  # [2, edges]
+
+                # Sample timesteps for multi-timestep data
+                if self.num_timesteps > 1:
+                    timesteps = np.linspace(0, self.num_timesteps - 1, min(10, self.num_timesteps), dtype=int)
+                else:
+                    timesteps = [0]
+
+                for t in timesteps:
+                    # Node features: [disp_x, disp_y, disp_z, stress]
+                    node_feat = data[3:3+self.input_dim, t, :].T  # [N, 4]
+                    all_node_features.append(node_feat)
+
+                    # Edge features: [dx, dy, dz, distance]
+                    pos = data[:3, t, :].T  # [N, 3]
+                    # Bidirectional edges
+                    edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
+                    rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]
+                    dist = np.linalg.norm(rel_pos, axis=1, keepdims=True)
+                    edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
+                    all_edge_features.append(edge_feat)
+
+        # Compute statistics
+        all_node_features = np.vstack(all_node_features)
+        all_edge_features = np.vstack(all_edge_features)
+
+        self.node_mean = np.mean(all_node_features, axis=0).astype(np.float32)
+        self.node_std = np.std(all_node_features, axis=0).astype(np.float32)
+        self.node_std = np.maximum(self.node_std, 1e-8)  # Prevent division by zero
+
+        self.edge_mean = np.mean(all_edge_features, axis=0).astype(np.float32)
+        self.edge_std = np.std(all_edge_features, axis=0).astype(np.float32)
+        self.edge_std = np.maximum(self.edge_std, 1e-8)  # Prevent division by zero
+
+        print(f'  Node features - mean: {self.node_mean}, std: {self.node_std}')
+        print(f'  Edge features - mean: {self.edge_mean}, std: {self.edge_std}')
 
     def _compute_node_type_info(self) -> None:
         """Compute the number of unique node types from the dataset."""
@@ -362,11 +416,9 @@ class MeshGraphDataset(Dataset):
         distance = np.linalg.norm(relative_pos, axis=1, keepdims=True)  # [2M, 1]
         edge_attr_raw = np.concatenate([relative_pos, distance], axis=1)  # [2M, 4]
 
-        # Apply normalization
-        # Node features: min-max normalization to [-1, 1]
-        # x_norm = (x_raw - self.node_mean) / self.node_std
-        x_norm = ((x_raw - self.node_min) / (self.node_max - self.node_min)) * 2 - 1
-        # Normalized to [-1, 1]
+        # Apply z-score normalization to all features
+        # Node features: z-score normalization
+        x_norm = (x_raw - self.node_mean) / self.node_std
 
         # Add node types if enabled
         if self.use_node_types and node_types is not None:
@@ -379,19 +431,15 @@ class MeshGraphDataset(Dataset):
             # Concatenate with physical features: [N, 4] + [N, num_node_types] = [N, 4+num_node_types]
             x_norm = np.concatenate([x_norm, node_type_onehot], axis=1)
 
-        # Normalize targets using delta-specific parameters if available
-        # This ensures proper scaling for state differences between timesteps
+        # Target features: z-score normalization using delta-specific parameters
         if self.delta_mean is not None and self.delta_std is not None:
-            # Z-score (standardization) normalization: (x - mean) / std
-            # This handles varying delta magnitudes better than min-max
             target_norm = (target_delta - self.delta_mean) / self.delta_std
         else:
-            # Fallback: simple division by absolute feature range (old behavior)
-            feature_range = self.node_max - self.node_min
-            target_norm = target_delta / feature_range
+            # Fallback: use node stats
+            target_norm = (target_delta - self.node_mean) / self.node_std
 
-        # Edge features: no normalization (edge_mean/edge_std not implemented)
-        edge_attr_norm = edge_attr_raw
+        # Edge features: z-score normalization
+        edge_attr_norm = (edge_attr_raw - self.edge_mean) / self.edge_std
 
         # Convert to tensors
         pos = torch.from_numpy(pos.astype(np.float32))
@@ -489,6 +537,10 @@ class MeshGraphDataset(Dataset):
         train_dataset.min_edge_length = self.min_edge_length
         train_dataset.delta_mean = self.delta_mean
         train_dataset.delta_std = self.delta_std
+        train_dataset.node_mean = self.node_mean
+        train_dataset.node_std = self.node_std
+        train_dataset.edge_mean = self.edge_mean
+        train_dataset.edge_std = self.edge_std
 
         val_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         val_dataset.h5_file = self.h5_file
@@ -512,6 +564,10 @@ class MeshGraphDataset(Dataset):
         val_dataset.min_edge_length = self.min_edge_length
         val_dataset.delta_mean = self.delta_mean
         val_dataset.delta_std = self.delta_std
+        val_dataset.node_mean = self.node_mean
+        val_dataset.node_std = self.node_std
+        val_dataset.edge_mean = self.edge_mean
+        val_dataset.edge_std = self.edge_std
 
         test_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         test_dataset.h5_file = self.h5_file
@@ -535,6 +591,10 @@ class MeshGraphDataset(Dataset):
         test_dataset.min_edge_length = self.min_edge_length
         test_dataset.delta_mean = self.delta_mean
         test_dataset.delta_std = self.delta_std
+        test_dataset.node_mean = self.node_mean
+        test_dataset.node_std = self.node_std
+        test_dataset.edge_mean = self.edge_mean
+        test_dataset.edge_std = self.edge_std
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
 
