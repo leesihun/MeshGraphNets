@@ -166,6 +166,6 @@ def single_worker(config):
 
         # For each 10 epochs, test the model on the test set and save the results with the ground truth in a file
         if epoch % 10 == 0:
-            test_loss = infer_model(model, test_loader, device, config, epoch)
+            test_loss = infer_model(model, test_loader, device, config, epoch, dataset)
 
     print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")

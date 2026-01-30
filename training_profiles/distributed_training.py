@@ -212,7 +212,7 @@ def train_worker(rank, world_size, config, gpu_ids):
 
         # For each 10 epochs, test the model on the test set and save the results with the ground truth in a file
         if epoch % 10 == 0 and rank == 0:
-            test_loss = infer_model(model, test_loader, device, config, epoch)
+            test_loss = infer_model(model, test_loader, device, config, epoch, dataset)
 
     if rank == 0:
         print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")

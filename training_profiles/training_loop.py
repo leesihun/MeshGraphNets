@@ -115,7 +115,7 @@ def validate_epoch(model, dataloader, device, config):
     return total_loss / num_batches
 
 
-def infer_model(model, dataloader, device, config, epoch):
+def infer_model(model, dataloader, device, config, epoch, dataset=None):
     model.eval()
 
     # Use GPU for triangle reconstruction if available
@@ -124,6 +124,15 @@ def infer_model(model, dataloader, device, config, epoch):
 
     # Setup parallel visualization (4 workers for matplotlib rendering)
     num_viz_workers = config.get('num_visualization_workers', 4)
+
+    # Get denormalization parameters from dataset
+    delta_mean = None
+    delta_std = None
+    if dataset is not None:
+        delta_mean = dataset.delta_mean
+        delta_std = dataset.delta_std
+        if delta_mean is not None and delta_std is not None:
+            print(f"Using denormalization: delta_mean={delta_mean}, delta_std={delta_std}")
 
     with torch.no_grad():
         total_loss = 0.0
@@ -186,14 +195,26 @@ def infer_model(model, dataloader, device, config, epoch):
                     filename = f'batch{batch_idx}'
 
                 output_path = f'outputs/test/{gpu_ids}/{str(epoch)}/{filename}.h5'
+                
+                # Convert to numpy
                 predicted_np = predicted.cpu().numpy() if hasattr(predicted, 'cpu') else predicted
                 target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
+
+                # DENORMALIZE: Convert normalized deltas to actual physical deltas
+                if delta_mean is not None and delta_std is not None:
+                    import numpy as np
+                    predicted_denorm = predicted_np * delta_std + delta_mean
+                    target_denorm = target_np * delta_std + delta_mean
+                else:
+                    # Fallback: use normalized values
+                    predicted_denorm = predicted_np
+                    target_denorm = target_np
 
                 # Use fast GPU-accelerated version, collect plot data
                 display_testset = config.get('display_testset', True)
                 plot_feature_idx = config.get('plot_feature_idx', -1)
                 plot_data = save_inference_results_fast(
-                    output_path, graph, predicted_np, target_np,
+                    output_path, graph, predicted_denorm, target_denorm,
                     skip_visualization=not display_testset,
                     device=mesh_device,
                     feature_idx=plot_feature_idx

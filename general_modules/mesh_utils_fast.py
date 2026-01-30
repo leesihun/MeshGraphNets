@@ -343,6 +343,15 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
     # Extract the feature to visualize
     pred_colors = pred_values[:, feature_idx]
     target_colors = target_values[:, feature_idx]
+    
+    # Determine feature name and units
+    # Features: [disp_x, disp_y, disp_z, stress]
+    feature_names = ['Δ Disp X', 'Δ Disp Y', 'Δ Disp Z', 'Δ Stress']
+    feature_units = ['mm', 'mm', 'mm', 'MPa']
+    num_features = pred_values.shape[1]
+    actual_idx = feature_idx if feature_idx >= 0 else num_features + feature_idx
+    feature_name = feature_names[actual_idx] if actual_idx < len(feature_names) else f'Feature {actual_idx}'
+    feature_unit = feature_units[actual_idx] if actual_idx < len(feature_units) else ''
 
     # Use same color scale for both plots
     vmin = min(pred_colors.min(), target_colors.min())
@@ -409,11 +418,12 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
         ax.view_init(elev=30, azim=45)
         ax.set_box_aspect([x_range, y_range, z_range])
 
-    # Add colorbar
+    # Add colorbar with proper units
     sm = ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=[ax1, ax2], shrink=0.6, aspect=20, pad=0.1)
-    cbar.set_label('Value')
+    cbar_label = f'{feature_name} ({feature_unit})' if feature_unit else feature_name
+    cbar.set_label(cbar_label, fontsize=11)
 
     # Build title with sample/timestep info
     mae = np.abs(pred_colors - target_colors).mean()
@@ -428,11 +438,13 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
             title_parts.append(f'{num_parts} Parts')
 
     if title_parts:
-        title_str = ', '.join(title_parts) + f' | MAE: {mae:.4f}'
+        mae_str = f'{mae:.4f} {feature_unit}' if feature_unit else f'{mae:.4f}'
+        title_str = ', '.join(title_parts) + f' | MAE: {mae_str}'
     else:
-        title_str = f'Face-Averaged Comparison (MAE: {mae:.4f})'
+        mae_str = f'{mae:.4f} {feature_unit}' if feature_unit else f'{mae:.4f}'
+        title_str = f'Delta Values: {feature_name} (MAE: {mae_str})'
 
-    fig.suptitle(title_str, fontsize=12)
+    fig.suptitle(title_str, fontsize=13, weight='bold')
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
