@@ -47,8 +47,8 @@ edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
 dataset_dir ./dataset/deforming_plate.h5
-norm_min    -0.7  # Normalization range minimum
-norm_max    0.7   # Normalization range maximum
+%   norm_min    -0.7  # Normalization range minimum
+%   norm_max    0.7   # Normalization range maximum
 message_passing_num 15
 Training_epochs	50
 Batch_size	10
@@ -72,7 +72,7 @@ world_edge_backend      scipy_kdtree   # Backend: torch_cluster (GPU, fast) or s
 % Test set control
 display_testset True
 test_batch_idx  0, 1, 2, 3
-plot_feature_idx    -2  # Feature index to visualize in plots (-1 = last feature, i.e., stress)
+plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature, i.e., stress)
 ```
 
 ---
@@ -116,21 +116,23 @@ plot_feature_idx    -2  # Feature index to visualize in plots (-1 = last feature
 
 | Parameter | Type | Default | Valid Range | Description |
 |-----------|------|---------|-------------|-------------|
-| Training_epochs | int | 2002 | 1-10000 | Total epochs |
-| num_workers | int | 2 | 0-16 | DataLoader workers |
-| std_noise | float | 0.01 | 0-0.1 | Input augmentation noise std |
+| Training_epochs | int | 50 | 1-10000 | Total epochs |
+| num_workers | int | 10 | 0-16 | DataLoader workers |
+| std_noise | float | 1e-22 | 0-0.1 | Input augmentation noise std (effectively disabled) |
 | verbose | bool | False | - | Verbose logging |
-| norm_min | float | -0.7 | -1.0 to 0 | Normalization range min |
-| norm_max | float | 0.7 | 0 to 1.0 | Normalization range max |
+| norm_min | float | -0.7 | -1.0 to 0 | Normalization range min (optional, commented by default) |
+| norm_max | float | 0.7 | 0 to 1.0 | Normalization range max (optional, commented by default) |
 
 ### Feature Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| use_checkpointing | bool | True | Gradient checkpointing (reduces VRAM ~50%) |
-| use_node_types | bool | False | Add one-hot node types to features |
-| use_world_edges | bool | False | Enable radius-based collision edges |
-| world_radius_multiplier | float | 1.5 | World edge radius multiplier |
+| use_checkpointing | bool | False | Gradient checkpointing (reduces VRAM ~50%) |
+| use_node_types | bool | True | Add one-hot node types to features |
+| use_world_edges | bool | True | Enable radius-based collision edges |
+| world_radius_multiplier | float | 1.5 | World edge radius multiplier (r_world = multiplier × min_mesh_edge_length) |
+| world_max_num_neighbors | int | 64 | Max neighbors per node in world edge radius query (prevents edge explosion) |
+| world_edge_backend | str | scipy_kdtree | Backend for world edge computation: torch_cluster (GPU, fast) or scipy_kdtree (CPU, fallback) |
 
 ### Test Visualization
 
