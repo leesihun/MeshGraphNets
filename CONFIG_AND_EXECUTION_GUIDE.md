@@ -21,7 +21,7 @@ cat outputs/<gpu_ids>/<log_file_dir>
 
 **CRITICAL**: Configuration rules are strict and non-negotiable:
 
-- **File name**: Must be `config.txt` located with MeshGraphNets_main.py (exact name, case-sensitive, and location-sensitivye)
+- **File name**: Must be `config.txt` located with MeshGraphNets_main.py (exact name, case-sensitive, and location-sensitive)
 - **Location**: Same directory as `MeshGraphNets_main.py`
 - **Format**: Plain text with custom syntax
   - Lines starting with `%` are comments
@@ -34,43 +34,45 @@ cat outputs/<gpu_ids>/<log_file_dir>
 
 ```
 model   MeshGraphNets
-mode    Train
-gpu_ids 0      # -1=CPU, 0=GPU0, [0,1,2,3]=multi-GPU
-log_file_dir    train.log
+mode    Train  # Train / Inference
+gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
+log_file_dir    train0.log
+%   Common params
+%   Dim1		1000 # number of parameters
+%   Dim2		1   # number of timesteps
+%   Dim3		95008 # num nodes, unused in GNN
+input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
+output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
+edge_var    4   # dx, dy, dz, disp
 '
-% Dataset dimensions (informational)
-Dim1    2138   # Number of samples
-Dim2    1      # Timesteps per sample
-input_var   4  # Node features: x_disp, y_disp, z_disp, stress
-output_var  4  # Output features (same)
-edge_var    4  # Edge features: dx, dy, dz, distance (fixed)
-'
-% Network and training parameters
-dataset_dir ./dataset/dataset.h5
-norm_min    -0.7
-norm_max    0.7
+%   Network parameters
+dataset_dir ./dataset/deforming_plate.h5
+norm_min    -0.7  # Normalization range minimum
+norm_max    0.7   # Normalization range maximum
 message_passing_num 15
-Training_epochs 2002
-Batch_size  1
-LearningR   0.0001
-Latent_dim  128
-num_workers 2
-std_noise   0.01
+Training_epochs	50
+Batch_size	10
+LearningR	0.001
+Latent_dim	128	# MeshGraphNets latent dimension
+num_workers 10
+std_noise   0.0000000000000000000001
 verbose     False
 '
-% Memory optimization
-use_checkpointing   True
+% Memory Optimization
+use_checkpointing   False
 '
-% Feature toggles
-use_node_types  False    # Add one-hot node types to features
+% Node Type Parameters
+use_node_types  True    # Add one-hot encoded node types to node features
 '
-% World edges (collision detection)
-use_world_edges         False
-world_radius_multiplier 1.5     # r_world = multiplier × min_mesh_edge
-'
-% Test set visualization
+% World Edge Parameters
+use_world_edges         True
+world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (auto-computed)
+world_max_num_neighbors 64      # Max neighbors per node in world edge radius query (prevents edge explosion)
+world_edge_backend      scipy_kdtree   # Backend: torch_cluster (GPU, fast) or scipy_kdtree (CPU, fallback)
+% Test set control
 display_testset True
 test_batch_idx  0, 1, 2, 3
+plot_feature_idx    -2  # Feature index to visualize in plots (-1 = last feature, i.e., stress)
 ```
 
 ---
@@ -92,12 +94,12 @@ test_batch_idx  0, 1, 2, 3
 
 ### Core Parameters
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| model | str | MeshGraphNets | Model architecture (fixed) |
-| mode | str | Train | Train or Inference |
-| gpu_ids | int/list | 0 | -1=CPU, 0=GPU0, [0,1,2,3]=multi-GPU DDP |
-| log_file_dir | str | train.log | Log filename (saved to outputs/<gpu_ids>/) |
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| model | str | Model architecture to use for training or inference |
+| mode | str | Execution mode: Train for training, Inference for prediction |
+| gpu_ids | int/list | Device configuration: -1 for CPU execution, single integer for single GPU (e.g., 0 for GPU 0), or comma-separated list for multi-GPU DDP training (e.g., [0,1,2,3] for 4 GPUs) |
+| log_file_dir | str | Filename for training logs (saved to outputs/<gpu_ids>/ directory) |
 
 ### Dataset Parameters
 
@@ -167,66 +169,11 @@ gpu_ids -1
 
 ### Recommended Search Strategy
 
-**Phase 1: Coarse Grid Search (100 epochs)**
-```python
-coarse_grid = {
-    'LearningR': [2e-5, 1e-4, 1e-3],
-    'Latent_dim': [64, 128, 256],
-    'message_passing_num': [10, 15, 20],
-    'Batch_size': [1],
-    'Training_epochs': 100
-}
-```
+**Phase 1: Coarse LatinHyperCube Search (10 epochs, ~4, 8 variations)**
 
-**Phase 2: Fine-Tune Best Config (1000-2000 epochs)**
+**Phase 2: Fine-Tune Best Config (20 epochs, ~4, 8 variations)**
 
-### Programmatic Config Modification
-
-```python
-def write_config(params: dict, path: str = "config.txt"):
-    """Write config.txt with given hyperparameters."""
-    config = f"""model   MeshGraphNets
-mode    Train
-gpu_ids {params.get('gpu_ids', 0)}
-log_file_dir    train.log
-'
-% Common params
-Dim1    2138
-Dim2    1
-input_var   4
-output_var  4
-edge_var    4
-'
-% Network parameters
-dataset_dir {params.get('dataset_dir', './dataset/dataset.h5')}
-norm_min    {params.get('norm_min', -0.7)}
-norm_max    {params.get('norm_max', 0.7)}
-message_passing_num {params['message_passing_num']}
-Training_epochs {params['Training_epochs']}
-Batch_size  {params['Batch_size']}
-LearningR   {params['LearningR']}
-Latent_dim  {params['Latent_dim']}
-num_workers {params.get('num_workers', 2)}
-std_noise   {params.get('std_noise', 0.01)}
-verbose     False
-'
-% Memory Optimization
-use_checkpointing   {params.get('use_checkpointing', True)}
-'
-% Node Type Parameters
-use_node_types  {params.get('use_node_types', False)}
-'
-% World Edge Parameters
-use_world_edges         {params.get('use_world_edges', False)}
-world_radius_multiplier {params.get('world_radius_multiplier', 1.5)}
-'
-% Test set control
-display_testset {params.get('display_testset', True)}
-test_batch_idx  {params.get('test_batch_idx', '0, 1, 2, 3')}
-"""
-    with open(path, 'w') as f:
-        f.write(config)
-```
+### Programmatic Config Modification required
 
 ### Log Parsing
 
@@ -239,34 +186,6 @@ Log file absolute path: /path/to/outputs/0/train.log
 Elapsed time: 123.45s Epoch 0 Train Loss: 1.23e-02 Valid Loss: 1.45e-02 LR: 1.0000e-04
 Elapsed time: 246.78s Epoch 1 Train Loss: 9.87e-03 Valid Loss: 1.23e-02 LR: 1.0000e-04
 ...
-```
-
-Parse with regex:
-```python
-import re
-
-def parse_log(log_path: str) -> list[dict]:
-    """Extract training metrics from log file."""
-    results = []
-    pattern = r'Elapsed time: ([\d.]+)s Epoch (\d+) Train Loss: ([\de.-]+) Valid Loss: ([\de.-]+) LR: ([\de.-]+)'
-
-    with open(log_path, 'r') as f:
-        for line in f:
-            match = re.match(pattern, line)
-            if match:
-                results.append({
-                    'elapsed_time': float(match.group(1)),
-                    'epoch': int(match.group(2)),
-                    'train_loss': float(match.group(3)),
-                    'valid_loss': float(match.group(4)),
-                    'learning_rate': float(match.group(5))
-                })
-    return results
-
-# Get final validation loss
-metrics = parse_log('outputs/0/train.log')
-final_val_loss = metrics[-1]['valid_loss']  # Optimize this metric
-```
 
 ---
 
@@ -286,41 +205,6 @@ Best model checkpoint auto-saved to: `outputs/best_model.pth`
 
 ---
 
-## Example Configurations
-
-### Debug (Fast Iteration)
-```
-message_passing_num 5
-Training_epochs 50
-Batch_size  1
-LearningR   0.001
-Latent_dim  64
-```
-Use case: Quick code testing, architecture debugging
-
-### Standard (Baseline)
-```
-message_passing_num 15
-Training_epochs 2000
-Batch_size  1
-LearningR   0.0001
-Latent_dim  128
-```
-Use case: Default configuration, balanced performance/cost
-
-### High Capacity (Best Performance)
-```
-message_passing_num 20
-Training_epochs 2000
-Batch_size  1
-LearningR   0.0001
-Latent_dim  256
-gpu_ids 0, 1  # Multi-GPU recommended
-```
-Use case: Maximum model capacity, requires 2+ GPUs
-
----
-
 ## Troubleshooting
 
 | Issue | Symptoms | Solutions |
@@ -332,16 +216,3 @@ Use case: Maximum model capacity, requires 2+ GPUs
 
 ---
 
-## Memory Requirements
-
-Approximate VRAM usage per sample (~68k nodes, 206k edges):
-
-| Config | VRAM per Sample |
-|--------|-----------------|
-| Baseline (no checkpointing) | 5-8 GB |
-| With checkpointing (default) | 2-3 GB |
-
-**Recommendations**:
-- ≥16 GB VRAM: `Batch_size=1-4`, checkpointing optional
-- 8-16 GB VRAM: `Batch_size=1`, checkpointing required
-- <8 GB VRAM: Use multi-GPU or reduce `Latent_dim`

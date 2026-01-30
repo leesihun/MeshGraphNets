@@ -12,8 +12,8 @@ edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
 dataset_dir ./dataset/deforming_plate.h5
-norm_min    -0.7  # Normalization range minimum
-norm_max    0.7   # Normalization range maximum
+%   norm_min    -0.7  # Normalization range minimum
+%   norm_max    0.7   # Normalization range maximum
 message_passing_num 15
 Training_epochs	50
 Batch_size	10
