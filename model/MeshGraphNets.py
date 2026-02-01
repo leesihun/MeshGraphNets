@@ -12,7 +12,7 @@ def init_weights(m):
         # He init accounts for ReLU nonlinearity and prevents vanishing gradients
         init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
         # Scale down by 0.5 for additional stability with deep networks (15 GN blocks)
-        m.weight.data *= 0.5
+        # m.weight.data
         if m.bias is not None:
             init.zeros_(m.bias)
 

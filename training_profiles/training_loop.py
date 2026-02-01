@@ -39,7 +39,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
         loss.backward()
 
         # Gradient clipping to stabilize training with deep message passing
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
         if log_detailed and verbose:
             mem_4 = torch.cuda.memory_allocated() / 1e9

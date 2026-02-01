@@ -407,6 +407,12 @@ class MeshGraphDataset(Dataset):
             # Target delta: difference between next and current state
             target_delta = y_raw - x_raw  # [N, 4]
 
+        # Compute deformed position for world edge computation
+        # World edges should be computed on the CURRENT (deformed) geometry, not reference
+        # deformed_pos = reference_pos + displacement
+        displacement = x_raw[:, :3]  # [N, 3] - extract displacement components (x_disp, y_disp, z_disp)
+        deformed_pos = pos + displacement  # [N, 3] - actual mesh position at time t
+
         # Compute edge features (before normalization)
         # Edge features are computed for all edges (including reverse edges)
         # Reverse edges naturally get negated relative_pos since src/dst are swapped
@@ -467,9 +473,10 @@ class MeshGraphDataset(Dataset):
         )
 
         # Compute world edges if enabled
+        # IMPORTANT: Use deformed_pos (reference + displacement) for collision detection
         if self.use_world_edges:
             world_edge_index, world_edge_attr = self._compute_world_edges(
-                pos.numpy() if isinstance(pos, torch.Tensor) else pos,
+                deformed_pos,  # Use DEFORMED position (pos + displacement), not reference
                 edge_index.numpy() if isinstance(edge_index, torch.Tensor) else edge_index
             )
             graph_data.world_edge_index = torch.from_numpy(world_edge_index).long()
