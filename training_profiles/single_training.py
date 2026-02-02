@@ -9,7 +9,7 @@ from torch.utils.data.distributed import DistributedSampler
 from general_modules.data_loader import load_data
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
-from training_profiles.training_loop import train_epoch, validate_epoch, infer_model
+from training_profiles.training_loop import train_epoch, validate_epoch, test_model
 
 def single_worker(config):
     # Single GPU/CPU training
@@ -159,6 +159,6 @@ def single_worker(config):
 
         # For each 10 epochs, test the model on the test set and save the results with the ground truth in a file
         if epoch % 10 == 0:
-            test_loss = infer_model(model, test_loader, device, config, epoch, dataset)
+            test_loss = test_model(model, test_loader, device, config, epoch, dataset)
 
     print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")

@@ -11,26 +11,10 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
 
     pbar = tqdm.tqdm(dataloader)
     for batch_idx, graph in enumerate(pbar):
-        # Detailed memory logging for first 5 batches and every 100 batches
-        log_detailed = (batch_idx < 5) or (batch_idx % 100 == 0)
-
-        if log_detailed and verbose:
-            mem_1 = torch.cuda.memory_allocated() / 1e9
-            mem_reserved = torch.cuda.memory_reserved() / 1e9
-            tqdm.tqdm.write(f"\n=== Batch {batch_idx} ===")
-            tqdm.tqdm.write(f"1. Start: {mem_1:.2f}GB (reserved: {mem_reserved:.2f}GB)")
 
         graph = graph.to(device)
 
-        if log_detailed and verbose:
-            mem_2 = torch.cuda.memory_allocated() / 1e9
-            tqdm.tqdm.write(f"2. After .to(device): {mem_2:.2f}GB (+{mem_2-mem_1:.2f}GB)")
-
         predicted_acc, target_acc = model(graph)
-
-        if log_detailed and verbose:
-            mem_3 = torch.cuda.memory_allocated() / 1e9
-            tqdm.tqdm.write(f"3. After forward: {mem_3:.2f}GB (+{mem_3-mem_2:.2f}GB)")
 
         errors = ((predicted_acc - target_acc) ** 2)
         loss = torch.mean(errors) # MSE Loss
@@ -41,28 +25,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
         # Gradient clipping to stabilize training with deep message passing
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
-        if log_detailed and verbose:
-            mem_4 = torch.cuda.memory_allocated() / 1e9
-            tqdm.tqdm.write(f"4. After backward: {mem_4:.2f}GB (+{mem_4-mem_3:.2f}GB)")
-
         optimizer.step()
-
-        if log_detailed and verbose:
-            mem_5 = torch.cuda.memory_allocated() / 1e9
-            mem_reserved_end = torch.cuda.memory_reserved() / 1e9
-            tqdm.tqdm.write(f"5. After optimizer.step: {mem_5:.2f}GB (+{mem_5-mem_4:.2f}GB)")
-            tqdm.tqdm.write(f"6. Reserved memory: {mem_reserved_end:.2f}GB (leaked: {mem_reserved_end-mem_reserved:.2f}GB)")
-            tqdm.tqdm.write(f"7. Peak memory: {torch.cuda.max_memory_allocated()/1e9:.2f}GB")
-
-            # Try to force garbage collection
-            del graph
-            torch.cuda.empty_cache()
-            mem_after_gc = torch.cuda.memory_allocated() / 1e9
-            mem_reserved_after_gc = torch.cuda.memory_reserved() / 1e9
-            tqdm.tqdm.write(f"8. After torch.cuda.empty_cache(): {mem_after_gc:.2f}GB (reserved: {mem_reserved_after_gc:.2f}GB)\n")
-
-            if batch_idx >= 5 and verbose:
-                torch.cuda.reset_peak_memory_stats()
 
         # Update progress bar with current memory
         mem_gb = torch.cuda.memory_allocated() / 1e9
@@ -115,7 +78,7 @@ def validate_epoch(model, dataloader, device, config):
     return total_loss / num_batches
 
 
-def infer_model(model, dataloader, device, config, epoch, dataset=None):
+def test_model(model, dataloader, device, config, epoch, dataset=None):
     model.eval()
 
     # Use GPU for triangle reconstruction if available

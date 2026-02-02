@@ -272,22 +272,22 @@ class MeshGraphDataset(Dataset):
                     delta_min = np.zeros(self.output_dim, dtype=np.float32)
 
                     # Use sampled data from _compute_zscore_stats
+                    # Use existing file handle 'f' instead of opening a new one
                     num_samples = len(self.sample_ids)
-                    with h5py.File(self.h5_file, 'r') as f_read:
-                        all_deltas = [[] for _ in range(self.output_dim)]
-                        for i in range(num_samples):
-                            sid = self.sample_ids[i]
-                            data = f_read[f'data/{sid}/nodal_data'][:]
-                            if self.num_timesteps > 1:
-                                delta_timesteps = np.linspace(0, self.num_timesteps - 2,
-                                                                min(10, self.num_timesteps - 1), dtype=int)
-                                for t in delta_timesteps:
-                                    for feat_idx in range(self.output_dim):
-                                        delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
-                                        all_deltas[feat_idx].append(delta)
-                            else:
+                    all_deltas = [[] for _ in range(self.output_dim)]
+                    for i in range(num_samples):
+                        sid = self.sample_ids[i]
+                        data = f[f'data/{sid}/nodal_data'][:]
+                        if self.num_timesteps > 1:
+                            delta_timesteps = np.linspace(0, self.num_timesteps - 2,
+                                                            min(10, self.num_timesteps - 1), dtype=int)
+                            for t in delta_timesteps:
                                 for feat_idx in range(self.output_dim):
-                                    all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
+                                    delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
+                                    all_deltas[feat_idx].append(delta)
+                        else:
+                            for feat_idx in range(self.output_dim):
+                                all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
 
                     for feat_idx in range(self.output_dim):
                         deltas = np.concatenate(all_deltas[feat_idx])
