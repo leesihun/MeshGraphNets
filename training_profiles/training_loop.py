@@ -5,9 +5,11 @@ from general_modules.mesh_utils_fast import save_inference_results_fast, Paralle
 def train_epoch(model, dataloader, optimizer, device, config, epoch):
     model.train()
     total_loss = 0.0
+    total_grad_norm = 0.0
     num_batches = 0
 
     verbose = config.get('verbose')
+    monitor_gradients = config.get('monitor_gradients', True)
 
     pbar = tqdm.tqdm(dataloader)
     for batch_idx, graph in enumerate(pbar):
@@ -22,22 +24,58 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
         optimizer.zero_grad()
         loss.backward()
 
+        # Compute gradient norm BEFORE clipping for diagnostics
+        if monitor_gradients:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
+            total_grad_norm += grad_norm.item()
+
+            # Detailed gradient stats for first batch and periodically
+            if (batch_idx == 0 or batch_idx % 50 == 0) and verbose:
+                layer_grad_stats = []
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_mean = param.grad.abs().mean().item()
+                        grad_max = param.grad.abs().max().item()
+                        if grad_mean > 1e-10:  # Only show non-zero gradients
+                            layer_grad_stats.append(f"{name}: mean={grad_mean:.2e}, max={grad_max:.2e}")
+
+                if layer_grad_stats:
+                    tqdm.tqdm.write(f"\n=== Gradient Stats (Batch {batch_idx}) ===")
+                    tqdm.tqdm.write(f"Total grad norm: {grad_norm.item():.2e}")
+                    tqdm.tqdm.write("\nPer-layer gradients (top 5):")
+                    for stat in layer_grad_stats[:5]:
+                        tqdm.tqdm.write(f"  {stat}")
+                    tqdm.tqdm.write("")
+
         # Gradient clipping to stabilize training with deep message passing
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
         optimizer.step()
 
-        # Update progress bar with current memory
+        # Update progress bar with current memory and gradient norm
         mem_gb = torch.cuda.memory_allocated() / 1e9
         peak_gb = torch.cuda.max_memory_allocated() / 1e9
-        pbar.set_postfix({
+        postfix = {
             'loss': f'{loss.item():.2e}',
             'mem': f'{mem_gb:.1f}GB',
             'peak': f'{peak_gb:.1f}GB'
-        })
+        }
+        if monitor_gradients:
+            postfix['grad'] = f'{grad_norm.item():.2e}'
+        pbar.set_postfix(postfix)
 
         total_loss += loss.item()
         num_batches += 1
+
+    avg_grad_norm = total_grad_norm / num_batches if num_batches > 0 else 0.0
+
+    # Print gradient summary for the epoch
+    if monitor_gradients and num_batches > 0:
+        tqdm.tqdm.write(f"Epoch {epoch} avg gradient norm: {avg_grad_norm:.2e}")
+        if avg_grad_norm < 1e-6:
+            tqdm.tqdm.write("  ⚠️  WARNING: Very small gradients detected (< 1e-6) - possible vanishing gradient problem!")
+        elif avg_grad_norm > 1e2:
+            tqdm.tqdm.write("  ⚠️  WARNING: Very large gradients detected (> 100) - possible exploding gradient problem!")
 
     return total_loss / num_batches
 

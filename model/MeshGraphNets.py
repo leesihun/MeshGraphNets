@@ -8,13 +8,11 @@ from model.checkpointing import process_with_checkpointing
 
 def init_weights(m):
     if isinstance(m, nn.Linear):
-        # Use He initialization with conservative scaling for stability with high dimensions
-        # He init accounts for ReLU nonlinearity and prevents vanishing gradients
-        init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-        m.weight.data *= 0.5 
-        # Scale down by 0.5 for additional stability with deep networks (15 GN blocks)
+        # Xavier works better for SiLU/Swish since it doesn't assume ReLU zeroing
+        init.xavier_uniform_(m.weight)
         if m.bias is not None:
             init.zeros_(m.bias)
+
 
 class MeshGraphNets(nn.Module):
     def __init__(self, config, device: str):
