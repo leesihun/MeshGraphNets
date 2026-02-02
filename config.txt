@@ -14,7 +14,7 @@ edge_var    4   # dx, dy, dz, disp
 dataset_dir ./dataset/deforming_plate_100.h5
 %   norm_min    -0.7  # Normalization range minimum
 %   norm_max    0.7   # Normalization range maximum
-message_passing_num 5
+message_passing_num 20
 Training_epochs	500
 Batch_size	1
 LearningR	0.0001
