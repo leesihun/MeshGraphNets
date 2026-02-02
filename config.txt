@@ -17,7 +17,7 @@ dataset_dir ./dataset/deforming_plate_100.h5
 message_passing_num 10
 Training_epochs	50
 Batch_size	10
-LearningR	0.0001
+LearningR	0.001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.0001
