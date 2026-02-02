@@ -11,6 +11,7 @@ def init_weights(m):
         # Use He initialization with conservative scaling for stability with high dimensions
         # He init accounts for ReLU nonlinearity and prevents vanishing gradients
         init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+        m.weight.data *= 0.5 
         # Scale down by 0.5 for additional stability with deep networks (15 GN blocks)
         if m.bias is not None:
             init.zeros_(m.bias)
@@ -127,15 +128,17 @@ def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu'
             activation_func,
             nn.Linear(hidden_size, hidden_size),
             activation_func,
-            nn.LayerNorm(normalized_shape=hidden_size),
-            nn.Linear(hidden_size, out_size)
+            nn.Linear(hidden_size, out_size),
+            nn.LayerNorm(normalized_shape=out_size),
         )
     elif decoder:
         module = nn.Sequential(
             nn.Linear(in_size, hidden_size),
             activation_func,
+            nn.LayerNorm(normalized_shape=hidden_size),
             nn.Linear(hidden_size, hidden_size),
             activation_func,
+            nn.LayerNorm(normalized_shape=hidden_size),
             nn.Linear(hidden_size, out_size)
         )
 

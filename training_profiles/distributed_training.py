@@ -138,8 +138,8 @@ def train_worker(rank, world_size, config, gpu_ids):
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
-        factor=0.8,
-        patience=20,
+        factor=0.5,
+        patience=2,
         min_lr=1e-8
     )
     if rank == 0:
