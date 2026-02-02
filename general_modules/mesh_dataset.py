@@ -703,12 +703,18 @@ class MeshGraphDataset(Dataset):
         # Compute world edges if enabled
         # IMPORTANT: Use deformed_pos (reference + displacement) for collision detection
         if self.use_world_edges:
-            world_edge_index, world_edge_attr = self._compute_world_edges(
+            world_edge_index, world_edge_attr_raw = self._compute_world_edges(
                 deformed_pos,  # Use DEFORMED position (pos + displacement), not reference
                 edge_index.numpy() if isinstance(edge_index, torch.Tensor) else edge_index
             )
+            # Normalize world edge features using the same statistics as mesh edges
+            # This fixes the scale mismatch between normalized mesh edges and raw world edges
+            if world_edge_attr_raw.shape[0] > 0:
+                world_edge_attr_norm = (world_edge_attr_raw - self.edge_mean) / self.edge_std
+            else:
+                world_edge_attr_norm = world_edge_attr_raw
             graph_data.world_edge_index = torch.from_numpy(world_edge_index).long()
-            graph_data.world_edge_attr = torch.from_numpy(world_edge_attr)
+            graph_data.world_edge_attr = torch.from_numpy(world_edge_attr_norm.astype(np.float32))
         else:
             graph_data.world_edge_index = torch.zeros((2, 0), dtype=torch.long)
             graph_data.world_edge_attr = torch.zeros((0, 4), dtype=torch.float32)

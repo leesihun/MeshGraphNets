@@ -107,8 +107,15 @@ class EncoderProcessorDecoder(nn.Module):
         """Enable or disable gradient checkpointing."""
         self.use_checkpointing = enabled
 
-def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu', decoder=False):
-
+def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='silu', decoder=False):
+    """
+    Build a multi-layer perceptron with configurable activation and normalization.
+    
+    Default activation is SiLU (Swish) which works better than ReLU for GNNs:
+    - Smoother gradients prevent dying neurons
+    - Better gradient flow in deep networks
+    - Self-gated mechanism helps with physics simulations
+    """
     if activation == 'relu':
         activation_func = nn.ReLU()
     elif activation == 'gelu':

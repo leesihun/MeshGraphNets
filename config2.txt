@@ -1,7 +1,7 @@
 model   MeshGraphNets
 mode    Train  # Train / Inference
-gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
-log_file_dir    train0.log
+gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
+log_file_dir    train1.log
 %   Common params
 %   Dim1		1000 # number of parameters
 %   Dim2		1   # number of timesteps
@@ -11,10 +11,10 @@ output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/deforming_plate_100.h5
+dataset_dir ./dataset/deforming_plate_100copy.h5
 %   norm_min    -0.7  # Normalization range minimum
 %   norm_max    0.7   # Normalization range maximum
-message_passing_num 10
+message_passing_num 15
 Training_epochs	50
 Batch_size	10
 LearningR	0.0001
