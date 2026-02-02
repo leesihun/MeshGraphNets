@@ -11,16 +11,16 @@ output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/deforming_plate_100.h5
+dataset_dir ./dataset/deforming_plate_100 copy.h5
 %   norm_min    -0.7  # Normalization range minimum
 %   norm_max    0.7   # Normalization range maximum
-message_passing_num 15
+message_passing_num 10
 Training_epochs	50
 Batch_size	10
-LearningR	0.0001
-Latent_dim	32	# MeshGraphNets latent dimension
+LearningR	0.00002
+Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10
-std_noise   0.0000000000000000000001
+std_noise   0.000000001
 verbose     False
 '
 % Memory Optimization
