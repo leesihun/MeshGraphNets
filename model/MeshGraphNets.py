@@ -107,8 +107,13 @@ class EncoderProcessorDecoder(nn.Module):
 
 def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='silu', decoder=False):
     """
-    Build a multi-layer perceptron with configurable activation and normalization.
-    
+    Build a multi-layer perceptron with Pre-LayerNorm architecture.
+
+    Pre-LN (normalizing inputs) provides better gradient flow for deep networks:
+    - Prevents residual path from dominating in deep message passing
+    - More stable training with 10-15+ GN blocks
+    - Gradients flow more uniformly across layers
+
     Default activation is SiLU (Swish) which works better than ReLU for GNNs:
     - Smoother gradients prevent dying neurons
     - Better gradient flow in deep networks
@@ -128,16 +133,21 @@ def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='silu'
         raise ValueError(f'Invalid activation function: {activation}')
 
     if layer_norm:
+        # Pre-LayerNorm: normalize BEFORE transformations
         module = nn.Sequential(
+            nn.LayerNorm(normalized_shape=in_size),
             nn.Linear(in_size, hidden_size),
             activation_func,
+            nn.LayerNorm(normalized_shape=hidden_size),
             nn.Linear(hidden_size, hidden_size),
             activation_func,
+            nn.LayerNorm(normalized_shape=hidden_size),
             nn.Linear(hidden_size, out_size),
-            nn.LayerNorm(normalized_shape=out_size),
         )
     elif decoder:
+        # Decoder with Pre-LN
         module = nn.Sequential(
+            nn.LayerNorm(normalized_shape=in_size),
             nn.Linear(in_size, hidden_size),
             activation_func,
             nn.LayerNorm(normalized_shape=hidden_size),
@@ -187,6 +197,10 @@ class GnBlock(nn.Module):
         super(GnBlock, self).__init__()
 
         self.use_world_edges = use_world_edges
+        # Residual scaling factor for deep networks (prevents early layers from dominating)
+        # For 10-15 GN blocks, scale down updates to balance old vs new information
+        self.residual_scale = config.get('residual_scale', 0.1)
+
         eb_input_dim = 3 * latent_dim  # Sender, Receiver, edge latent dim
         eb_custom_func = build_mlp(eb_input_dim, latent_dim, latent_dim)
         self.eb_module = EdgeBlock(custom_func=eb_custom_func)
@@ -223,7 +237,8 @@ class GnBlock(nn.Module):
                 edge_index=world_edge_index
             )
             world_graph = self.world_eb_module(world_graph)
-            updated_world_edge_attr = world_edge_attr + world_graph.edge_attr
+            # Apply residual scaling to world edges as well
+            updated_world_edge_attr = world_edge_attr + self.residual_scale * world_graph.edge_attr
         else:
             updated_world_edge_attr = world_edge_attr
 
@@ -240,9 +255,10 @@ class GnBlock(nn.Module):
         # Update node features (aggregates from both edge types)
         node_graph = self.nb_module(node_graph)
 
-        # Residual connections
-        x = x + node_graph.x
-        edge_attr = edge_attr + node_graph.edge_attr
+        # Residual connections with scaling for deep networks
+        # Scale down updates to prevent early layers from dominating
+        x = x + self.residual_scale * node_graph.x
+        edge_attr = edge_attr + self.residual_scale * node_graph.edge_attr
 
         out = Data(x=x, edge_attr=edge_attr, edge_index=node_graph.edge_index)
         if self.use_world_edges:

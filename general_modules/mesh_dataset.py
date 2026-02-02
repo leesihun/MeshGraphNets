@@ -239,14 +239,52 @@ class MeshGraphDataset(Dataset):
         # Compute delta statistics from actual data
         self.delta_mean = np.zeros(self.output_dim, dtype=np.float32)
         self.delta_std = np.zeros(self.output_dim, dtype=np.float32)
+        delta_min = np.zeros(self.output_dim, dtype=np.float32)
+        delta_max = np.zeros(self.output_dim, dtype=np.float32)
 
         for feat_idx in range(self.output_dim):
             deltas = np.concatenate(all_delta_features[feat_idx])
             self.delta_mean[feat_idx] = np.mean(deltas)
             self.delta_std[feat_idx] = np.std(deltas)
             self.delta_std[feat_idx] = max(self.delta_std[feat_idx], 1e-8)  # Prevent division by zero
+            delta_min[feat_idx] = np.min(deltas)
+            delta_max[feat_idx] = np.max(deltas)
 
         print(f'  Delta features - mean: {self.delta_mean}, std: {self.delta_std}')
+        print(f'  Delta features - min: {delta_min}, max: {delta_max}')
+
+        # Sanity checks for normalization
+        print('\n  === Normalization Sanity Checks ===')
+        warnings = []
+
+        # Check for extreme std values
+        if np.any(self.node_std > 100):
+            warnings.append(f"  ⚠️  WARNING: Very large node std detected (> 100): {self.node_std[self.node_std > 100]}")
+        if np.any(self.node_std < 0.01):
+            warnings.append(f"  ⚠️  WARNING: Very small node std detected (< 0.01): {self.node_std[self.node_std < 0.01]}")
+
+        if np.any(self.delta_std > 100):
+            warnings.append(f"  ⚠️  WARNING: Very large delta std detected (> 100): {self.delta_std[self.delta_std > 100]}")
+        if np.any(self.delta_std < 0.01):
+            warnings.append(f"  ⚠️  WARNING: Very small delta std detected (< 0.01): {self.delta_std[self.delta_std < 0.01]}")
+
+        # Check for extreme mean values
+        if np.any(np.abs(self.node_mean) > 10):
+            warnings.append(f"  ⚠️  WARNING: Large node mean detected (|mean| > 10): {self.node_mean[np.abs(self.node_mean) > 10]}")
+        if np.any(np.abs(self.delta_mean) > 10):
+            warnings.append(f"  ⚠️  WARNING: Large delta mean detected (|mean| > 10): {self.delta_mean[np.abs(self.delta_mean) > 10]}")
+
+        # Check for near-zero variance (constant features)
+        if np.any(self.node_std < 1e-6):
+            warnings.append(f"  ⚠️  CRITICAL: Near-zero node variance detected - feature is constant!")
+        if np.any(self.delta_std < 1e-6):
+            warnings.append(f"  ⚠️  CRITICAL: Near-zero delta variance detected - targets are constant!")
+
+        if warnings:
+            for w in warnings:
+                print(w)
+        else:
+            print('  ✓ All normalization statistics look reasonable')
 
         # Update HDF5 file with computed normalization parameters
         self._update_hdf5_normalization_params()
