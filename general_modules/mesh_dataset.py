@@ -74,17 +74,10 @@ class MeshGraphDataset(Dataset):
             # Add small epsilon to avoid division by zero
             # self.norm_std = np.maximum(self.norm_std, 1e-8)
 
-            # Load delta-specific normalization parameters if available
-            # These are for state differences (target values) between timesteps
-            norm_params = f['metadata/normalization_params']
-            if 'delta_mean' in norm_params and 'delta_std' in norm_params:
-                self.delta_mean = norm_params['delta_mean'][:]
-                self.delta_std = norm_params['delta_std'][:]
-                print(f"  Using delta z-score normalization: mean={self.delta_mean}, std={self.delta_std}")
-            else:
-                self.delta_mean = None
-                self.delta_std = None
-                print(f"  WARNING: No delta normalization params found, using fallback")
+            # Delta normalization parameters will be computed from actual data
+            # in _compute_zscore_stats() to ensure they are always correct
+            self.delta_mean = None
+            self.delta_std = None
 
         # Extract stats for node features (indices 3:7 = physical fields)
         # self.node_mean = self.norm_mean[3:3+self.input_dim]
@@ -118,7 +111,11 @@ class MeshGraphDataset(Dataset):
             self._compute_world_edge_radius()
 
     def _compute_zscore_stats(self) -> None:
-        """Compute z-score normalization statistics (mean, std) for node and edge features."""
+        """Compute z-score normalization statistics (mean, std) for node, edge, and delta features.
+
+        Also updates the HDF5 file with correct delta normalization parameters computed from
+        actual data, fixing any incorrect pre-stored values.
+        """
         print('Computing z-score normalization statistics...')
 
         # Sample a subset for efficiency
@@ -126,6 +123,7 @@ class MeshGraphDataset(Dataset):
 
         all_node_features = []
         all_edge_features = []
+        all_delta_features = [[] for _ in range(self.output_dim)]  # For delta normalization
 
         with h5py.File(self.h5_file, 'r') as f:
             for i in range(num_samples):
@@ -153,7 +151,23 @@ class MeshGraphDataset(Dataset):
                     edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
                     all_edge_features.append(edge_feat)
 
-        # Compute statistics
+                # Compute delta features (differences between consecutive timesteps)
+                if self.num_timesteps > 1:
+                    # Sample consecutive timestep pairs
+                    delta_timesteps = np.linspace(0, self.num_timesteps - 2, min(10, self.num_timesteps - 1), dtype=int)
+                    for t in delta_timesteps:
+                        for feat_idx in range(self.output_dim):
+                            feat_t = data[3 + feat_idx, t, :]      # [N]
+                            feat_t1 = data[3 + feat_idx, t + 1, :]  # [N]
+                            delta = feat_t1 - feat_t
+                            all_delta_features[feat_idx].append(delta)
+                else:
+                    # Single timestep: delta is the final value itself (from zero initial state)
+                    for feat_idx in range(self.output_dim):
+                        feat = data[3 + feat_idx, 0, :]  # [N]
+                        all_delta_features[feat_idx].append(feat)
+
+        # Compute node and edge statistics
         all_node_features = np.vstack(all_node_features)
         all_edge_features = np.vstack(all_edge_features)
 
@@ -167,6 +181,96 @@ class MeshGraphDataset(Dataset):
 
         print(f'  Node features - mean: {self.node_mean}, std: {self.node_std}')
         print(f'  Edge features - mean: {self.edge_mean}, std: {self.edge_std}')
+
+        # Compute delta statistics from actual data
+        self.delta_mean = np.zeros(self.output_dim, dtype=np.float32)
+        self.delta_std = np.zeros(self.output_dim, dtype=np.float32)
+
+        for feat_idx in range(self.output_dim):
+            deltas = np.concatenate(all_delta_features[feat_idx])
+            self.delta_mean[feat_idx] = np.mean(deltas)
+            self.delta_std[feat_idx] = np.std(deltas)
+            self.delta_std[feat_idx] = max(self.delta_std[feat_idx], 1e-8)  # Prevent division by zero
+
+        print(f'  Delta features - mean: {self.delta_mean}, std: {self.delta_std}')
+
+        # Update HDF5 file with correct delta normalization parameters
+        self._update_h5_delta_params()
+
+    def _update_h5_delta_params(self) -> None:
+        """Update the HDF5 file with correct delta normalization parameters.
+
+        This fixes incorrect pre-stored delta_mean and delta_std values by overwriting
+        them with values computed from actual data.
+        """
+        try:
+            with h5py.File(self.h5_file, 'r+') as f:
+                norm_params = f['metadata/normalization_params']
+
+                # Check if stored params differ from computed ones
+                if 'delta_mean' in norm_params and 'delta_std' in norm_params:
+                    old_mean = norm_params['delta_mean'][:]
+                    old_std = norm_params['delta_std'][:]
+
+                    # Check if update is needed (significant difference)
+                    mean_diff = np.abs(old_mean - self.delta_mean)
+                    std_diff = np.abs(old_std - self.delta_std)
+                    std_ratio = old_std / self.delta_std
+
+                    needs_update = np.any(std_ratio > 2.0) or np.any(std_ratio < 0.5)
+
+                    if needs_update:
+                        print(f'  WARNING: Stored delta normalization params differ significantly from computed values!')
+                        print(f'    Stored delta_std: {old_std}')
+                        print(f'    Computed delta_std: {self.delta_std}')
+                        print(f'    Ratio (stored/computed): {std_ratio}')
+                        print(f'  Updating HDF5 file with correct values...')
+
+                        # Update the parameters
+                        norm_params['delta_mean'][...] = self.delta_mean
+                        norm_params['delta_std'][...] = self.delta_std
+
+                        # Also update delta_max and delta_min if they exist
+                        if 'delta_max' in norm_params and 'delta_min' in norm_params:
+                            # Compute correct min/max from the same data
+                            delta_max = np.zeros(self.output_dim, dtype=np.float32)
+                            delta_min = np.zeros(self.output_dim, dtype=np.float32)
+
+                            # Use sampled data from _compute_zscore_stats
+                            num_samples = min(50, len(self.sample_ids))
+                            with h5py.File(self.h5_file, 'r') as f_read:
+                                all_deltas = [[] for _ in range(self.output_dim)]
+                                for i in range(num_samples):
+                                    sid = self.sample_ids[i]
+                                    data = f_read[f'data/{sid}/nodal_data'][:]
+                                    if self.num_timesteps > 1:
+                                        delta_timesteps = np.linspace(0, self.num_timesteps - 2,
+                                                                     min(10, self.num_timesteps - 1), dtype=int)
+                                        for t in delta_timesteps:
+                                            for feat_idx in range(self.output_dim):
+                                                delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
+                                                all_deltas[feat_idx].append(delta)
+                                    else:
+                                        for feat_idx in range(self.output_dim):
+                                            all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
+
+                            for feat_idx in range(self.output_dim):
+                                deltas = np.concatenate(all_deltas[feat_idx])
+                                delta_max[feat_idx] = np.max(deltas)
+                                delta_min[feat_idx] = np.min(deltas)
+
+                            norm_params['delta_max'][...] = delta_max
+                            norm_params['delta_min'][...] = delta_min
+
+                        print(f'  [OK] HDF5 delta normalization parameters updated successfully')
+                    else:
+                        print(f'  [OK] Stored delta normalization params are correct (no update needed)')
+                else:
+                    print(f'  WARNING: No delta normalization params in HDF5, cannot update')
+
+        except Exception as e:
+            print(f'  WARNING: Could not update HDF5 file: {e}')
+            print(f'  Continuing with computed delta normalization params from memory')
 
     def _compute_node_type_info(self) -> None:
         """Compute the number of unique node types from the dataset."""
