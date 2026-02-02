@@ -253,51 +253,55 @@ class MeshGraphDataset(Dataset):
 
     def _update_hdf5_normalization_params(self) -> None:
         """Update HDF5 file with computed delta normalization parameters."""
-        with h5py.File(self.h5_file, 'r+') as f:
-            if 'metadata/normalization_params' not in f:
-                norm_params = f.create_group('metadata/normalization_params')
+        try:
+            with h5py.File(self.h5_file, 'r+') as f:
+                if 'metadata/normalization_params' not in f:
+                    norm_params = f.create_group('metadata/normalization_params')
 
-            norm_params = f['metadata/normalization_params']
+                norm_params = f['metadata/normalization_params']
 
-            # Check if stored params differ from computed ones
-            if 'delta_mean' in norm_params and 'delta_std' in norm_params:
+                # Check if stored params differ from computed ones
+                if 'delta_mean' in norm_params and 'delta_std' in norm_params:
 
-                norm_params['delta_mean'][...] = self.delta_mean
-                norm_params['delta_std'][...] = self.delta_std
+                    norm_params['delta_mean'][...] = self.delta_mean
+                    norm_params['delta_std'][...] = self.delta_std
 
-                # Also update delta_max and delta_min if they exist
-                if 'delta_max' in norm_params and 'delta_min' in norm_params:
-                    # Compute correct min/max from the same data
-                    delta_max = np.zeros(self.output_dim, dtype=np.float32)
-                    delta_min = np.zeros(self.output_dim, dtype=np.float32)
+                    # Also update delta_max and delta_min if they exist
+                    if 'delta_max' in norm_params and 'delta_min' in norm_params:
+                        # Compute correct min/max from the same data
+                        delta_max = np.zeros(self.output_dim, dtype=np.float32)
+                        delta_min = np.zeros(self.output_dim, dtype=np.float32)
 
-                    # Use sampled data from _compute_zscore_stats
-                    # Use existing file handle 'f' instead of opening a new one
-                    num_samples = len(self.sample_ids)
-                    all_deltas = [[] for _ in range(self.output_dim)]
-                    for i in range(num_samples):
-                        sid = self.sample_ids[i]
-                        data = f[f'data/{sid}/nodal_data'][:]
-                        if self.num_timesteps > 1:
-                            delta_timesteps = np.linspace(0, self.num_timesteps - 2,
-                                                            min(10, self.num_timesteps - 1), dtype=int)
-                            for t in delta_timesteps:
+                        # Use sampled data from _compute_zscore_stats
+                        # Use existing file handle 'f' instead of opening a new one
+                        num_samples = len(self.sample_ids)
+                        all_deltas = [[] for _ in range(self.output_dim)]
+                        for i in range(num_samples):
+                            sid = self.sample_ids[i]
+                            data = f[f'data/{sid}/nodal_data'][:]
+                            if self.num_timesteps > 1:
+                                delta_timesteps = np.linspace(0, self.num_timesteps - 2,
+                                                                min(10, self.num_timesteps - 1), dtype=int)
+                                for t in delta_timesteps:
+                                    for feat_idx in range(self.output_dim):
+                                        delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
+                                        all_deltas[feat_idx].append(delta)
+                            else:
                                 for feat_idx in range(self.output_dim):
-                                    delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
-                                    all_deltas[feat_idx].append(delta)
-                        else:
-                            for feat_idx in range(self.output_dim):
-                                all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
+                                    all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
 
-                    for feat_idx in range(self.output_dim):
-                        deltas = np.concatenate(all_deltas[feat_idx])
-                        delta_max[feat_idx] = np.max(deltas)
-                        delta_min[feat_idx] = np.min(deltas)
+                        for feat_idx in range(self.output_dim):
+                            deltas = np.concatenate(all_deltas[feat_idx])
+                            delta_max[feat_idx] = np.max(deltas)
+                            delta_min[feat_idx] = np.min(deltas)
 
-                    norm_params['delta_max'][...] = delta_max
-                    norm_params['delta_min'][...] = delta_min
+                        norm_params['delta_max'][...] = delta_max
+                        norm_params['delta_min'][...] = delta_min
 
-                print(f'  [OK] HDF5 delta normalization parameters updated successfully')
+                    print(f'  [OK] HDF5 delta normalization parameters updated successfully')
+        except (OSError, BlockingIOError) as e:
+            print(f'  [INFO] Could not update HDF5 normalization params (file locked by another process)')
+            pass
 
     def _compute_stats_serial(self, num_samples: int) -> Tuple[List[np.ndarray], List[np.ndarray], List[List[np.ndarray]]]:
         """Serial implementation of statistics computation (original logic)."""
