@@ -26,6 +26,9 @@ verbose     False
 % Memory Optimization
 use_checkpointing   False
 '
+% Performance Optimization
+use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
+'
 % Node Type Parameters
 use_node_types  True    # Add one-hot encoded node types to node features
 '

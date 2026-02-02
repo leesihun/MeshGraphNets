@@ -2,9 +2,10 @@ import h5py
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple, List
 from torch_geometric.data import Data
 from scipy.spatial import KDTree
+import multiprocessing as mp
 
 # Try to import torch_cluster for GPU acceleration; fall back to scipy.KDTree if unavailable
 try:
@@ -12,6 +13,108 @@ try:
     HAS_TORCH_CLUSTER = True
 except ImportError:
     HAS_TORCH_CLUSTER = False
+
+
+def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
+                          output_dim: int, num_timesteps: int) -> Dict[str, np.ndarray]:
+    """
+    Worker function to process a chunk of samples in parallel.
+
+    This function is defined at module level to support multiprocessing pickling.
+    Each worker opens the HDF5 file independently and processes its assigned samples.
+
+    Args:
+        h5_file: Path to HDF5 dataset file
+        sample_ids: List of sample IDs to process
+        input_dim: Number of input features (typically 4)
+        output_dim: Number of output features (typically 4)
+        num_timesteps: Number of timesteps in the dataset
+
+    Returns:
+        Dictionary containing:
+            - 'node_features': Stacked node features [N_total, input_dim]
+            - 'edge_features': Stacked edge features [E_total, 4]
+            - 'delta_features': List of delta features per output dimension
+            - 'num_samples_processed': Number of samples successfully processed
+    """
+    all_node_features = []
+    all_edge_features = []
+    all_delta_features = [[] for _ in range(output_dim)]
+
+    try:
+        # Each process opens its own HDF5 file handle (read-only)
+        with h5py.File(h5_file, 'r') as f:
+            for sid in sample_ids:
+                try:
+                    data = f[f'data/{sid}/nodal_data'][:]  # [features, time, nodes]
+                    mesh_edge = f[f'data/{sid}/mesh_edge'][:]  # [2, edges]
+
+                    # Sample timesteps for multi-timestep data
+                    if num_timesteps > 1:
+                        timesteps = np.linspace(0, num_timesteps - 1, num_timesteps, dtype=int)
+                    else:
+                        timesteps = [0]
+
+                    for t in timesteps:
+                        # Node features: [disp_x, disp_y, disp_z, stress]
+                        node_feat = data[3:3+input_dim, t, :].T  # [N, 4]
+                        all_node_features.append(node_feat)
+
+                        # Edge features: [dx, dy, dz, distance]
+                        pos = (data[:3, t, :] + data[3:6, t, :]).T  # [N, 3] - Deformed position
+                        # Bidirectional edges
+                        edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
+                        rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]  # Deformed relative position
+                        dist = np.linalg.norm(rel_pos, axis=1, keepdims=True)
+                        edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
+                        all_edge_features.append(edge_feat)
+
+                    # Compute delta features (differences between consecutive timesteps)
+                    if num_timesteps > 1:
+                        delta_timesteps = np.linspace(0, num_timesteps - 2, num_timesteps - 1, dtype=int)
+                        for t in delta_timesteps:
+                            for feat_idx in range(output_dim):
+                                feat_t = data[3 + feat_idx, t, :]      # [N]
+                                feat_t1 = data[3 + feat_idx, t + 1, :]  # [N]
+                                delta = feat_t1 - feat_t
+                                all_delta_features[feat_idx].append(delta)
+                    else:
+                        # Single timestep: delta is the final value itself
+                        for feat_idx in range(output_dim):
+                            feat = data[3 + feat_idx, 0, :]  # [N]
+                            all_delta_features[feat_idx].append(feat)
+
+                except Exception as e:
+                    print(f"Warning: Failed to process sample {sid}: {e}")
+                    continue
+
+        # Stack results
+        if all_node_features:
+            return {
+                'node_features': np.vstack(all_node_features),
+                'edge_features': np.vstack(all_edge_features),
+                'delta_features': all_delta_features,
+                'num_samples_processed': len(sample_ids)
+            }
+        else:
+            # Return empty arrays if no samples were processed
+            return {
+                'node_features': np.zeros((0, input_dim), dtype=np.float32),
+                'edge_features': np.zeros((0, 4), dtype=np.float32),
+                'delta_features': [np.array([], dtype=np.float32) for _ in range(output_dim)],
+                'num_samples_processed': 0
+            }
+
+    except Exception as e:
+        print(f"Error in worker process: {e}")
+        # Return empty results on catastrophic failure
+        return {
+            'node_features': np.zeros((0, input_dim), dtype=np.float32),
+            'edge_features': np.zeros((0, 4), dtype=np.float32),
+            'delta_features': [np.array([], dtype=np.float32) for _ in range(output_dim)],
+            'num_samples_processed': 0
+        }
+
 
 class MeshGraphDataset(Dataset):
 
@@ -85,15 +188,117 @@ class MeshGraphDataset(Dataset):
 
         Also updates the HDF5 file with correct delta normalization parameters computed from
         actual data, fixing any incorrect pre-stored values.
+
+        Supports parallel processing for large datasets via config option 'use_parallel_stats'.
         """
         print('Computing z-score normalization statistics...')
 
-        # Sample a subset for efficiency
-        num_samples = len(self.sample_ids) #min(50, len(self.sample_ids))
+        num_samples = len(self.sample_ids)
 
+        # Check if parallel processing is enabled and beneficial
+        use_parallel = self.config.get('use_parallel_stats', True)  # Default: enabled
+        min_samples_for_parallel = 10  # Don't parallelize for small datasets
+
+        # Determine number of workers
+        if use_parallel and num_samples >= min_samples_for_parallel:
+            # Use 80% of available cores, minimum 1, maximum 8
+            num_workers = max(1, min(8, int(mp.cpu_count() * 0.45)))
+        else:
+            num_workers = 1
+
+        if num_workers > 1:
+            print(f'  Using parallel processing: {num_workers} workers for {num_samples} samples')
+            all_node_features, all_edge_features, all_delta_features = self._compute_stats_parallel(num_workers, num_samples)
+        else:
+            if not use_parallel:
+                print(f'  Parallel processing disabled (use_parallel_stats=False)')
+            else:
+                print(f'  Using serial processing ({num_samples} samples, threshold={min_samples_for_parallel})')
+            all_node_features, all_edge_features, all_delta_features = self._compute_stats_serial(num_samples)
+
+        # Compute node and edge statistics
+        all_node_features = np.vstack(all_node_features)
+        all_edge_features = np.vstack(all_edge_features)
+
+        self.node_mean = np.mean(all_node_features, axis=0).astype(np.float32)
+        self.node_std = np.std(all_node_features, axis=0).astype(np.float32)
+        self.node_std = np.maximum(self.node_std, 1e-8)  # Prevent division by zero
+
+        self.edge_mean = np.mean(all_edge_features, axis=0).astype(np.float32)
+        self.edge_std = np.std(all_edge_features, axis=0).astype(np.float32)
+        self.edge_std = np.maximum(self.edge_std, 1e-8)  # Prevent division by zero
+
+        print(f'  Node features - mean: {self.node_mean}, std: {self.node_std}')
+        print(f'  Edge features - mean: {self.edge_mean}, std: {self.edge_std}')
+
+        # Compute delta statistics from actual data
+        self.delta_mean = np.zeros(self.output_dim, dtype=np.float32)
+        self.delta_std = np.zeros(self.output_dim, dtype=np.float32)
+
+        for feat_idx in range(self.output_dim):
+            deltas = np.concatenate(all_delta_features[feat_idx])
+            self.delta_mean[feat_idx] = np.mean(deltas)
+            self.delta_std[feat_idx] = np.std(deltas)
+            self.delta_std[feat_idx] = max(self.delta_std[feat_idx], 1e-8)  # Prevent division by zero
+
+        print(f'  Delta features - mean: {self.delta_mean}, std: {self.delta_std}')
+
+        # Update HDF5 file with computed normalization parameters
+        self._update_hdf5_normalization_params()
+
+    def _update_hdf5_normalization_params(self) -> None:
+        """Update HDF5 file with computed delta normalization parameters."""
+        with h5py.File(self.h5_file, 'r+') as f:
+            if 'metadata/normalization_params' not in f:
+                norm_params = f.create_group('metadata/normalization_params')
+
+            norm_params = f['metadata/normalization_params']
+
+            # Check if stored params differ from computed ones
+            if 'delta_mean' in norm_params and 'delta_std' in norm_params:
+
+                norm_params['delta_mean'][...] = self.delta_mean
+                norm_params['delta_std'][...] = self.delta_std
+
+                # Also update delta_max and delta_min if they exist
+                if 'delta_max' in norm_params and 'delta_min' in norm_params:
+                    # Compute correct min/max from the same data
+                    delta_max = np.zeros(self.output_dim, dtype=np.float32)
+                    delta_min = np.zeros(self.output_dim, dtype=np.float32)
+
+                    # Use sampled data from _compute_zscore_stats
+                    num_samples = len(self.sample_ids)
+                    with h5py.File(self.h5_file, 'r') as f_read:
+                        all_deltas = [[] for _ in range(self.output_dim)]
+                        for i in range(num_samples):
+                            sid = self.sample_ids[i]
+                            data = f_read[f'data/{sid}/nodal_data'][:]
+                            if self.num_timesteps > 1:
+                                delta_timesteps = np.linspace(0, self.num_timesteps - 2,
+                                                                min(10, self.num_timesteps - 1), dtype=int)
+                                for t in delta_timesteps:
+                                    for feat_idx in range(self.output_dim):
+                                        delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
+                                        all_deltas[feat_idx].append(delta)
+                            else:
+                                for feat_idx in range(self.output_dim):
+                                    all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
+
+                    for feat_idx in range(self.output_dim):
+                        deltas = np.concatenate(all_deltas[feat_idx])
+                        delta_max[feat_idx] = np.max(deltas)
+                        delta_min[feat_idx] = np.min(deltas)
+
+                    norm_params['delta_max'][...] = delta_max
+                    norm_params['delta_min'][...] = delta_min
+
+                print(f'  [OK] HDF5 delta normalization parameters updated successfully')
+
+    def _compute_stats_serial(self, num_samples: int) -> Tuple[List[np.ndarray], List[np.ndarray], List[List[np.ndarray]]]:
+        """Serial implementation of statistics computation (original logic)."""
         all_node_features = []
         all_edge_features = []
-        all_delta_features = [[] for _ in range(self.output_dim)]  # For delta normalization
+        all_delta_features = [[] for _ in range(self.output_dim)]
 
         with h5py.File(self.h5_file, 'r') as f:
             for i in range(num_samples):
@@ -137,79 +342,52 @@ class MeshGraphDataset(Dataset):
                         feat = data[3 + feat_idx, 0, :]  # [N]
                         all_delta_features[feat_idx].append(feat)
 
-        # Compute node and edge statistics
-        all_node_features = np.vstack(all_node_features)
-        all_edge_features = np.vstack(all_edge_features)
+        return all_node_features, all_edge_features, all_delta_features
 
-        self.node_mean = np.mean(all_node_features, axis=0).astype(np.float32)
-        self.node_std = np.std(all_node_features, axis=0).astype(np.float32)
-        self.node_std = np.maximum(self.node_std, 1e-8)  # Prevent division by zero
+    def _compute_stats_parallel(self, num_workers: int, num_samples: int) -> Tuple[List[np.ndarray], List[np.ndarray], List[List[np.ndarray]]]:
+        """Parallel implementation of statistics computation using multiprocessing."""
+        # Split samples into chunks for each worker
+        chunk_size = max(1, num_samples // num_workers)
+        sample_chunks = []
 
-        self.edge_mean = np.mean(all_edge_features, axis=0).astype(np.float32)
-        self.edge_std = np.std(all_edge_features, axis=0).astype(np.float32)
-        self.edge_std = np.maximum(self.edge_std, 1e-8)  # Prevent division by zero
+        for i in range(0, num_samples, chunk_size):
+            chunk = self.sample_ids[i:i+chunk_size]
+            sample_chunks.append(chunk)
 
-        print(f'  Node features - mean: {self.node_mean}, std: {self.node_std}')
-        print(f'  Edge features - mean: {self.edge_mean}, std: {self.edge_std}')
+        try:
+            # Create worker pool and process chunks in parallel
+            with mp.Pool(num_workers) as pool:
+                worker_args = [
+                    (self.h5_file, chunk, self.input_dim, self.output_dim, self.num_timesteps)
+                    for chunk in sample_chunks
+                ]
+                results = pool.starmap(_process_sample_chunk, worker_args)
 
-        # Compute delta statistics from actual data
-        self.delta_mean = np.zeros(self.output_dim, dtype=np.float32)
-        self.delta_std = np.zeros(self.output_dim, dtype=np.float32)
+            # Aggregate results from all workers
+            all_node_features = []
+            all_edge_features = []
+            all_delta_features = [[] for _ in range(self.output_dim)]
 
-        for feat_idx in range(self.output_dim):
-            deltas = np.concatenate(all_delta_features[feat_idx])
-            self.delta_mean[feat_idx] = np.mean(deltas)
-            self.delta_std[feat_idx] = np.std(deltas)
-            self.delta_std[feat_idx] = max(self.delta_std[feat_idx], 1e-8)  # Prevent division by zero
-
-        print(f'  Delta features - mean: {self.delta_mean}, std: {self.delta_std}')
-
-        with h5py.File(self.h5_file, 'r+') as f:
-            if 'metadata/normalization_params' not in f:
-                norm_params = f.create_group('metadata/normalization_params')
-
-            norm_params = f['metadata/normalization_params']
-
-            # Check if stored params differ from computed ones
-            if 'delta_mean' in norm_params and 'delta_std' in norm_params:
-                
-                norm_params['delta_mean'][...] = self.delta_mean
-                norm_params['delta_std'][...] = self.delta_std
-
-                # Also update delta_max and delta_min if they exist
-                if 'delta_max' in norm_params and 'delta_min' in norm_params:
-                    # Compute correct min/max from the same data
-                    delta_max = np.zeros(self.output_dim, dtype=np.float32)
-                    delta_min = np.zeros(self.output_dim, dtype=np.float32)
-
-                    # Use sampled data from _compute_zscore_stats
-                    num_samples = len(self.sample_ids)
-                    with h5py.File(self.h5_file, 'r') as f_read:
-                        all_deltas = [[] for _ in range(self.output_dim)]
-                        for i in range(num_samples):
-                            sid = self.sample_ids[i]
-                            data = f_read[f'data/{sid}/nodal_data'][:]
-                            if self.num_timesteps > 1:
-                                delta_timesteps = np.linspace(0, self.num_timesteps - 2,
-                                                                min(10, self.num_timesteps - 1), dtype=int)
-                                for t in delta_timesteps:
-                                    for feat_idx in range(self.output_dim):
-                                        delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
-                                        all_deltas[feat_idx].append(delta)
-                            else:
-                                for feat_idx in range(self.output_dim):
-                                    all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
-
+            total_processed = 0
+            for result in results:
+                if result['num_samples_processed'] > 0:
+                    all_node_features.append(result['node_features'])
+                    all_edge_features.append(result['edge_features'])
                     for feat_idx in range(self.output_dim):
-                        deltas = np.concatenate(all_deltas[feat_idx])
-                        delta_max[feat_idx] = np.max(deltas)
-                        delta_min[feat_idx] = np.min(deltas)
+                        all_delta_features[feat_idx].extend(result['delta_features'][feat_idx])
+                    total_processed += result['num_samples_processed']
 
-                    norm_params['delta_max'][...] = delta_max
-                    norm_params['delta_min'][...] = delta_min
+            print(f'  Successfully processed {total_processed}/{num_samples} samples')
 
-                print(f'  [OK] HDF5 delta normalization parameters updated successfully')
-                    
+            if total_processed == 0:
+                raise RuntimeError("No samples were successfully processed in parallel mode")
+
+            return all_node_features, all_edge_features, all_delta_features
+
+        except Exception as e:
+            print(f'  Warning: Parallel processing failed ({e}), falling back to serial processing')
+            return self._compute_stats_serial(num_samples)
+
     def _compute_node_type_info(self) -> None:
         """Compute the number of unique node types from the dataset."""
         print('Computing node type information...')

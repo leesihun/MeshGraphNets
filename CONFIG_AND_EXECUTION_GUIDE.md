@@ -61,6 +61,9 @@ verbose     False
 % Memory Optimization
 use_checkpointing   False
 '
+% Performance Optimization
+use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
+'
 % Node Type Parameters
 use_node_types  True    # Add one-hot encoded node types to node features
 '
@@ -128,6 +131,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | use_checkpointing | bool | False | Gradient checkpointing (reduces VRAM ~50%) |
+| use_parallel_stats | bool | True | Parallel processing for dataset statistics computation (3-5x speedup for >=100 samples, uses 80% of CPU cores) |
 | use_node_types | bool | True | Add one-hot node types to features |
 | use_world_edges | bool | True | Enable radius-based collision edges |
 | world_radius_multiplier | float | 1.5 | World edge radius multiplier (r_world = multiplier × min_mesh_edge_length) |
