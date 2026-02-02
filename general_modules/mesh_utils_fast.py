@@ -179,7 +179,9 @@ def compute_face_values_gpu(faces, node_values, device='cpu'):
     return face_values.cpu().numpy()
 
 
-def save_inference_results_fast(output_path, graph, predicted, target,
+def save_inference_results_fast(output_path, graph,
+                                  predicted_norm=None, target_norm=None,
+                                  predicted_denorm=None, target_denorm=None,
                                   skip_visualization=False, device='cpu', feature_idx=-1):
     """
     Fast version of save_inference_results with GPU acceleration.
@@ -188,8 +190,10 @@ def save_inference_results_fast(output_path, graph, predicted, target,
         output_path: Path to save the HDF5 file
         graph: PyG Data object with pos, edge_index, edge_attr, sample_id, time_idx
                Optional: part_ids (N,) array of part assignments per node
-        predicted: (N, D) numpy array of predicted node features
-        target: (N, D) numpy array of target node features
+        predicted_norm: (N, D) numpy array of predicted node features (normalized)
+        target_norm: (N, D) numpy array of target node features (normalized)
+        predicted_denorm: (N, D) numpy array of predicted node features (denormalized)
+        target_denorm: (N, D) numpy array of target node features (denormalized)
         skip_visualization: If True, skip matplotlib rendering (much faster)
         device: 'cpu' or 'cuda' for GPU acceleration
         feature_idx: Which feature to visualize (default -1 = last feature)
@@ -246,9 +250,11 @@ def save_inference_results_fast(output_path, graph, predicted, target,
     else:
         faces = edges_to_triangles_optimized(edge_index_np)
 
-    # GPU-accelerated face value computation
-    pred_face_values = compute_face_values_gpu(faces, predicted, device=device)
-    target_face_values = compute_face_values_gpu(faces, target, device=device)
+    # GPU-accelerated face value computation for both normalized and denormalized
+    pred_face_values_norm = compute_face_values_gpu(faces, predicted_norm, device=device)
+    target_face_values_norm = compute_face_values_gpu(faces, target_norm, device=device)
+    pred_face_values_denorm = compute_face_values_gpu(faces, predicted_denorm, device=device)
+    target_face_values_denorm = compute_face_values_gpu(faces, target_denorm, device=device)
 
     # Compute face-level part IDs if node-level part_ids are available
     face_part_ids = None
@@ -262,13 +268,15 @@ def save_inference_results_fast(output_path, graph, predicted, target,
         # Simple approach: take the first vertex's part (they should all be the same for valid meshes)
         face_part_ids = v0_parts
 
-    # Save to HDF5 (fast I/O)
+    # Save to HDF5 (fast I/O) - save both normalized and denormalized
     with h5py.File(output_path, 'w') as f:
         # Node data
         nodes_grp = f.create_group('nodes')
         nodes_grp.create_dataset('pos', data=pos, dtype=np.float32)
-        nodes_grp.create_dataset('predicted', data=predicted, dtype=np.float32)
-        nodes_grp.create_dataset('target', data=target, dtype=np.float32)
+        nodes_grp.create_dataset('predicted_norm', data=predicted_norm, dtype=np.float32)
+        nodes_grp.create_dataset('target_norm', data=target_norm, dtype=np.float32)
+        nodes_grp.create_dataset('predicted_denorm', data=predicted_denorm, dtype=np.float32)
+        nodes_grp.create_dataset('target_denorm', data=target_denorm, dtype=np.float32)
         if part_ids is not None:
             nodes_grp.create_dataset('part_ids', data=part_ids, dtype=np.int32)
 
@@ -280,8 +288,10 @@ def save_inference_results_fast(output_path, graph, predicted, target,
         # Face data
         faces_grp = f.create_group('faces')
         faces_grp.create_dataset('index', data=faces, dtype=np.int64)
-        faces_grp.create_dataset('predicted', data=pred_face_values, dtype=np.float32)
-        faces_grp.create_dataset('target', data=target_face_values, dtype=np.float32)
+        faces_grp.create_dataset('predicted_norm', data=pred_face_values_norm, dtype=np.float32)
+        faces_grp.create_dataset('target_norm', data=target_face_values_norm, dtype=np.float32)
+        faces_grp.create_dataset('predicted_denorm', data=pred_face_values_denorm, dtype=np.float32)
+        faces_grp.create_dataset('target_denorm', data=target_face_values_denorm, dtype=np.float32)
         if face_part_ids is not None:
             faces_grp.create_dataset('part_ids', data=face_part_ids, dtype=np.int32)
 
@@ -289,7 +299,7 @@ def save_inference_results_fast(output_path, graph, predicted, target,
         f.attrs['num_nodes'] = pos.shape[0]
         f.attrs['num_edges'] = edge_index_np.shape[1]
         f.attrs['num_faces'] = faces.shape[0]
-        f.attrs['num_features'] = predicted.shape[1]
+        f.attrs['num_features'] = predicted_norm.shape[1]
 
         if sample_id is not None:
             f.attrs['sample_id'] = sample_id
@@ -302,12 +312,15 @@ def save_inference_results_fast(output_path, graph, predicted, target,
     if not skip_visualization:
         plot_path = output_path.replace('.h5', '.png')
         # Return plot data for parallel processing with full metadata
+        # Include both normalized and denormalized values for visualization
         return {
             'plot_path': plot_path,
             'pos': pos,
             'faces': faces,
-            'pred_values': pred_face_values,
-            'target_values': target_face_values,
+            'pred_values_norm': pred_face_values_norm,
+            'target_values_norm': target_face_values_norm,
+            'pred_values_denorm': pred_face_values_denorm,
+            'target_values_denorm': target_face_values_denorm,
             'sample_id': sample_id,
             'time_idx': time_idx,
             'face_part_ids': face_part_ids,
@@ -317,16 +330,19 @@ def save_inference_results_fast(output_path, graph, predicted, target,
     return None
 
 
-def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
+def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
+                         pred_values_denorm, target_values_denorm, output_path,
                          feature_idx=-2, sample_id=None, time_idx=None, face_part_ids=None):
     """
-    Create side-by-side mesh plots comparing predicted vs ground truth.
+    Create 2x2 mesh plots comparing normalized and denormalized predicted vs ground truth.
 
     Args:
         pos: (N, 3) node positions
         faces: (F, 3) triangular face indices
-        pred_values: (F, D) predicted face values
-        target_values: (F, D) ground truth face values
+        pred_values_norm: (F, D) predicted face values (normalized)
+        target_values_norm: (F, D) ground truth face values (normalized)
+        pred_values_denorm: (F, D) predicted face values (denormalized)
+        target_values_denorm: (F, D) ground truth face values (denormalized)
         output_path: Path to save the PNG
         feature_idx: Which feature to visualize (default -1 = last, i.e. stress)
         sample_id: Sample ID for plot title (optional)
@@ -340,23 +356,31 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
     if faces.shape[0] == 0:
         return
 
-    # Extract the feature to visualize
-    pred_colors = pred_values[:, feature_idx]
-    target_colors = target_values[:, feature_idx]
-    
+    # Extract the feature to visualize for all four plots
+    pred_colors_norm = pred_values_norm[:, feature_idx]
+    target_colors_norm = target_values_norm[:, feature_idx]
+    pred_colors_denorm = pred_values_denorm[:, feature_idx]
+    target_colors_denorm = target_values_denorm[:, feature_idx]
+
     # Determine feature name and units
     # Features: [disp_x, disp_y, disp_z, stress]
     feature_names = ['Δ Disp X', 'Δ Disp Y', 'Δ Disp Z', 'Δ Stress']
     feature_units = ['mm', 'mm', 'mm', 'MPa']
-    num_features = pred_values.shape[1]
+    num_features = pred_values_norm.shape[1]
     actual_idx = feature_idx if feature_idx >= 0 else num_features + feature_idx
     feature_name = feature_names[actual_idx] if actual_idx < len(feature_names) else f'Feature {actual_idx}'
     feature_unit = feature_units[actual_idx] if actual_idx < len(feature_units) else ''
 
-    # Use same color scale for both plots
-    vmin = min(pred_colors.min(), target_colors.min())
-    vmax = max(pred_colors.max(), target_colors.max())
-    norm = Normalize(vmin=vmin, vmax=vmax)
+    # Use same color scale for normalized plots
+    vmin_norm = min(pred_colors_norm.min(), target_colors_norm.min())
+    vmax_norm = max(pred_colors_norm.max(), target_colors_norm.max())
+    norm_normalized = Normalize(vmin=vmin_norm, vmax=vmax_norm)
+
+    # Use same color scale for denormalized plots
+    vmin_denorm = min(pred_colors_denorm.min(), target_colors_denorm.min())
+    vmax_denorm = max(pred_colors_denorm.max(), target_colors_denorm.max())
+    norm_denormalized = Normalize(vmin=vmin_denorm, vmax=vmax_denorm)
+
     cmap = plt.cm.jet
 
     # Build face vertex coordinates
@@ -380,24 +404,40 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
         edge_colors = 'none'
         edge_linewidth = 0
 
-    # Create figure with two 3D subplots
-    fig = plt.figure(figsize=(16, 7))
-    ax1 = fig.add_subplot(121, projection='3d')
-    ax2 = fig.add_subplot(122, projection='3d')
+    # Create figure with 2x2 grid of 3D subplots
+    fig = plt.figure(figsize=(18, 14))
 
-    # Create Poly3DCollection for predicted
-    pred_facecolors = cmap(norm(pred_colors))
-    poly1 = Poly3DCollection(face_verts, facecolors=pred_facecolors,
+    # Top row: Normalized values
+    ax1 = fig.add_subplot(221, projection='3d')  # Top-left: Normalized Predicted
+    ax2 = fig.add_subplot(222, projection='3d')  # Top-right: Normalized Ground Truth
+
+    # Bottom row: Denormalized values
+    ax3 = fig.add_subplot(223, projection='3d')  # Bottom-left: Denormalized Predicted
+    ax4 = fig.add_subplot(224, projection='3d')  # Bottom-right: Denormalized Ground Truth
+
+    # Top row: Create Poly3DCollection for normalized values
+    pred_facecolors_norm = cmap(norm_normalized(pred_colors_norm))
+    poly1 = Poly3DCollection(face_verts, facecolors=pred_facecolors_norm,
                              edgecolors=edge_colors, linewidths=edge_linewidth)
     ax1.add_collection3d(poly1)
 
-    # Create Poly3DCollection for ground truth
-    target_facecolors = cmap(norm(target_colors))
-    poly2 = Poly3DCollection(face_verts, facecolors=target_facecolors,
+    target_facecolors_norm = cmap(norm_normalized(target_colors_norm))
+    poly2 = Poly3DCollection(face_verts, facecolors=target_facecolors_norm,
                              edgecolors=edge_colors, linewidths=edge_linewidth)
     ax2.add_collection3d(poly2)
 
-    # Set axis limits
+    # Bottom row: Create Poly3DCollection for denormalized values
+    pred_facecolors_denorm = cmap(norm_denormalized(pred_colors_denorm))
+    poly3 = Poly3DCollection(face_verts, facecolors=pred_facecolors_denorm,
+                             edgecolors=edge_colors, linewidths=edge_linewidth)
+    ax3.add_collection3d(poly3)
+
+    target_facecolors_denorm = cmap(norm_denormalized(target_colors_denorm))
+    poly4 = Poly3DCollection(face_verts, facecolors=target_facecolors_denorm,
+                             edgecolors=edge_colors, linewidths=edge_linewidth)
+    ax4.add_collection3d(poly4)
+
+    # Set axis limits (same for all subplots)
     x_min, x_max = pos[:, 0].min(), pos[:, 0].max()
     y_min, y_max = pos[:, 1].min(), pos[:, 1].max()
     z_min, z_max = pos[:, 2].min(), pos[:, 2].max()
@@ -407,26 +447,37 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
     y_range = max(y_max - y_min, eps)
     z_range = max(z_max - z_min, eps)
 
-    for ax, title in [(ax1, 'Predicted'), (ax2, 'Ground Truth')]:
+    # Set axis limits and labels for all four subplots
+    for ax, title in [(ax1, 'Normalized - Predicted'), (ax2, 'Normalized - Ground Truth'),
+                      (ax3, 'Denormalized - Predicted'), (ax4, 'Denormalized - Ground Truth')]:
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
         ax.set_zlim(z_min, z_max)
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
         ax.set_zlabel('Z')
-        ax.set_title(title)
+        ax.set_title(title, fontsize=11)
         ax.view_init(elev=30, azim=45)
         ax.set_box_aspect([x_range, y_range, z_range])
 
-    # Add colorbar with proper units
-    sm = ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=[ax1, ax2], shrink=0.6, aspect=20, pad=0.1)
-    cbar_label = f'{feature_name} ({feature_unit})' if feature_unit else feature_name
-    cbar.set_label(cbar_label, fontsize=11)
+    # Add colorbars with proper units
+    # Colorbar for normalized values (top row)
+    sm_norm = ScalarMappable(cmap=cmap, norm=norm_normalized)
+    sm_norm.set_array([])
+    cbar_norm = fig.colorbar(sm_norm, ax=[ax1, ax2], shrink=0.5, aspect=15, pad=0.05)
+    cbar_norm.set_label(f'{feature_name} (Normalized)', fontsize=10)
 
-    # Build title with sample/timestep info
-    mae = np.abs(pred_colors - target_colors).mean()
+    # Colorbar for denormalized values (bottom row)
+    sm_denorm = ScalarMappable(cmap=cmap, norm=norm_denormalized)
+    sm_denorm.set_array([])
+    cbar_denorm = fig.colorbar(sm_denorm, ax=[ax3, ax4], shrink=0.5, aspect=15, pad=0.05)
+    cbar_label_denorm = f'{feature_name} ({feature_unit})' if feature_unit else f'{feature_name} (Denormalized)'
+    cbar_denorm.set_label(cbar_label_denorm, fontsize=10)
+
+    # Build title with sample/timestep info and MAE for both normalized and denormalized
+    mae_norm = np.abs(pred_colors_norm - target_colors_norm).mean()
+    mae_denorm = np.abs(pred_colors_denorm - target_colors_denorm).mean()
+
     title_parts = []
     if sample_id is not None:
         title_parts.append(f'Sample {sample_id}')
@@ -438,13 +489,13 @@ def plot_mesh_comparison(pos, faces, pred_values, target_values, output_path,
             title_parts.append(f'{num_parts} Parts')
 
     if title_parts:
-        mae_str = f'{mae:.4f} {feature_unit}' if feature_unit else f'{mae:.4f}'
-        title_str = ', '.join(title_parts) + f' | MAE: {mae_str}'
+        mae_str = f'MAE Norm: {mae_norm:.4f} | MAE Denorm: {mae_denorm:.4f} {feature_unit}' if feature_unit else f'MAE Norm: {mae_norm:.4f} | MAE Denorm: {mae_denorm:.4f}'
+        title_str = ', '.join(title_parts) + f' | {mae_str}'
     else:
-        mae_str = f'{mae:.4f} {feature_unit}' if feature_unit else f'{mae:.4f}'
-        title_str = f'Delta Values: {feature_name} (MAE: {mae_str})'
+        mae_str = f'MAE Norm: {mae_norm:.4f} | MAE Denorm: {mae_denorm:.4f} {feature_unit}' if feature_unit else f'MAE Norm: {mae_norm:.4f} | MAE Denorm: {mae_denorm:.4f}'
+        title_str = f'{feature_name} | {mae_str}'
 
-    fig.suptitle(title_str, fontsize=13, weight='bold')
+    fig.suptitle(title_str, fontsize=14, weight='bold')
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
@@ -457,8 +508,10 @@ def _plot_worker(plot_data):
         plot_mesh_comparison(
             plot_data['pos'],
             plot_data['faces'],
-            plot_data['pred_values'],
-            plot_data['target_values'],
+            plot_data['pred_values_norm'],
+            plot_data['target_values_norm'],
+            plot_data['pred_values_denorm'],
+            plot_data['target_values_denorm'],
             plot_data['plot_path'],
             feature_idx=plot_data.get('feature_idx', -1),
             sample_id=plot_data.get('sample_id'),

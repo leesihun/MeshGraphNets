@@ -174,10 +174,13 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
                     target_denorm = target_np
 
                 # Use fast GPU-accelerated version, collect plot data
+                # Pass both normalized and denormalized values for visualization
                 display_testset = config.get('display_testset', True)
                 plot_feature_idx = config.get('plot_feature_idx', -1)
                 plot_data = save_inference_results_fast(
-                    output_path, graph, predicted_denorm, target_denorm,
+                    output_path, graph,
+                    predicted_norm=predicted_np, target_norm=target_np,
+                    predicted_denorm=predicted_denorm, target_denorm=target_denorm,
                     skip_visualization=not display_testset,
                     device=mesh_device,
                     feature_idx=plot_feature_idx
