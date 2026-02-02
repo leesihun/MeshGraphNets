@@ -183,7 +183,7 @@ class MeshGraphDataset(Dataset):
                     delta_min = np.zeros(self.output_dim, dtype=np.float32)
 
                     # Use sampled data from _compute_zscore_stats
-                    num_samples = min(50, len(self.sample_ids))
+                    num_samples = len(self.sample_ids)
                     with h5py.File(self.h5_file, 'r') as f_read:
                         all_deltas = [[] for _ in range(self.output_dim)]
                         for i in range(num_samples):
