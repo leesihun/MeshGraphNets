@@ -76,9 +76,6 @@ def single_worker(config):
         print(f'After model initialization: {torch.cuda.memory_allocated()/1e9:.2f}GB')
 
     print('\n'*2)
-    print("Model architecture/summary:")
-    print(model)
-    print('\n'*2)
     print("Model initialized successfully")
     if config.get('use_checkpointing', False):
         print("Gradient checkpointing: ENABLED")

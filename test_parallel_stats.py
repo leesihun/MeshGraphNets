@@ -65,52 +65,52 @@ def test_parallel_vs_serial():
     tests_passed = True
 
     if not np.allclose(serial_node_mean, parallel_node_mean, rtol=rtol, atol=atol):
-        print("  ❌ FAILED: Node mean mismatch")
+        print("  [FAIL] Node mean mismatch")
         print(f"     Serial:   {serial_node_mean}")
         print(f"     Parallel: {parallel_node_mean}")
         tests_passed = False
     else:
-        print("  ✓ Node mean matches")
+        print("  [PASS] Node mean matches")
 
     if not np.allclose(serial_node_std, parallel_node_std, rtol=rtol, atol=atol):
-        print("  ❌ FAILED: Node std mismatch")
+        print("  [FAIL] Node std mismatch")
         print(f"     Serial:   {serial_node_std}")
         print(f"     Parallel: {parallel_node_std}")
         tests_passed = False
     else:
-        print("  ✓ Node std matches")
+        print("  [PASS] Node std matches")
 
     if not np.allclose(serial_edge_mean, parallel_edge_mean, rtol=rtol, atol=atol):
-        print("  ❌ FAILED: Edge mean mismatch")
+        print("  [FAIL] Edge mean mismatch")
         print(f"     Serial:   {serial_edge_mean}")
         print(f"     Parallel: {parallel_edge_mean}")
         tests_passed = False
     else:
-        print("  ✓ Edge mean matches")
+        print("  [PASS] Edge mean matches")
 
     if not np.allclose(serial_edge_std, parallel_edge_std, rtol=rtol, atol=atol):
-        print("  ❌ FAILED: Edge std mismatch")
+        print("  [FAIL] Edge std mismatch")
         print(f"     Serial:   {serial_edge_std}")
         print(f"     Parallel: {parallel_edge_std}")
         tests_passed = False
     else:
-        print("  ✓ Edge std matches")
+        print("  [PASS] Edge std matches")
 
     if not np.allclose(serial_delta_mean, parallel_delta_mean, rtol=rtol, atol=atol):
-        print("  ❌ FAILED: Delta mean mismatch")
+        print("  [FAIL] Delta mean mismatch")
         print(f"     Serial:   {serial_delta_mean}")
         print(f"     Parallel: {parallel_delta_mean}")
         tests_passed = False
     else:
-        print("  ✓ Delta mean matches")
+        print("  [PASS] Delta mean matches")
 
     if not np.allclose(serial_delta_std, parallel_delta_std, rtol=rtol, atol=atol):
-        print("  ❌ FAILED: Delta std mismatch")
+        print("  [FAIL] Delta std mismatch")
         print(f"     Serial:   {serial_delta_std}")
         print(f"     Parallel: {parallel_delta_std}")
         tests_passed = False
     else:
-        print("  ✓ Delta std matches")
+        print("  [PASS] Delta std matches")
 
     # Test 4: Performance comparison
     print("\n[Test 4] Performance comparison...")
@@ -120,20 +120,20 @@ def test_parallel_vs_serial():
     print(f"  Speedup:       {speedup:.2f}x")
 
     if speedup > 1.2:
-        print(f"  ✓ Parallel processing is faster ({speedup:.2f}x speedup)")
+        print(f"  [PASS] Parallel processing is faster ({speedup:.2f}x speedup)")
     elif speedup < 0.8:
-        print(f"  ⚠ Warning: Parallel processing is slower ({speedup:.2f}x)")
+        print(f"  [WARN] Parallel processing is slower ({speedup:.2f}x)")
         print("    This may be due to small dataset size or overhead")
     else:
-        print(f"  ≈ Performance similar (speedup: {speedup:.2f}x)")
+        print(f"  [INFO] Performance similar (speedup: {speedup:.2f}x)")
 
     # Summary
     print("\n" + "="*80)
     if tests_passed:
-        print("✓ ALL TESTS PASSED")
+        print("[PASS] ALL TESTS PASSED")
         print("Parallel implementation produces identical results to serial version")
     else:
-        print("❌ SOME TESTS FAILED")
+        print("[FAIL] SOME TESTS FAILED")
         print("Please check the output above for details")
     print("="*80)
 
@@ -145,7 +145,7 @@ if __name__ == "__main__":
         success = test_parallel_vs_serial()
         sys.exit(0 if success else 1)
     except Exception as e:
-        print(f"\n❌ Test failed with exception: {e}")
+        print(f"\n[ERROR] Test failed with exception: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

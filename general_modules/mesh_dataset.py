@@ -50,8 +50,11 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
                     mesh_edge = f[f'data/{sid}/mesh_edge'][:]  # [2, edges]
 
                     # Sample timesteps for multi-timestep data
+                    # For statistics computation, we don't need all timesteps - sample a subset
+                    max_timesteps_for_stats = 500  # Limit to prevent memory issues in parallel workers
                     if num_timesteps > 1:
-                        timesteps = np.linspace(0, num_timesteps - 1, num_timesteps, dtype=int)
+                        num_samples_t = min(max_timesteps_for_stats, num_timesteps)
+                        timesteps = np.linspace(0, num_timesteps - 1, num_samples_t, dtype=int)
                     else:
                         timesteps = [0]
 
@@ -71,7 +74,9 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
 
                     # Compute delta features (differences between consecutive timesteps)
                     if num_timesteps > 1:
-                        delta_timesteps = np.linspace(0, num_timesteps - 2, num_timesteps - 1, dtype=int)
+                        # Sample delta timesteps to prevent memory issues
+                        num_delta_samples = min(max_timesteps_for_stats, num_timesteps - 1)
+                        delta_timesteps = np.linspace(0, num_timesteps - 2, num_delta_samples, dtype=int)
                         for t in delta_timesteps:
                             for feat_idx in range(output_dim):
                                 feat_t = data[3 + feat_idx, t, :]      # [N]
@@ -202,7 +207,7 @@ class MeshGraphDataset(Dataset):
         # Determine number of workers
         if use_parallel and num_samples >= min_samples_for_parallel:
             # Use 80% of available cores, minimum 1, maximum 8
-            num_workers = max(1, min(8, int(mp.cpu_count() * 0.45)))
+            num_workers = max(1, min(64, int(mp.cpu_count() * 0.45)))
         else:
             num_workers = 1
 
@@ -300,6 +305,9 @@ class MeshGraphDataset(Dataset):
         all_edge_features = []
         all_delta_features = [[] for _ in range(self.output_dim)]
 
+        # Limit timestep sampling to prevent memory issues (same as parallel version)
+        max_timesteps_for_stats = 500
+
         with h5py.File(self.h5_file, 'r') as f:
             for i in range(num_samples):
                 sid = self.sample_ids[i]
@@ -308,7 +316,8 @@ class MeshGraphDataset(Dataset):
 
                 # Sample timesteps for multi-timestep data
                 if self.num_timesteps > 1:
-                    timesteps = np.linspace(0, self.num_timesteps - 1, self.num_timesteps, dtype=int)
+                    num_samples_t = min(max_timesteps_for_stats, self.num_timesteps)
+                    timesteps = np.linspace(0, self.num_timesteps - 1, num_samples_t, dtype=int)
                 else:
                     timesteps = [0]
 
@@ -329,7 +338,8 @@ class MeshGraphDataset(Dataset):
                 # Compute delta features (differences between consecutive timesteps)
                 if self.num_timesteps > 1:
                     # Sample consecutive timestep pairs
-                    delta_timesteps = np.linspace(0, self.num_timesteps - 2, self.num_timesteps - 1, dtype=int)
+                    num_delta_samples = min(max_timesteps_for_stats, self.num_timesteps - 1)
+                    delta_timesteps = np.linspace(0, self.num_timesteps - 2, num_delta_samples, dtype=int)
                     for t in delta_timesteps:
                         for feat_idx in range(self.output_dim):
                             feat_t = data[3 + feat_idx, t, :]      # [N]
