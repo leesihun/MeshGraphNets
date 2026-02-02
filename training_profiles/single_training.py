@@ -1,18 +1,15 @@
 import os
+import time
+
+import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.tensorboard.writer import SummaryWriter
+
 from general_modules.data_loader import load_data
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, infer_model
-
-import torch
-import tqdm
-import numpy as np
-import os
-import time
 
 def single_worker(config):
     # Single GPU/CPU training
@@ -89,7 +86,6 @@ def single_worker(config):
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable parameters: {trainable_params:,}")
-    # TODO: Train the model
 
     best_valid_loss = float('inf')
     best_epoch = -1
@@ -121,7 +117,7 @@ def single_worker(config):
 
     log_file_dir = config.get('log_file_dir')
     if log_file_dir:
-        log_file = 'outputs/'+'/'+log_file_dir
+        log_file = 'outputs/' + log_file_dir
         # if log_file doesn't exist, create it
         if not os.path.exists(log_file):
             os.makedirs(os.path.dirname(log_file), exist_ok=True)

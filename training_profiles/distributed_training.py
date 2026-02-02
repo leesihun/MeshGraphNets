@@ -1,16 +1,15 @@
 import os
+import time
+
+import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+
 from general_modules.data_loader import load_data
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, infer_model
-
-import torch
-import tqdm
-import numpy as np
-import time
 
 def train_worker(rank, world_size, config, gpu_ids):
     """Training worker for distributed training.
@@ -160,7 +159,7 @@ def train_worker(rank, world_size, config, gpu_ids):
     log_file = None
     log_file_dir = config.get('log_file_dir')
     if log_file_dir and rank == 0:
-        log_file = 'outputs/'+'/'+log_file_dir
+        log_file = 'outputs/' + log_file_dir
         # if log_file doesn't exist, create it
         if not os.path.exists(log_file):
             os.makedirs(os.path.dirname(log_file), exist_ok=True)

@@ -32,7 +32,7 @@ def main():
     model = config.get('model')
 
     print('\n'*2)
-    print(f'           Selected Model: {model}, Based on Nvidia physics-NeMo implementation')
+    print(f'           Selected Model: {model}, Based on Nvidia physicsNeMo implementation')
     print(f'           Running in    : {run_mode} mode')
     print('\n'*2)
     

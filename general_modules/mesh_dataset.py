@@ -65,38 +65,8 @@ class MeshGraphDataset(Dataset):
             data_shape = f[f'data/{sample_id}/nodal_data'].shape
             self.num_timesteps = data_shape[1]  # Shape: (features, time, nodes)
 
-            # Load precomputed normalization parameters
-            # Shape: (7,) for [x, y, z, disp_x, disp_y, disp_z, stress]
-            # self.norm_mean = f['metadata/normalization_params/mean'][:]
-            # self.norm_std = f['metadata/normalization_params/std'][:]
-            self.norm_max = f['metadata/normalization_params/max'][:]
-            self.norm_min = f['metadata/normalization_params/min'][:]
-            # Add small epsilon to avoid division by zero
-            # self.norm_std = np.maximum(self.norm_std, 1e-8)
-
-            # Delta normalization parameters will be computed from actual data
-            # in _compute_zscore_stats() to ensure they are always correct
             self.delta_mean = None
             self.delta_std = None
-
-        # Extract stats for node features (indices 3:7 = physical fields)
-        # self.node_mean = self.norm_mean[3:3+self.input_dim]
-        # self.node_std = self.norm_std[3:3+self.input_dim]
-        self.node_max = self.norm_max[3:3+self.input_dim]
-        self.node_min = self.norm_min[3:3+self.input_dim]
-        
-        # Extract stats for edge features (relative positions use coord std)
-        # Edge features: [dx, dy, dz, distance]
-        # For relative positions, mean is ~0, std is similar to coord std
-        # self.edge_mean = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        # Use coordinate std for dx, dy, dz; use mean distance for distance normalization
-        # coord_std_mean = np.mean(self.norm_std[:3])  # Average std of x, y, z
-        # self.edge_std = np.array([
-        #     self.norm_std[0],  # std for dx
-        #     self.norm_std[1],  # std for dy
-        #     self.norm_std[2],  # std for dz
-        #     coord_std_mean     # std for distance (approximate)
-        # ], dtype=np.float32)
 
         print(f"Found {len(self.sample_ids)} samples")
         print(f"  num_timesteps: {self.num_timesteps}")
@@ -119,7 +89,7 @@ class MeshGraphDataset(Dataset):
         print('Computing z-score normalization statistics...')
 
         # Sample a subset for efficiency
-        num_samples = min(50, len(self.sample_ids))
+        num_samples = len(self.sample_ids) #min(50, len(self.sample_ids))
 
         all_node_features = []
         all_edge_features = []
@@ -133,7 +103,7 @@ class MeshGraphDataset(Dataset):
 
                 # Sample timesteps for multi-timestep data
                 if self.num_timesteps > 1:
-                    timesteps = np.linspace(0, self.num_timesteps - 1, min(10, self.num_timesteps), dtype=int)
+                    timesteps = np.linspace(0, self.num_timesteps - 1, self.num_timesteps, dtype=int)
                 else:
                     timesteps = [0]
 
@@ -143,23 +113,23 @@ class MeshGraphDataset(Dataset):
                     all_node_features.append(node_feat)
 
                     # Edge features: [dx, dy, dz, distance]
-                    pos = data[:3, t, :].T  # [N, 3]
+                    pos = (data[:3, t, :]+data[3:6, t, :]).T  # [N, 3] - Deformed position (reference + displacement)
                     # Bidirectional edges
                     edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
-                    rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]
+                    rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]] # Deformed relative position
                     dist = np.linalg.norm(rel_pos, axis=1, keepdims=True)
-                    edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
+                    edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4] - Deformed edge features (relative position + distance)
                     all_edge_features.append(edge_feat)
 
                 # Compute delta features (differences between consecutive timesteps)
                 if self.num_timesteps > 1:
                     # Sample consecutive timestep pairs
-                    delta_timesteps = np.linspace(0, self.num_timesteps - 2, min(10, self.num_timesteps - 1), dtype=int)
+                    delta_timesteps = np.linspace(0, self.num_timesteps - 2, self.num_timesteps - 1, dtype=int)
                     for t in delta_timesteps:
                         for feat_idx in range(self.output_dim):
                             feat_t = data[3 + feat_idx, t, :]      # [N]
-                            feat_t1 = data[3 + feat_idx, t + 1, :]  # [N]
-                            delta = feat_t1 - feat_t
+                            feat_t1 = data[3 + feat_idx, t + 1, :]  # [N] - Next timestep feature
+                            delta = feat_t1 - feat_t # Delta nodal feature (including node type)
                             all_delta_features[feat_idx].append(delta)
                 else:
                     # Single timestep: delta is the final value itself (from zero initial state)
@@ -194,84 +164,52 @@ class MeshGraphDataset(Dataset):
 
         print(f'  Delta features - mean: {self.delta_mean}, std: {self.delta_std}')
 
-        # Update HDF5 file with correct delta normalization parameters
-        self._update_h5_delta_params()
+        with h5py.File(self.h5_file, 'r+') as f:
+            if 'metadata/normalization_params' not in f:
+                norm_params = f.create_group('metadata/normalization_params')
 
-    def _update_h5_delta_params(self) -> None:
-        """Update the HDF5 file with correct delta normalization parameters.
+            norm_params = f['metadata/normalization_params']
 
-        This fixes incorrect pre-stored delta_mean and delta_std values by overwriting
-        them with values computed from actual data.
-        """
-        try:
-            with h5py.File(self.h5_file, 'r+') as f:
-                norm_params = f['metadata/normalization_params']
+            # Check if stored params differ from computed ones
+            if 'delta_mean' in norm_params and 'delta_std' in norm_params:
+                
+                norm_params['delta_mean'][...] = self.delta_mean
+                norm_params['delta_std'][...] = self.delta_std
 
-                # Check if stored params differ from computed ones
-                if 'delta_mean' in norm_params and 'delta_std' in norm_params:
-                    old_mean = norm_params['delta_mean'][:]
-                    old_std = norm_params['delta_std'][:]
+                # Also update delta_max and delta_min if they exist
+                if 'delta_max' in norm_params and 'delta_min' in norm_params:
+                    # Compute correct min/max from the same data
+                    delta_max = np.zeros(self.output_dim, dtype=np.float32)
+                    delta_min = np.zeros(self.output_dim, dtype=np.float32)
 
-                    # Check if update is needed (significant difference)
-                    mean_diff = np.abs(old_mean - self.delta_mean)
-                    std_diff = np.abs(old_std - self.delta_std)
-                    std_ratio = old_std / self.delta_std
+                    # Use sampled data from _compute_zscore_stats
+                    num_samples = min(50, len(self.sample_ids))
+                    with h5py.File(self.h5_file, 'r') as f_read:
+                        all_deltas = [[] for _ in range(self.output_dim)]
+                        for i in range(num_samples):
+                            sid = self.sample_ids[i]
+                            data = f_read[f'data/{sid}/nodal_data'][:]
+                            if self.num_timesteps > 1:
+                                delta_timesteps = np.linspace(0, self.num_timesteps - 2,
+                                                                min(10, self.num_timesteps - 1), dtype=int)
+                                for t in delta_timesteps:
+                                    for feat_idx in range(self.output_dim):
+                                        delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
+                                        all_deltas[feat_idx].append(delta)
+                            else:
+                                for feat_idx in range(self.output_dim):
+                                    all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
 
-                    needs_update = np.any(std_ratio > 2.0) or np.any(std_ratio < 0.5)
+                    for feat_idx in range(self.output_dim):
+                        deltas = np.concatenate(all_deltas[feat_idx])
+                        delta_max[feat_idx] = np.max(deltas)
+                        delta_min[feat_idx] = np.min(deltas)
 
-                    if needs_update:
-                        print(f'  WARNING: Stored delta normalization params differ significantly from computed values!')
-                        print(f'    Stored delta_std: {old_std}')
-                        print(f'    Computed delta_std: {self.delta_std}')
-                        print(f'    Ratio (stored/computed): {std_ratio}')
-                        print(f'  Updating HDF5 file with correct values...')
+                    norm_params['delta_max'][...] = delta_max
+                    norm_params['delta_min'][...] = delta_min
 
-                        # Update the parameters
-                        norm_params['delta_mean'][...] = self.delta_mean
-                        norm_params['delta_std'][...] = self.delta_std
-
-                        # Also update delta_max and delta_min if they exist
-                        if 'delta_max' in norm_params and 'delta_min' in norm_params:
-                            # Compute correct min/max from the same data
-                            delta_max = np.zeros(self.output_dim, dtype=np.float32)
-                            delta_min = np.zeros(self.output_dim, dtype=np.float32)
-
-                            # Use sampled data from _compute_zscore_stats
-                            num_samples = min(50, len(self.sample_ids))
-                            with h5py.File(self.h5_file, 'r') as f_read:
-                                all_deltas = [[] for _ in range(self.output_dim)]
-                                for i in range(num_samples):
-                                    sid = self.sample_ids[i]
-                                    data = f_read[f'data/{sid}/nodal_data'][:]
-                                    if self.num_timesteps > 1:
-                                        delta_timesteps = np.linspace(0, self.num_timesteps - 2,
-                                                                     min(10, self.num_timesteps - 1), dtype=int)
-                                        for t in delta_timesteps:
-                                            for feat_idx in range(self.output_dim):
-                                                delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
-                                                all_deltas[feat_idx].append(delta)
-                                    else:
-                                        for feat_idx in range(self.output_dim):
-                                            all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
-
-                            for feat_idx in range(self.output_dim):
-                                deltas = np.concatenate(all_deltas[feat_idx])
-                                delta_max[feat_idx] = np.max(deltas)
-                                delta_min[feat_idx] = np.min(deltas)
-
-                            norm_params['delta_max'][...] = delta_max
-                            norm_params['delta_min'][...] = delta_min
-
-                        print(f'  [OK] HDF5 delta normalization parameters updated successfully')
-                    else:
-                        print(f'  [OK] Stored delta normalization params are correct (no update needed)')
-                else:
-                    print(f'  WARNING: No delta normalization params in HDF5, cannot update')
-
-        except Exception as e:
-            print(f'  WARNING: Could not update HDF5 file: {e}')
-            print(f'  Continuing with computed delta normalization params from memory')
-
+                print(f'  [OK] HDF5 delta normalization parameters updated successfully')
+                    
     def _compute_node_type_info(self) -> None:
         """Compute the number of unique node types from the dataset."""
         print('Computing node type information...')
@@ -286,8 +224,6 @@ class MeshGraphDataset(Dataset):
                 node_types = nodal_data[-1, 0, :].astype(np.int32)  # Last feature, first timestep
                 unique_types.update(node_types)
 
-            # Create mapping from original node type values to contiguous indices
-            # e.g., {0: 0, 1: 1, 3: 2} for node types [0, 1, 3]
             sorted_types = sorted(unique_types)
             self.node_type_to_idx = {t: i for i, t in enumerate(sorted_types)}
             self.num_node_types = len(unique_types)
@@ -466,31 +402,29 @@ class MeshGraphDataset(Dataset):
             data = f[f'data/{sample_id}/nodal_data'][:]  # [7 or 8, time, nodes]
             edge_index = f[f'data/{sample_id}/mesh_edge'][:]  # [2, M]
 
-        # Check if dataset has part information (8 features instead of 7)
-        num_features = data.shape[0]
-        has_part_info = num_features >= 8
+        if self.config['use_node_types']:
+            has_part_info = True
+        else:
+            has_part_info = False
 
-        # Extract part_ids for visualization (if available)
-        # Part number is at index 7, constant across time
         if has_part_info:
-            part_ids = data[7, 0, :].astype(np.int32)  # [nodes]
+            part_ids = data[-1, 0, :].astype(np.int32)  # [nodes]
         else:
             part_ids = None
 
-        # Extract node types if enabled (before transpose)
-        # Node types are always the last feature, constant across time
         if self.use_node_types:
             node_types = data[-1, 0, :].astype(np.int32)  # [nodes]
         else:
             node_types = None
 
+            # Essentially, node_types are part_ids
+
         # Make edges bidirectional (like DeepMind's MeshGraphNets implementation)
-        # Original: only (src, dst) where src < dst
-        # Bidirectional: both (src, dst) and (dst, src)
         edge_index = np.concatenate([edge_index, edge_index[[1, 0], :]], axis=1)  # [2, 2M]
 
         # Transpose to [nodes, time, 7]
         data = np.transpose(data, (2, 1, 0))
+        # Data shape: [nodes, time, features]
 
         # Extract data based on timesteps
         if self.num_timesteps == 1: # Static case
@@ -500,7 +434,7 @@ class MeshGraphDataset(Dataset):
             x_raw = np.zeros((data_t.shape[0], self.input_dim), dtype=np.float32)  # [N, 4] zeros
             y_raw = data_t[:, 3:3+self.output_dim]  # [N, 4]
             # Target delta: y - x (for single timestep, x is zeros so delta = y)
-            target_delta = y_raw - x_raw  # [N, 4]
+            target_delta = y_raw - x_raw  # [N, 4], not including node types
         else:
             # Multi-timestep: state t → state t+1
             data_t = data[:, time_idx, :]  # [N, 7]
@@ -511,9 +445,6 @@ class MeshGraphDataset(Dataset):
             # Target delta: difference between next and current state
             target_delta = y_raw - x_raw  # [N, 4]
 
-        # Compute deformed position for world edge computation
-        # World edges should be computed on the CURRENT (deformed) geometry, not reference
-        # deformed_pos = reference_pos + displacement
         displacement = x_raw[:, :3]  # [N, 3] - extract displacement components (x_disp, y_disp, z_disp)
         deformed_pos = pos + displacement  # [N, 3] - actual mesh position at time t
 
@@ -522,12 +453,13 @@ class MeshGraphDataset(Dataset):
         # Reverse edges naturally get negated relative_pos since src/dst are swapped
         src_idx = edge_index[0]
         dst_idx = edge_index[1]
-        relative_pos = pos[dst_idx] - pos[src_idx]  # [2M, 3]
+        relative_pos = deformed_pos[dst_idx] - deformed_pos[src_idx]  # [2M, 3]
         distance = np.linalg.norm(relative_pos, axis=1, keepdims=True)  # [2M, 1]
         edge_attr_raw = np.concatenate([relative_pos, distance], axis=1)  # [2M, 4]
 
         # Apply z-score normalization to all features
         # Node features: z-score normalization
+
         x_norm = (x_raw - self.node_mean) / self.node_std
 
         # Add node types if enabled
@@ -553,8 +485,8 @@ class MeshGraphDataset(Dataset):
 
         # Convert to tensors
         pos = torch.from_numpy(pos.astype(np.float32))
-        x = torch.from_numpy(x_norm.astype(np.float32))
-        y = torch.from_numpy(target_norm.astype(np.float32))
+        x = torch.from_numpy(x_norm.astype(np.float32)) # nodal state at time t, dx, dy, dz, stress, nodal type, ...
+        y = torch.from_numpy(target_norm.astype(np.float32)) # nodal state at time t+1, dx, dy, dz, stress, ...
         edge_index = torch.from_numpy(edge_index).long()
         edge_attr = torch.from_numpy(edge_attr_norm.astype(np.float32))
 
@@ -633,10 +565,6 @@ class MeshGraphDataset(Dataset):
         train_dataset.output_dim = self.output_dim
         train_dataset.sample_ids = train_ids
         train_dataset.num_timesteps = self.num_timesteps
-        train_dataset.norm_max = self.norm_max
-        train_dataset.norm_min = self.norm_min
-        train_dataset.node_max = self.node_max
-        train_dataset.node_min = self.node_min
         train_dataset.use_node_types = self.use_node_types
         train_dataset.num_node_types = self.num_node_types
         train_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
@@ -660,10 +588,6 @@ class MeshGraphDataset(Dataset):
         val_dataset.output_dim = self.output_dim
         val_dataset.sample_ids = val_ids
         val_dataset.num_timesteps = self.num_timesteps
-        val_dataset.norm_max = self.norm_max
-        val_dataset.norm_min = self.norm_min
-        val_dataset.node_max = self.node_max
-        val_dataset.node_min = self.node_min
         val_dataset.use_node_types = self.use_node_types
         val_dataset.num_node_types = self.num_node_types
         val_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
@@ -687,10 +611,6 @@ class MeshGraphDataset(Dataset):
         test_dataset.output_dim = self.output_dim
         test_dataset.sample_ids = test_ids
         test_dataset.num_timesteps = self.num_timesteps
-        test_dataset.norm_max = self.norm_max
-        test_dataset.norm_min = self.norm_min
-        test_dataset.node_max = self.node_max
-        test_dataset.node_min = self.node_min
         test_dataset.use_node_types = self.use_node_types
         test_dataset.num_node_types = self.num_node_types
         test_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None

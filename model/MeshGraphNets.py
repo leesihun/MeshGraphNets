@@ -12,7 +12,6 @@ def init_weights(m):
         # He init accounts for ReLU nonlinearity and prevents vanishing gradients
         init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
         # Scale down by 0.5 for additional stability with deep networks (15 GN blocks)
-        # m.weight.data
         if m.bias is not None:
             init.zeros_(m.bias)
 
@@ -52,14 +51,6 @@ class MeshGraphNets(nn.Module):
 
         # Forward through encoder-processor-decoder
         predicted = self.model(graph)
-
-        
-        # print(f"Graph: {graph}")
-        # print(f"Graph.x: {graph.x}")
-        # print(f"Graph.edge_attr: {graph.edge_attr}")
-        # print(f"Graph.edge_index: {graph.edge_index}")
-        # print(f"Graph.y: {graph.y}")
-        # print(f"Predicted: {predicted}")
 
         return predicted, graph.y
 
@@ -132,9 +123,8 @@ def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu'
 
     if layer_norm:
         module = nn.Sequential(
-            nn.Linear(in_size, hidden_size), 
+            nn.Linear(in_size, hidden_size),
             activation_func,
-            # nn.LayerNorm(normalized_shape=hidden_size),
             nn.Linear(hidden_size, hidden_size),
             activation_func,
             nn.LayerNorm(normalized_shape=hidden_size),
@@ -142,12 +132,11 @@ def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu'
         )
     elif decoder:
         module = nn.Sequential(
-            nn.Linear(in_size, hidden_size), 
+            nn.Linear(in_size, hidden_size),
             activation_func,
             nn.Linear(hidden_size, hidden_size),
             activation_func,
-            nn.Linear(hidden_size, out_size),
-            # nn.Tanh()
+            nn.Linear(hidden_size, out_size)
         )
 
     return module
