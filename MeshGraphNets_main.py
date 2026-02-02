@@ -1,4 +1,5 @@
 # MeshGraphNets
+import argparse
 import numpy as np
 import torch
 from torch_geometric.loader import DataLoader
@@ -10,6 +11,12 @@ from training_profiles.distributed_training import train_worker
 from training_profiles.single_training import single_worker
 
 def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='MeshGraphNets Training')
+    parser.add_argument('--config', type=str, default='config.txt',
+                        help='Path to config file (default: config.txt)')
+    args = parser.parse_args()
+
     print('\n'*3)
 
     # Display ASCII art banner
@@ -26,12 +33,13 @@ def main():
     print()
 
     # Load configuration files
-    config = load_config("config.txt")
+    config = load_config(args.config)
 
     run_mode = config.get('mode')
     model = config.get('model')
 
     print('\n'*2)
+    print(f'           Config file   : {args.config}')
     print(f'           Selected Model: {model}, Based on Nvidia physicsNeMo implementation')
     print(f'           Running in    : {run_mode} mode')
     print('\n'*2)
