@@ -90,7 +90,7 @@ def single_worker(config, config_filename='config.txt'):
     # Initialize optimizer
     print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     # Initialize learning rate scheduler
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(

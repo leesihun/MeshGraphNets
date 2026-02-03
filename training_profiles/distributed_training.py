@@ -133,7 +133,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     if rank == 0:
         print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     # Initialize learning rate scheduler
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
