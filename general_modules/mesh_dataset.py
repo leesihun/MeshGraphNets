@@ -337,6 +337,7 @@ class MeshGraphDataset(Dataset):
                         norm_params['delta_min'][...] = delta_min
 
                     print(f'  [OK] HDF5 delta normalization parameters updated successfully')
+                    f.close()
         except (OSError, BlockingIOError) as e:
             print(f'  [INFO] Could not update HDF5 normalization params (file locked by another process)')
             pass
