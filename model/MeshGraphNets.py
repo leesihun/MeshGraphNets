@@ -145,15 +145,14 @@ def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='silu'
             nn.Linear(hidden_size, out_size),
         )
     elif decoder:
-        # Decoder with Pre-LN
+        # Decoder: LayerNorm at input only, no LayerNorm before final output
+        # This allows the decoder to output values with full range
         module = nn.Sequential(
             nn.LayerNorm(normalized_shape=in_size),
             nn.Linear(in_size, hidden_size),
             activation_func,
-            nn.LayerNorm(normalized_shape=hidden_size),
             nn.Linear(hidden_size, hidden_size),
             activation_func,
-            nn.LayerNorm(normalized_shape=hidden_size),
             nn.Linear(hidden_size, out_size)
         )
 
