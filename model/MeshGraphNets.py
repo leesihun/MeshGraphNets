@@ -8,8 +8,8 @@ from model.checkpointing import process_with_checkpointing
 
 def init_weights(m):
     if isinstance(m, nn.Linear):
-        # Xavier works better for SiLU/Swish since it doesn't assume ReLU zeroing
-        init.xavier_uniform_(m.weight)
+        # Kaiming/He initialization for ReLU activation
+        init.kaiming_uniform_(m.weight, nonlinearity='relu')
         if m.bias is not None:
             init.zeros_(m.bias)
 
