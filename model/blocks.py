@@ -50,9 +50,9 @@ class NodeBlock(nn.Module):
         
         _, receivers_idx = graph.edge_index # [E, 2] (sender, receiver)
         num_nodes = graph.num_nodes
-        # Use mean aggregation instead of sum to handle varying node degrees
-        # Sum aggregation causes high-degree nodes to receive much larger values
-        agg_received_edges = scatter(edge_attr, receivers_idx, dim=0, dim_size=num_nodes, reduce='mean')
+        # Use sum aggregation (matches NVIDIA PhysicsNeMo deforming_plate implementation)
+        # For physics: forces/stresses from neighbors should add up, not average
+        agg_received_edges = scatter(edge_attr, receivers_idx, dim=0, dim_size=num_nodes, reduce='sum')
 
         nodes_to_collect.append(graph.x)
         nodes_to_collect.append(agg_received_edges)
@@ -73,16 +73,16 @@ class HybridNodeBlock(nn.Module):
         mesh_edge_attr = graph.edge_attr
         _, mesh_receivers = graph.edge_index
         num_nodes = graph.num_nodes
-        # Use mean aggregation instead of sum to handle varying node degrees
-        mesh_agg = scatter(mesh_edge_attr, mesh_receivers, dim=0, dim_size=num_nodes, reduce='mean')
+        # Use sum aggregation (matches NVIDIA PhysicsNeMo deforming_plate implementation)
+        mesh_agg = scatter(mesh_edge_attr, mesh_receivers, dim=0, dim_size=num_nodes, reduce='sum')
 
         # Aggregate world edges (if present)
         if (hasattr(graph, 'world_edge_attr') and hasattr(graph, 'world_edge_index')
             and graph.world_edge_attr is not None and graph.world_edge_index.shape[1] > 0):
             world_edge_attr = graph.world_edge_attr
             _, world_receivers = graph.world_edge_index
-            # Use mean aggregation for world edges as well
-            world_agg = scatter(world_edge_attr, world_receivers, dim=0, dim_size=num_nodes, reduce='mean')
+            # Use sum aggregation for world edges as well
+            world_agg = scatter(world_edge_attr, world_receivers, dim=0, dim_size=num_nodes, reduce='sum')
         else:
             world_agg = torch.zeros_like(mesh_agg)
 

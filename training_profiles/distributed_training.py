@@ -180,7 +180,7 @@ def train_worker(rank, world_size, config, gpu_ids):
         train_sampler.set_epoch(epoch)
 
         train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
-        valid_loss = validate_epoch(model, val_loader, device, config)
+        valid_loss = validate_epoch(model, val_loader, device, config, epoch)
 
         # Step the learning rate scheduler based on validation loss
         scheduler.step(valid_loss)
