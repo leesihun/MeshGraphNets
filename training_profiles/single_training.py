@@ -96,8 +96,8 @@ def single_worker(config, config_filename='config.txt'):
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
-        factor=0.8,
-        patience=20,
+        factor=0.5,
+        patience=2,
         min_lr=1e-8
     )
     print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=10)")
