@@ -8,15 +8,15 @@ output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/deforming_plate_50.h5
-message_passing_num 10
+dataset_dir ./dataset/dataset.h5
+message_passing_num 15
 Training_epochs	500
-Batch_size	10
+Batch_size	1
 LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.0001
-residual_scale  1.0  # Scale factor for residual connections (0.1 = 10% of update added to current state)
+residual_scale  0.1  # Scale factor for residual connections (0.1 = 10% of update added to current state)
 verbose     False
 monitor_gradients  False
 '
@@ -27,10 +27,10 @@ use_checkpointing   False
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
 '
 % Node Type Parameters
-use_node_types  True    # Add one-hot encoded node types to node features
+use_node_types  False    # Add one-hot encoded node types to node features
 '
 % World Edge Parameters
-use_world_edges         True
+use_world_edges         False
 world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (auto-computed)
 world_max_num_neighbors 64      # Max neighbors per node in world edge radius query (prevents edge explosion)
 world_edge_backend      scipy_kdtree   # Backend: torch_cluster (GPU, fast) or scipy_kdtree (CPU, fallback)

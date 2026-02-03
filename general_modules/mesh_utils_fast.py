@@ -332,7 +332,7 @@ def save_inference_results_fast(output_path, graph,
 
 def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
                          pred_values_denorm, target_values_denorm, output_path,
-                         feature_idx=-2, sample_id=None, time_idx=None, face_part_ids=None):
+                         feature_idx=-1, sample_id=None, time_idx=None, face_part_ids=None):
     """
     Create 2x2 mesh plots comparing normalized and denormalized predicted vs ground truth.
 
@@ -354,6 +354,18 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
     from matplotlib.cm import ScalarMappable
 
     if faces.shape[0] == 0:
+        return
+
+    # Validate feature_idx is within bounds
+    num_features = pred_values_norm.shape[1]
+    if num_features == 0:
+        print(f"Warning: No features to visualize for sample_id={sample_id}, time_idx={time_idx}")
+        return
+
+    # Convert negative index to positive for validation
+    actual_feature_idx = feature_idx if feature_idx >= 0 else num_features + feature_idx
+    if actual_feature_idx < 0 or actual_feature_idx >= num_features:
+        print(f"Error: feature_idx={feature_idx} (actual={actual_feature_idx}) out of bounds for {num_features} features (sample_id={sample_id}, time_idx={time_idx})")
         return
 
     # Extract the feature to visualize for all four plots
@@ -505,6 +517,10 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
 def _plot_worker(plot_data):
     """Worker function for parallel plotting."""
     try:
+        sample_id = plot_data.get('sample_id')
+        time_idx = plot_data.get('time_idx')
+        feature_idx = plot_data.get('feature_idx', -1)
+
         plot_mesh_comparison(
             plot_data['pos'],
             plot_data['faces'],
@@ -513,14 +529,20 @@ def _plot_worker(plot_data):
             plot_data['pred_values_denorm'],
             plot_data['target_values_denorm'],
             plot_data['plot_path'],
-            feature_idx=plot_data.get('feature_idx', -1),
-            sample_id=plot_data.get('sample_id'),
-            time_idx=plot_data.get('time_idx'),
+            feature_idx=feature_idx,
+            sample_id=sample_id,
+            time_idx=time_idx,
             face_part_ids=plot_data.get('face_part_ids')
         )
         return True
     except Exception as e:
-        print(f"Error in plotting worker: {e}")
+        import traceback
+        sample_id = plot_data.get('sample_id', 'unknown')
+        time_idx = plot_data.get('time_idx', 'unknown')
+        plot_path = plot_data.get('plot_path', 'unknown')
+        print(f"Error plotting sample_id={sample_id}, time_idx={time_idx}, path={plot_path}")
+        print(f"  Exception: {e}")
+        print(f"  Traceback: {traceback.format_exc()}")
         return False
 
 
@@ -555,15 +577,24 @@ class ParallelVisualizer:
         """Wait for all tasks to complete and close the pool."""
         print(f"Waiting for {len(self.pending_tasks)} visualization tasks to complete...")
 
+        failed_count = 0
         for i, task in enumerate(self.pending_tasks):
             try:
-                task.get(timeout=60)  # 60 second timeout per task
+                success = task.get(timeout=60)  # 60 second timeout per task
+                if not success:
+                    failed_count += 1
+                    print(f"Task {i} completed but returned False (check error messages above)")
             except Exception as e:
-                print(f"Task {i} failed: {e}")
+                failed_count += 1
+                print(f"Task {i} failed with exception: {e}")
 
         self.pool.close()
         self.pool.join()
-        print("All visualization tasks completed.")
+
+        if failed_count > 0:
+            print(f"Visualization completed with {failed_count}/{len(self.pending_tasks)} failures.")
+        else:
+            print("All visualization tasks completed successfully.")
 
     def __enter__(self):
         return self
