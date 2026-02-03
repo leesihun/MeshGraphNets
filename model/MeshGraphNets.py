@@ -112,47 +112,48 @@ class EncoderProcessorDecoder(nn.Module):
         """Enable or disable gradient checkpointing."""
         self.use_checkpointing = enabled
 
-def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='silu', decoder=False):
+def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu', decoder=False):
     """
-    Build a multi-layer perceptron with Pre-LayerNorm architecture.
+    Build a multi-layer perceptron following the original DeepMind MeshGraphNets architecture.
 
-    Pre-LN (normalizing inputs) provides better gradient flow for deep networks:
-    - Prevents residual path from dominating in deep message passing
-    - More stable training with 10-15+ GN blocks
-    - Gradients flow more uniformly across layers
+    Original paper (ICLR 2021): "all MLPs have two hidden layers with ReLU activation
+    and the output layer (except for that of the decoding MLP) is normalized by LayerNorm"
 
-    Default activation is SiLU (Swish) which works better than ReLU for GNNs:
-    - Smoother gradients prevent dying neurons
-    - Better gradient flow in deep networks
-    - Self-gated mechanism helps with physics simulations
+    Structure: Input -> Hidden1 -> Hidden2 -> Output (3 Linear layers, 2 hidden)
+    - ReLU activation between layers (original paper default)
+    - LayerNorm on output (except decoder)
     """
     if activation == 'relu':
-        activation_func = nn.ReLU()
+        activation_fn = nn.ReLU
     elif activation == 'gelu':
-        activation_func = nn.GELU()
+        activation_fn = nn.GELU
     elif activation == 'silu':
-        activation_func = nn.SiLU()
+        activation_fn = nn.SiLU
     elif activation == 'tanh':
-        activation_func = nn.Tanh()
+        activation_fn = nn.Tanh
     elif activation == 'sigmoid':
-        activation_func = nn.Sigmoid()
+        activation_fn = nn.Sigmoid
     else:
         raise ValueError(f'Invalid activation function: {activation}')
 
     if layer_norm:
-        # Pre-LayerNorm: normalize BEFORE transformations
+        # Standard MLP with 2 hidden layers + LayerNorm on output
         module = nn.Sequential(
             nn.Linear(in_size, hidden_size),
-            activation_func,
+            activation_fn(),
+            nn.Linear(hidden_size, hidden_size),
+            activation_fn(),
             nn.Linear(hidden_size, out_size),
             nn.LayerNorm(normalized_shape=out_size),
         )
     elif decoder:
-        # Decoder: LayerNorm at input only, no LayerNorm before final output
+        # Decoder: 2 hidden layers, NO LayerNorm on final output
         # This allows the decoder to output values with full range
         module = nn.Sequential(
             nn.Linear(in_size, hidden_size),
-            activation_func,
+            activation_fn(),
+            nn.Linear(hidden_size, hidden_size),
+            activation_fn(),
             nn.Linear(hidden_size, out_size)
         )
 
