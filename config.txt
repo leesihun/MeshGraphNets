@@ -3,20 +3,15 @@ mode    Train  # Train / Inference
 gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train0.log
 %   Common params
-%   Dim1		1000 # number of parameters
-%   Dim2		1   # number of timesteps
-%   Dim3		95008 # num nodes, unused in GNN
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/deforming_plate_10.h5
-%   norm_min    -0.7  # Normalization range minimum
-%   norm_max    0.7   # Normalization range maximum
-message_passing_num 20
+dataset_dir ./dataset/deforming_plate_50.h5
+message_passing_num 15
 Training_epochs	500
-Batch_size	1
+Batch_size	10
 LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10

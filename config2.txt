@@ -3,22 +3,17 @@ mode    Train  # Train / Inference
 gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train1.log
 %   Common params
-%   Dim1		1000 # number of parameters
-%   Dim2		1   # number of timesteps
-%   Dim3		95008 # num nodes, unused in GNN
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/deforming_plate_10copy.h5
-%   norm_min    -0.7  # Normalization range minimum
-%   norm_max    0.7   # Normalization range maximum
+dataset_dir ./dataset/deforming_plate_50.h5
 message_passing_num 15
-Training_epochs	50
+Training_epochs	500
 Batch_size	10
 LearningR	0.0001
-Latent_dim	256	# MeshGraphNets latent dimension
+Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.0001
 residual_scale  0.1  # Scale factor for residual connections (0.1 = 10% of update added to current state)
@@ -35,7 +30,7 @@ use_parallel_stats  True    # Enable parallel processing for computing dataset s
 use_node_types  True    # Add one-hot encoded node types to node features
 '
 % World Edge Parameters
-use_world_edges         True
+use_world_edges         False
 world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (auto-computed)
 world_max_num_neighbors 64      # Max neighbors per node in world edge radius query (prevents edge explosion)
 world_edge_backend      scipy_kdtree   # Backend: torch_cluster (GPU, fast) or scipy_kdtree (CPU, fallback)
