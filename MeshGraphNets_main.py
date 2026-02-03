@@ -73,13 +73,13 @@ def main():
     print(f"Current absolute path: {os.path.abspath('.')}")
     
     if use_distributed==False:
-        single_worker(config)
-        
+        single_worker(config, args.config)
+
     else:
         print(f"Starting distributed training with {world_size} processes on GPUs {gpu_ids}...")
         mp.spawn(
             train_worker,
-            args=(world_size, config, gpu_ids),
+            args=(world_size, config, gpu_ids, args.config),
             nprocs=world_size,
             join=True
         )

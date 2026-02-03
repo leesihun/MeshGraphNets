@@ -11,7 +11,7 @@ from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, test_model
 
-def single_worker(config):
+def single_worker(config, config_filename='config.txt'):
     # Single GPU/CPU training
     gpu_ids = config.get('gpu_ids')
     print("Starting single-process training...")
@@ -122,8 +122,8 @@ def single_worker(config):
             f.write(f"Training epoch log file\n")
             f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Log file absolute path: {os.path.abspath(log_file)}\n")
-            # Write the whole config.txt file here:
-            with open('config.txt', 'r') as fc:
+            # Write the whole config file here:
+            with open(config_filename, 'r') as fc:
                 f.write(fc.read())
             fc.close()
 

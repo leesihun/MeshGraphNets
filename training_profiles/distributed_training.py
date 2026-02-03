@@ -11,7 +11,7 @@ from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, test_model
 
-def train_worker(rank, world_size, config, gpu_ids):
+def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'):
     """Training worker for distributed training.
 
     Args:
@@ -19,6 +19,7 @@ def train_worker(rank, world_size, config, gpu_ids):
         world_size: Total number of processes
         config: Configuration dictionary
         gpu_ids: List of GPU IDs to use
+        config_filename: Path to the config file (default: config.txt)
     """
     # Get the physical GPU ID for this rank
     gpu_id = gpu_ids[rank]
@@ -167,8 +168,8 @@ def train_worker(rank, world_size, config, gpu_ids):
             f.write(f"Training epoch log file\n")
             f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Log file absolute path: {os.path.abspath(log_file)}\n")
-            # Write the whole config.txt file here:
-            with open('config.txt', 'r') as fc:
+            # Write the whole config file here:
+            with open(config_filename, 'r') as fc:
                 f.write(fc.read())
             fc.close()
 
