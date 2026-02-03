@@ -12,11 +12,11 @@ dataset_dir ./dataset/deforming_plate_50.h5
 message_passing_num 15
 Training_epochs	500
 Batch_size	10
-LearningR	0.0001
+LearningR	0.001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.0001
-residual_scale  0.1  # Scale factor for residual connections (0.1 = 10% of update added to current state)
+residual_scale  0.5  # Scale factor for residual connections (0.1 = 10% of update added to current state)
 verbose     True
 monitor_gradients  False
 '
