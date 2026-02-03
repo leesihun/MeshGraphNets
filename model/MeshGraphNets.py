@@ -219,46 +219,44 @@ class GnBlock(nn.Module):
             self.nb_module = NodeBlock(custom_func=nb_custom_func)
 
     def forward(self, graph):
-        x = graph.x.clone()
-        edge_attr = graph.edge_attr.clone()
+        x_input = graph.x  # Save input for residual
 
         # Save world edge info before mesh edge block (which creates new Data)
         world_edge_index = graph.world_edge_index if self.use_world_edges and hasattr(graph, 'world_edge_index') else None
-        world_edge_attr = graph.world_edge_attr.clone() if self.use_world_edges and hasattr(graph, 'world_edge_attr') and graph.world_edge_attr is not None and graph.world_edge_attr.shape[0] > 0 else None
+        world_edge_attr = graph.world_edge_attr if self.use_world_edges and hasattr(graph, 'world_edge_attr') and graph.world_edge_attr is not None and graph.world_edge_attr.shape[0] > 0 else None
 
-        # Update mesh edge features
+        # Update mesh edge features (NO residual for edges - matches NVIDIA implementation)
         mesh_graph = self.eb_module(graph)
+        edge_attr = mesh_graph.edge_attr  # Direct assignment, no residual
 
-        # Update world edge features if present
+        # Update world edge features if present (NO residual)
         if self.use_world_edges and world_edge_attr is not None and world_edge_attr.shape[0] > 0:
             world_graph = Data(
-                x=x,
+                x=x_input,
                 edge_attr=world_edge_attr,
                 edge_index=world_edge_index
             )
             world_graph = self.world_eb_module(world_graph)
-            # Apply residual scaling to world edges as well
-            updated_world_edge_attr = world_edge_attr + self.residual_scale * world_graph.edge_attr
+            updated_world_edge_attr = world_graph.edge_attr  # Direct assignment, no residual
         else:
             updated_world_edge_attr = world_edge_attr
 
-        # Prepare graph for node block with both edge types
+        # Prepare graph for node block with updated edge features
         node_graph = Data(
-            x=mesh_graph.x,
-            edge_attr=mesh_graph.edge_attr,
+            x=x_input,
+            edge_attr=edge_attr,
             edge_index=mesh_graph.edge_index
         )
         if self.use_world_edges:
-            node_graph.world_edge_attr = updated_world_edge_attr if updated_world_edge_attr is not None else torch.zeros(0, mesh_graph.edge_attr.shape[1], device=mesh_graph.x.device)
-            node_graph.world_edge_index = world_edge_index if world_edge_index is not None else torch.zeros(2, 0, dtype=torch.long, device=mesh_graph.x.device)
+            node_graph.world_edge_attr = updated_world_edge_attr if updated_world_edge_attr is not None else torch.zeros(0, edge_attr.shape[1], device=x_input.device)
+            node_graph.world_edge_index = world_edge_index if world_edge_index is not None else torch.zeros(2, 0, dtype=torch.long, device=x_input.device)
 
         # Update node features (aggregates from both edge types)
         node_graph = self.nb_module(node_graph)
 
-        # Residual connections with scaling for deep networks
-        # Scale down updates to prevent early layers from dominating
-        x = x + self.residual_scale * node_graph.x
-        edge_attr = edge_attr + self.residual_scale * node_graph.edge_attr
+        # Residual connection ONLY for nodes (matches NVIDIA implementation)
+        # node_x = node_x + node_block_output
+        x = x_input + node_graph.x
 
         out = Data(x=x, edge_attr=edge_attr, edge_index=node_graph.edge_index)
         if self.use_world_edges:
