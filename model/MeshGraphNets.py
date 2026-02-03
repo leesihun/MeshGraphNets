@@ -197,9 +197,7 @@ class GnBlock(nn.Module):
         super(GnBlock, self).__init__()
 
         self.use_world_edges = use_world_edges
-        # Residual scaling factor for deep networks (prevents early layers from dominating)
-        # For 10-15 GN blocks, scale down updates to balance old vs new information
-        self.residual_scale = config.get('residual_scale', 0.1)
+        # Note: NVIDIA implementation uses full residual (scale=1.0) only for nodes, not edges
 
         eb_input_dim = 3 * latent_dim  # Sender, Receiver, edge latent dim
         eb_custom_func = build_mlp(eb_input_dim, latent_dim, latent_dim)

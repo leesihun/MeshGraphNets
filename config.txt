@@ -9,7 +9,7 @@ edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
 dataset_dir ./dataset/deforming_plate_50.h5
-message_passing_num 10
+message_passing_num 15
 Training_epochs	500
 Batch_size	10
 LearningR	0.0001
