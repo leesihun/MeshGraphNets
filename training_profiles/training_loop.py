@@ -18,6 +18,14 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
 
         predicted_acc, target_acc = model(graph)
 
+        # DEBUG: Check model output statistics (first batch of first 5 epochs)
+        if batch_idx == 0 and epoch < 5:
+            tqdm.tqdm.write(f"\n=== DEBUG Epoch {epoch} Batch 0 ===")
+            tqdm.tqdm.write(f"  Pred:   mean={predicted_acc.mean().item():.6f}, std={predicted_acc.std().item():.6f}, min={predicted_acc.min().item():.4f}, max={predicted_acc.max().item():.4f}")
+            tqdm.tqdm.write(f"  Target: mean={target_acc.mean().item():.6f}, std={target_acc.std().item():.6f}, min={target_acc.min().item():.4f}, max={target_acc.max().item():.4f}")
+            if predicted_acc.std().item() < 0.01:
+                tqdm.tqdm.write(f"  *** WARNING: Pred std < 0.01 - model outputting near-constant values! ***")
+
         errors = ((predicted_acc - target_acc) ** 2)
         loss = torch.mean(errors) # MSE Loss
 
