@@ -16,7 +16,9 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
 
         graph = graph.to(device)
 
-        predicted_acc, target_acc = model(graph)
+        # DEBUG: Check internal statistics for first batch of epoch 0
+        debug_internal = (batch_idx == 0 and epoch == 0)
+        predicted_acc, target_acc = model(graph, debug=debug_internal)
 
         # DEBUG: Check model output statistics (first batch of first 5 epochs)
         if batch_idx == 0 and epoch < 5:

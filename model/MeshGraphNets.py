@@ -28,7 +28,7 @@ class MeshGraphNets(nn.Module):
         """Enable or disable gradient checkpointing."""
         self.model.set_checkpointing(enabled)
 
-    def forward(self, graph):
+    def forward(self, graph, debug=False):
         """
         Forward pass of the simulator.
 
@@ -49,7 +49,7 @@ class MeshGraphNets(nn.Module):
                 graph.x = graph.x + noise
 
         # Forward through encoder-processor-decoder
-        predicted = self.model(graph)
+        predicted = self.model(graph, debug=debug)
 
         return predicted, graph.y
 
@@ -89,16 +89,23 @@ class EncoderProcessorDecoder(nn.Module):
 
         self.decoder = Decoder(self.latent_dim, self.node_output_size)
 
-    def forward(self, graph):
+    def forward(self, graph, debug=False):
         graph = self.encoder(graph)
+
+        if debug:
+            print(f"  After Encoder: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
 
         if self.use_checkpointing and self.training:
             graph = process_with_checkpointing(self.processer_list, graph)
         else:
-            for model in self.processer_list:
+            for i, model in enumerate(self.processer_list):
                 graph = model(graph)
+                if debug and i == len(self.processer_list) - 1:
+                    print(f"  After MP block {i}: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
 
         output = self.decoder(graph)
+        if debug:
+            print(f"  After Decoder: out std={output.std().item():.4f}, mean={output.mean().item():.4f}")
         return output
 
     def set_checkpointing(self, enabled: bool):
