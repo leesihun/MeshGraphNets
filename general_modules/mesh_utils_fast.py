@@ -250,11 +250,24 @@ def save_inference_results_fast(output_path, graph,
     else:
         faces = edges_to_triangles_optimized(edge_index_np)
 
+    # Validate inputs before computing face values
+    if predicted_norm.shape != target_norm.shape:
+        print(f"Warning: Shape mismatch for sample_id={sample_id}, time_idx={time_idx}")
+        print(f"  predicted_norm: {predicted_norm.shape}, target_norm: {target_norm.shape}")
+    if predicted_denorm.shape != target_denorm.shape:
+        print(f"Warning: Shape mismatch for sample_id={sample_id}, time_idx={time_idx}")
+        print(f"  predicted_denorm: {predicted_denorm.shape}, target_denorm: {target_denorm.shape}")
+
     # GPU-accelerated face value computation for both normalized and denormalized
     pred_face_values_norm = compute_face_values_gpu(faces, predicted_norm, device=device)
     target_face_values_norm = compute_face_values_gpu(faces, target_norm, device=device)
     pred_face_values_denorm = compute_face_values_gpu(faces, predicted_denorm, device=device)
     target_face_values_denorm = compute_face_values_gpu(faces, target_denorm, device=device)
+
+    # Validate face value shapes
+    if pred_face_values_norm.shape[0] != faces.shape[0]:
+        print(f"Error: Face value count mismatch for sample_id={sample_id}, time_idx={time_idx}")
+        print(f"  faces: {faces.shape[0]}, pred_face_values: {pred_face_values_norm.shape[0]}")
 
     # Compute face-level part IDs if node-level part_ids are available
     face_part_ids = None
@@ -311,6 +324,20 @@ def save_inference_results_fast(output_path, graph,
     # Optional visualization (can be deferred or skipped)
     if not skip_visualization:
         plot_path = output_path.replace('.h5', '.png')
+
+        # Validate data before returning for visualization
+        if pred_face_values_norm.shape[1] == 0:
+            print(f"Warning: No features in face values for sample_id={sample_id}, time_idx={time_idx}. Skipping visualization.")
+            return None
+
+        # Debug: Print shape info for timestep==1
+        if time_idx == 1:
+            print(f"DEBUG timestep==1: sample_id={sample_id}")
+            print(f"  faces: {faces.shape}")
+            print(f"  pred_face_values_norm: {pred_face_values_norm.shape}")
+            print(f"  target_face_values_norm: {target_face_values_norm.shape}")
+            print(f"  feature_idx: {feature_idx}")
+
         # Return plot data for parallel processing with full metadata
         # Include both normalized and denormalized values for visualization
         return {
@@ -516,10 +543,26 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
 
 def _plot_worker(plot_data):
     """Worker function for parallel plotting."""
+    sample_id = plot_data.get('sample_id', 'unknown')
+    time_idx = plot_data.get('time_idx', 'unknown')
+    plot_path = plot_data.get('plot_path', 'unknown')
+
     try:
-        sample_id = plot_data.get('sample_id')
-        time_idx = plot_data.get('time_idx')
         feature_idx = plot_data.get('feature_idx', -1)
+
+        # Validate data before plotting
+        if 'pred_values_norm' not in plot_data or 'target_values_norm' not in plot_data:
+            err_msg = f"Error: Missing required data for sample_id={sample_id}, time_idx={time_idx}"
+            print(err_msg, flush=True)
+            return False
+
+        pred_shape = plot_data['pred_values_norm'].shape
+        target_shape = plot_data['target_values_norm'].shape
+
+        # Debug info
+        if time_idx == 1:
+            print(f"Worker processing timestep==1: sample_id={sample_id}", flush=True)
+            print(f"  pred_shape={pred_shape}, target_shape={target_shape}, feature_idx={feature_idx}", flush=True)
 
         plot_mesh_comparison(
             plot_data['pos'],
@@ -537,12 +580,17 @@ def _plot_worker(plot_data):
         return True
     except Exception as e:
         import traceback
-        sample_id = plot_data.get('sample_id', 'unknown')
-        time_idx = plot_data.get('time_idx', 'unknown')
-        plot_path = plot_data.get('plot_path', 'unknown')
-        print(f"Error plotting sample_id={sample_id}, time_idx={time_idx}, path={plot_path}")
-        print(f"  Exception: {e}")
-        print(f"  Traceback: {traceback.format_exc()}")
+        import sys
+        err_msg = f"\n{'='*60}\nERROR in visualization worker:\n"
+        err_msg += f"  sample_id: {sample_id}\n"
+        err_msg += f"  time_idx: {time_idx}\n"
+        err_msg += f"  plot_path: {plot_path}\n"
+        err_msg += f"  Exception: {type(e).__name__}: {e}\n"
+        err_msg += f"  Traceback:\n{traceback.format_exc()}"
+        err_msg += f"{'='*60}\n"
+        print(err_msg, flush=True)
+        sys.stderr.write(err_msg)
+        sys.stderr.flush()
         return False
 
 
