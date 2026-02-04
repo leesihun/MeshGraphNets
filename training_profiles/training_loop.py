@@ -1,6 +1,33 @@
 import tqdm
 import torch
+import numpy as np
 from general_modules.mesh_utils_fast import save_inference_results_fast, ParallelVisualizer
+
+def save_debug_batch(epoch, batch_idx, graph, predicted, target, log_dir):
+    """Save actual input/output values to debug file for inspection."""
+    try:
+        import os
+        debug_file = os.path.join(log_dir, f'debug_epoch{epoch:03d}_batch{batch_idx:03d}.npz')
+
+        # Convert to numpy
+        x_np = graph.x.cpu().numpy()
+        y_np = target.cpu().numpy()
+        pred_np = predicted.cpu().numpy()
+
+        np.savez(debug_file,
+                 x=x_np,
+                 y=y_np,
+                 pred=pred_np,
+                 x_mean=x_np.mean(axis=0),
+                 x_std=x_np.std(axis=0),
+                 y_mean=y_np.mean(axis=0),
+                 y_std=y_np.std(axis=0),
+                 pred_mean=pred_np.mean(axis=0),
+                 pred_std=pred_np.std(axis=0))
+
+        tqdm.tqdm.write(f"  Saved debug data to {debug_file}")
+    except Exception as e:
+        tqdm.tqdm.write(f"  Warning: Could not save debug data: {e}")
 
 def train_epoch(model, dataloader, optimizer, device, config, epoch):
     model.train()
@@ -20,13 +47,18 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
         debug_internal = (batch_idx == 0 and (epoch < 5 or epoch % 10 == 0))
         predicted_acc, target_acc = model(graph, debug=debug_internal)
 
-        # DEBUG: Check model output statistics (first batch of first 5 epochs)
-        if batch_idx == 0 and epoch < 5:
+        # DEBUG: Check model output statistics (first batch of first 5 epochs, then periodic)
+        if batch_idx == 0:
             tqdm.tqdm.write(f"\n=== DEBUG Epoch {epoch} Batch 0 ===")
             tqdm.tqdm.write(f"  Pred:   mean={predicted_acc.mean().item():.6f}, std={predicted_acc.std().item():.6f}, min={predicted_acc.min().item():.4f}, max={predicted_acc.max().item():.4f}")
             tqdm.tqdm.write(f"  Target: mean={target_acc.mean().item():.6f}, std={target_acc.std().item():.6f}, min={target_acc.min().item():.4f}, max={target_acc.max().item():.4f}")
             if predicted_acc.std().item() < 0.01:
                 tqdm.tqdm.write(f"  *** WARNING: Pred std < 0.01 - model outputting near-constant values! ***")
+
+            # After epoch 5, save actual data to file for inspection
+            if epoch >= 5:
+                log_dir = config.get('log_dir', '.')
+                save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
 
         errors = ((predicted_acc - target_acc) ** 2)
         loss = torch.mean(errors) # MSE Loss

@@ -107,11 +107,16 @@ def single_worker(config, config_filename='config.txt'):
     start_time = time.time()
 
     log_file_dir = config.get('log_file_dir')
+    log_dir = None
     if log_file_dir:
         log_file = 'outputs/' + log_file_dir
+        log_dir = os.path.dirname(log_file)
         # if log_file doesn't exist, create it
         if not os.path.exists(log_file):
-            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            os.makedirs(log_dir, exist_ok=True)
+
+        # Pass log directory to config for debug output
+        config['log_dir'] = log_dir
         with open(log_file, 'w') as f:
             f.write(f"Training epoch log file\n")
             f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
