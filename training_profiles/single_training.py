@@ -161,3 +161,34 @@ def single_worker(config, config_filename='config.txt'):
             test_loss = test_model(model, test_loader, device, config, epoch, dataset)
 
     print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+
+    # Analyze debug files if they exist
+    if log_dir:
+        import glob
+        import numpy as np
+        debug_files = sorted(glob.glob(os.path.join(log_dir, 'debug_*.npz')))
+
+        if debug_files:
+            print("\n" + "="*60)
+            print("DEBUG OUTPUT ANALYSIS (first 5 epochs)")
+            print("="*60)
+            for f in debug_files[:5]:
+                try:
+                    data = np.load(f)
+                    fname = os.path.basename(f)
+                    print(f"\n{fname}")
+                    print(f"  Input (x):")
+                    print(f"    mean={data['x_mean']}")
+                    print(f"    std={data['x_std']}")
+                    print(f"  Target (y):")
+                    print(f"    mean={data['y_mean']}")
+                    print(f"    std={data['y_std']}")
+                    print(f"  Prediction (pred):")
+                    print(f"    mean={data['pred_mean']}")
+                    print(f"    std={data['pred_std']}")
+                    pred_target_ratio = data['pred_std'] / (data['y_std'] + 1e-8)
+                    print(f"  Pred/Target std ratio: {pred_target_ratio}")
+                    if np.any(pred_target_ratio < 0.1):
+                        print(f"    ^ WARNING: Pred much smaller than target!")
+                except Exception as e:
+                    print(f"  Error reading {f}: {e}")
