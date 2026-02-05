@@ -1,7 +1,7 @@
 model   MeshGraphNets
 mode    Train  # Train / Inference
 gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
-log_file_dir    train0.log
+log_file_dir    train_flag_dynamic1.log
 %   Common params
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
