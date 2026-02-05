@@ -8,7 +8,7 @@ output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/dataset.h5
+dataset_dir ./dataset/flag_simple_subset_100.h5
 message_passing_num 15
 Training_epochs	500
 Batch_size	1
