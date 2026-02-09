@@ -1,10 +1,10 @@
 """
-Optimized mesh utilities with GPU acceleration and parallel processing.
+Optimized mesh utilities with GPU acceleration and PyVista rendering.
 
 Performance improvements:
-1. GPU-accelerated triangle reconstruction using PyTorch
-2. Parallel visualization using multiprocessing
-3. Batched operations
+1. GPU-accelerated triangle reconstruction using vectorized dense adjacency
+2. PyVista (VTK) off-screen rendering for fast mesh visualization
+3. Batched operations for face value computation
 4. Optional visualization to avoid blocking inference
 """
 
@@ -12,19 +12,52 @@ import os
 import h5py
 import numpy as np
 import torch
-from multiprocessing import Pool, Queue, Process
-from queue import Empty
-import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for parallel processing
-import matplotlib.pyplot as plt
+import pyvista as pv
+
+
+def _triangles_from_edges_dict(edges_np, num_nodes):
+    """
+    Find triangles using adjacency sets.
+    Fallback for meshes too large for the dense adjacency approach.
+
+    Args:
+        edges_np: (E, 2) numpy array of unique undirected edges (u < v)
+        num_nodes: number of nodes in the mesh
+
+    Returns:
+        faces: (F, 3) numpy array of triangular face node indices
+    """
+    adj = [set() for _ in range(num_nodes)]
+    for i in range(edges_np.shape[0]):
+        u, v = int(edges_np[i, 0]), int(edges_np[i, 1])
+        adj[u].add(v)
+        adj[v].add(u)
+
+    triangles = []
+    for i in range(edges_np.shape[0]):
+        u, v = int(edges_np[i, 0]), int(edges_np[i, 1])
+        for w in adj[u] & adj[v]:
+            if w > v:
+                triangles.append((u, v, w))
+
+    if not triangles:
+        return np.array([], dtype=np.int64).reshape(0, 3)
+    return np.array(triangles, dtype=np.int64)
+
+
+# Maximum number of nodes for the dense adjacency approach.
+# Above this, memory cost (N^2 bools) becomes prohibitive.
+_DENSE_ADJ_NODE_LIMIT = 20_000
 
 
 def edges_to_triangles_gpu(edge_index, device='cpu'):
     """
-    GPU-accelerated triangle reconstruction from edge connectivity.
+    Vectorized triangle reconstruction using dense adjacency on GPU.
 
-    Uses PyTorch sparse operations for fast triangle finding.
-    10-100x faster than CPU version for large meshes.
+    For each unique undirected edge (u, v) with u < v, finds all common
+    neighbors w > v via batched boolean AND on adjacency rows. This avoids
+    Python-level per-edge loops for meshes up to ~20k nodes. Larger meshes
+    fall back to an adjacency-set approach.
 
     Args:
         edge_index: (2, E) tensor of edges (can be bidirectional)
@@ -35,77 +68,61 @@ def edges_to_triangles_gpu(edge_index, device='cpu'):
     """
     if not isinstance(edge_index, torch.Tensor):
         edge_index = torch.from_numpy(edge_index)
-
     edge_index = edge_index.to(device)
 
-    # Get number of nodes
+    # Build unique undirected edges (u < v)
+    src, dst = edge_index[0], edge_index[1]
+    u = torch.minimum(src, dst)
+    v = torch.maximum(src, dst)
+    edges = torch.unique(torch.stack([u, v], dim=1), dim=0)
+
     num_nodes = int(edge_index.max()) + 1
+    num_edges = edges.shape[0]
 
-    # Build symmetric adjacency matrix (undirected graph)
-    edges = edge_index.t()  # (E, 2)
+    if num_nodes > _DENSE_ADJ_NODE_LIMIT:
+        return _triangles_from_edges_dict(edges.cpu().numpy(), num_nodes)
 
-    # Create undirected edges
-    row = torch.cat([edges[:, 0], edges[:, 1]], dim=0)
-    col = torch.cat([edges[:, 1], edges[:, 0]], dim=0)
+    # Build dense boolean adjacency matrix
+    adj = torch.zeros(num_nodes, num_nodes, dtype=torch.bool, device=device)
+    adj[edges[:, 0], edges[:, 1]] = True
+    adj[edges[:, 1], edges[:, 0]] = True
 
-    # Remove duplicates by creating unique edge pairs
-    edge_pairs = torch.stack([torch.minimum(row, col), torch.maximum(row, col)], dim=1)
-    unique_edges, _ = torch.unique(edge_pairs, dim=0, return_inverse=True)
+    node_indices = torch.arange(num_nodes, device=device)
 
-    # Build sparse adjacency matrix
-    row = torch.cat([unique_edges[:, 0], unique_edges[:, 1]], dim=0)
-    col = torch.cat([unique_edges[:, 1], unique_edges[:, 0]], dim=0)
-    val = torch.ones(row.shape[0], dtype=torch.float32, device=device)
+    # Process edges in batches to limit memory (B * N bools per batch)
+    max_elements = 10**8  # ~100 MB for bool tensor
+    batch_size = max(1, max_elements // num_nodes)
 
-    adj = torch.sparse_coo_tensor(
-        torch.stack([row, col], dim=0),
-        val,
-        (num_nodes, num_nodes)
-    ).coalesce()
+    all_triangles = []
+    for start in range(0, num_edges, batch_size):
+        end = min(start + batch_size, num_edges)
+        batch_edges = edges[start:end]  # (B, 2)
 
-    # Find triangles: adj @ adj gives paths of length 2
-    # Then check if those endpoints are also connected
-    adj_sq = torch.sparse.mm(adj, adj)
+        adj_u = adj[batch_edges[:, 0]]   # (B, N)
+        adj_v = adj[batch_edges[:, 1]]   # (B, N)
+        common = adj_u & adj_v           # (B, N)
 
-    # Convert to dense for triangle finding (only for edges, not full matrix)
-    # Get all edges as potential triangles
-    triangles = []
+        # Keep only w > v to produce each triangle exactly once
+        mask = node_indices.unsqueeze(0) > batch_edges[:, 1].unsqueeze(1)
+        common = common & mask
 
-    # For each edge (u, v), find common neighbors
-    edge_dict = {}
-    for i in range(unique_edges.shape[0]):
-        u, v = int(unique_edges[i, 0]), int(unique_edges[i, 1])
-        if u not in edge_dict:
-            edge_dict[u] = []
-        if v not in edge_dict:
-            edge_dict[v] = []
-        edge_dict[u].append(v)
-        edge_dict[v].append(u)
+        edge_idx, w = torch.where(common)
+        u_tri = batch_edges[edge_idx, 0]
+        v_tri = batch_edges[edge_idx, 1]
+        all_triangles.append(torch.stack([u_tri, v_tri, w], dim=1))
 
-    # Find triangles using adjacency dict
-    triangle_set = set()
-    for u in edge_dict:
-        neighbors_u = set(edge_dict[u])
-        for v in neighbors_u:
-            if v <= u:  # Avoid duplicates
-                continue
-            neighbors_v = set(edge_dict[v])
-            common = neighbors_u & neighbors_v
-            for w in common:
-                if w > v:  # Maintain sorted order to avoid duplicates
-                    tri = (u, v, w)
-                    triangle_set.add(tri)
-
-    if len(triangle_set) == 0:
+    if not all_triangles:
         return np.array([], dtype=np.int64).reshape(0, 3)
 
-    return np.array(list(triangle_set), dtype=np.int64)
+    return torch.cat(all_triangles, dim=0).cpu().numpy().astype(np.int64)
 
 
 def edges_to_triangles_optimized(edge_index):
     """
-    Optimized CPU triangle reconstruction using numpy vectorization.
-    Faster than original Python dict/set version.
+    CPU triangle reconstruction using numpy dense adjacency.
+
+    Same algorithm as the GPU version but operates on numpy arrays.
+    Falls back to adjacency-set approach for large meshes.
 
     Args:
         edge_index: (2, E) array of edges
@@ -115,35 +132,51 @@ def edges_to_triangles_optimized(edge_index):
     """
     edges = edge_index.T  # (E, 2)
 
-    # Undirected edges
+    # Build unique undirected edges (u < v)
     u = np.minimum(edges[:, 0], edges[:, 1])
     v = np.maximum(edges[:, 0], edges[:, 1])
     edge_pairs = np.stack([u, v], axis=1)
-
-    # Remove duplicates
     unique_edges = np.unique(edge_pairs, axis=0)
 
-    # Build adjacency list using numpy
     num_nodes = int(unique_edges.max()) + 1
-    adj = [set() for _ in range(num_nodes)]
+    num_edges = unique_edges.shape[0]
 
-    for i in range(unique_edges.shape[0]):
-        u, v = unique_edges[i]
-        adj[u].add(v)
-        adj[v].add(u)
+    if num_nodes > _DENSE_ADJ_NODE_LIMIT:
+        return _triangles_from_edges_dict(unique_edges, num_nodes)
 
-    # Find triangles
-    triangles = set()
-    for u, v in unique_edges:
-        common = adj[u] & adj[v]
-        for w in common:
-            tri = tuple(sorted([u, v, w]))
-            triangles.add(tri)
+    # Build dense boolean adjacency matrix
+    adj = np.zeros((num_nodes, num_nodes), dtype=bool)
+    adj[unique_edges[:, 0], unique_edges[:, 1]] = True
+    adj[unique_edges[:, 1], unique_edges[:, 0]] = True
 
-    if len(triangles) == 0:
+    node_indices = np.arange(num_nodes)
+
+    # Process edges in batches
+    batch_size = max(1, 10**8 // num_nodes)
+
+    all_triangles = []
+    for start in range(0, num_edges, batch_size):
+        end = min(start + batch_size, num_edges)
+        batch = unique_edges[start:end]  # (B, 2)
+
+        adj_u = adj[batch[:, 0]]   # (B, N)
+        adj_v = adj[batch[:, 1]]   # (B, N)
+        common = adj_u & adj_v
+
+        # Keep only w > v
+        mask = node_indices[np.newaxis, :] > batch[:, 1:2]
+        common = common & mask
+
+        edge_idx, w = np.where(common)
+        if len(edge_idx) > 0:
+            u_tri = batch[edge_idx, 0]
+            v_tri = batch[edge_idx, 1]
+            all_triangles.append(np.stack([u_tri, v_tri, w], axis=1))
+
+    if not all_triangles:
         return np.array([], dtype=np.int64).reshape(0, 3)
 
-    return np.array(list(triangles), dtype=np.int64)
+    return np.concatenate(all_triangles, axis=0).astype(np.int64)
 
 
 def compute_face_values_gpu(faces, node_values, device='cpu'):
@@ -182,9 +215,10 @@ def compute_face_values_gpu(faces, node_values, device='cpu'):
 def save_inference_results_fast(output_path, graph,
                                   predicted_norm=None, target_norm=None,
                                   predicted_denorm=None, target_denorm=None,
-                                  skip_visualization=False, device='cpu', feature_idx=-1):
+                                  skip_visualization=False, device='cpu',
+                                  feature_idx=-1, precomputed_faces=None):
     """
-    Fast version of save_inference_results with GPU acceleration.
+    Save inference results to HDF5 and optionally return data for visualization.
 
     Args:
         output_path: Path to save the HDF5 file
@@ -194,12 +228,14 @@ def save_inference_results_fast(output_path, graph,
         target_norm: (N, D) numpy array of target node features (normalized)
         predicted_denorm: (N, D) numpy array of predicted node features (denormalized)
         target_denorm: (N, D) numpy array of target node features (denormalized)
-        skip_visualization: If True, skip matplotlib rendering (much faster)
+        skip_visualization: If True, skip rendering (much faster)
         device: 'cpu' or 'cuda' for GPU acceleration
         feature_idx: Which feature to visualize (default -1 = last feature)
+        precomputed_faces: (F, 3) numpy array of pre-computed triangle faces.
+                           When provided, skips triangle reconstruction entirely.
 
     Returns:
-        dict: Plot data for parallel visualization, or None if skip_visualization=True
+        dict: Plot data for visualization, or None if skip_visualization=True
     """
     # Ensure output directory exists
     output_dir = os.path.dirname(output_path)
@@ -242,10 +278,12 @@ def save_inference_results_fast(output_path, graph,
             pid = pid.numpy()
         part_ids = np.array(pid).astype(np.int32)
 
-    # GPU-accelerated triangle reconstruction
-    if device != 'cpu' and torch.cuda.is_available():
-        # Keep edge_index on GPU for faster processing
-        edge_index_gpu = graph.edge_index if hasattr(graph.edge_index, 'device') else torch.from_numpy(edge_index_np).to(device)
+    # Triangle reconstruction (skip if pre-computed faces are provided)
+    if precomputed_faces is not None:
+        faces = precomputed_faces
+    elif device != 'cpu' and torch.cuda.is_available():
+        edge_index_gpu = (graph.edge_index if hasattr(graph.edge_index, 'device')
+                          else torch.from_numpy(edge_index_np).to(device))
         faces = edges_to_triangles_gpu(edge_index_gpu, device=device)
     else:
         faces = edges_to_triangles_optimized(edge_index_np)
@@ -362,6 +400,7 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
                          feature_idx=-1, sample_id=None, time_idx=None, face_part_ids=None):
     """
     Create 2x2 mesh plots comparing normalized and denormalized predicted vs ground truth.
+    Uses PyVista (VTK) for fast off-screen rendering.
 
     Args:
         pos: (N, 3) node positions
@@ -376,194 +415,149 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
         time_idx: Timestep index for plot title (optional)
         face_part_ids: (F,) array of part IDs per face for edge coloring (optional)
     """
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-    from matplotlib.colors import Normalize
-    from matplotlib.cm import ScalarMappable
-
     if faces.shape[0] == 0:
         return
 
-    # Validate feature_idx is within bounds
+    # Validate feature_idx
     num_features = pred_values_norm.shape[1]
     if num_features == 0:
         print(f"Warning: No features to visualize for sample_id={sample_id}, time_idx={time_idx}")
         return
 
-    # Convert negative index to positive for validation
     actual_feature_idx = feature_idx if feature_idx >= 0 else num_features + feature_idx
     if actual_feature_idx < 0 or actual_feature_idx >= num_features:
-        print(f"Error: feature_idx={feature_idx} (actual={actual_feature_idx}) out of bounds for {num_features} features (sample_id={sample_id}, time_idx={time_idx})")
+        print(f"Error: feature_idx={feature_idx} (actual={actual_feature_idx}) out of bounds "
+              f"for {num_features} features (sample_id={sample_id}, time_idx={time_idx})")
         return
 
-    # Extract the feature to visualize for all four plots
-    pred_colors_norm = pred_values_norm[:, feature_idx]
-    target_colors_norm = target_values_norm[:, feature_idx]
-    pred_colors_denorm = pred_values_denorm[:, feature_idx]
-    target_colors_denorm = target_values_denorm[:, feature_idx]
+    # Extract the selected feature for all four plots
+    pred_colors_norm = pred_values_norm[:, feature_idx].astype(np.float64)
+    target_colors_norm = target_values_norm[:, feature_idx].astype(np.float64)
+    pred_colors_denorm = pred_values_denorm[:, feature_idx].astype(np.float64)
+    target_colors_denorm = target_values_denorm[:, feature_idx].astype(np.float64)
 
-    # Determine feature name and units
-    # Features: [disp_x, disp_y, disp_z, stress]
-    feature_names = ['Δ Disp X', 'Δ Disp Y', 'Δ Disp Z', 'Δ Stress']
+    # Feature name and units
+    feature_names = ['Delta Disp X', 'Delta Disp Y', 'Delta Disp Z', 'Delta Stress']
     feature_units = ['mm', 'mm', 'mm', 'MPa']
-    num_features = pred_values_norm.shape[1]
-    actual_idx = feature_idx if feature_idx >= 0 else num_features + feature_idx
-    feature_name = feature_names[actual_idx] if actual_idx < len(feature_names) else f'Feature {actual_idx}'
-    feature_unit = feature_units[actual_idx] if actual_idx < len(feature_units) else ''
+    feature_name = (feature_names[actual_feature_idx]
+                    if actual_feature_idx < len(feature_names)
+                    else f'Feature {actual_feature_idx}')
+    feature_unit = (feature_units[actual_feature_idx]
+                    if actual_feature_idx < len(feature_units)
+                    else '')
 
-    # Use same color scale for normalized plots
-    vmin_norm = min(pred_colors_norm.min(), target_colors_norm.min())
-    vmax_norm = max(pred_colors_norm.max(), target_colors_norm.max())
-    norm_normalized = Normalize(vmin=vmin_norm, vmax=vmax_norm)
+    # Shared color ranges (same scale for pred vs target within each row)
+    eps = 1e-12
+    clim_norm = [
+        min(float(pred_colors_norm.min()), float(target_colors_norm.min())),
+        max(float(pred_colors_norm.max()), float(target_colors_norm.max())),
+    ]
+    if clim_norm[1] - clim_norm[0] < eps:
+        clim_norm[1] = clim_norm[0] + eps
 
-    # Use same color scale for denormalized plots
-    vmin_denorm = min(pred_colors_denorm.min(), target_colors_denorm.min())
-    vmax_denorm = max(pred_colors_denorm.max(), target_colors_denorm.max())
-    norm_denormalized = Normalize(vmin=vmin_denorm, vmax=vmax_denorm)
+    clim_denorm = [
+        min(float(pred_colors_denorm.min()), float(target_colors_denorm.min())),
+        max(float(pred_colors_denorm.max()), float(target_colors_denorm.max())),
+    ]
+    if clim_denorm[1] - clim_denorm[0] < eps:
+        clim_denorm[1] = clim_denorm[0] + eps
 
-    cmap = plt.cm.jet
+    # MAE for each row
+    mae_norm = float(np.abs(pred_colors_norm - target_colors_norm).mean())
+    mae_denorm = float(np.abs(pred_colors_denorm - target_colors_denorm).mean())
 
-    # Build face vertex coordinates
-    face_verts = pos[faces]  # (F, 3, 3)
+    # Build VTK-format faces: [3, v0, v1, v2, 3, v0, v1, v2, ...]
+    n_faces = faces.shape[0]
+    vtk_faces = np.column_stack([np.full(n_faces, 3, dtype=faces.dtype), faces]).ravel()
+    mesh = pv.PolyData(pos.astype(np.float64), vtk_faces)
 
-    # Determine edge colors based on part IDs (if available)
-    if face_part_ids is not None:
-        unique_parts = np.unique(face_part_ids)
-        num_parts = len(unique_parts)
-        if num_parts > 1:
-            # Create a colormap for parts (use a qualitative colormap)
-            part_cmap = plt.cm.tab10 if num_parts <= 10 else plt.cm.tab20
-            part_to_idx = {p: i for i, p in enumerate(unique_parts)}
-            part_indices = np.array([part_to_idx[p] for p in face_part_ids])
-            edge_colors = [part_cmap(i % 10 / 10) for i in part_indices]
-            edge_linewidth = 0.3
-        else:
-            edge_colors = 'none'
-            edge_linewidth = 0
-    else:
-        edge_colors = 'none'
-        edge_linewidth = 0
+    # Show edges when there are multiple parts
+    show_edges = (face_part_ids is not None and len(np.unique(face_part_ids)) > 1)
 
-    # Create figure with 2x2 grid of 3D subplots
-    fig = plt.figure(figsize=(18, 14))
-
-    # Top row: Normalized values
-    ax1 = fig.add_subplot(221, projection='3d')  # Top-left: Normalized Predicted
-    ax2 = fig.add_subplot(222, projection='3d')  # Top-right: Normalized Ground Truth
-
-    # Bottom row: Denormalized values
-    ax3 = fig.add_subplot(223, projection='3d')  # Bottom-left: Denormalized Predicted
-    ax4 = fig.add_subplot(224, projection='3d')  # Bottom-right: Denormalized Ground Truth
-
-    # Top row: Create Poly3DCollection for normalized values
-    pred_facecolors_norm = cmap(norm_normalized(pred_colors_norm))
-    poly1 = Poly3DCollection(face_verts, facecolors=pred_facecolors_norm,
-                             edgecolors=edge_colors, linewidths=edge_linewidth)
-    ax1.add_collection3d(poly1)
-
-    target_facecolors_norm = cmap(norm_normalized(target_colors_norm))
-    poly2 = Poly3DCollection(face_verts, facecolors=target_facecolors_norm,
-                             edgecolors=edge_colors, linewidths=edge_linewidth)
-    ax2.add_collection3d(poly2)
-
-    # Bottom row: Create Poly3DCollection for denormalized values
-    pred_facecolors_denorm = cmap(norm_denormalized(pred_colors_denorm))
-    poly3 = Poly3DCollection(face_verts, facecolors=pred_facecolors_denorm,
-                             edgecolors=edge_colors, linewidths=edge_linewidth)
-    ax3.add_collection3d(poly3)
-
-    target_facecolors_denorm = cmap(norm_denormalized(target_colors_denorm))
-    poly4 = Poly3DCollection(face_verts, facecolors=target_facecolors_denorm,
-                             edgecolors=edge_colors, linewidths=edge_linewidth)
-    ax4.add_collection3d(poly4)
-
-    # Set axis limits (same for all subplots)
-    x_min, x_max = pos[:, 0].min(), pos[:, 0].max()
-    y_min, y_max = pos[:, 1].min(), pos[:, 1].max()
-    z_min, z_max = pos[:, 2].min(), pos[:, 2].max()
-
-    eps = 1e-6
-    x_range = max(x_max - x_min, eps)
-    y_range = max(y_max - y_min, eps)
-    z_range = max(z_max - z_min, eps)
-
-    # Set axis limits and labels for all four subplots
-    for ax, title in [(ax1, 'Normalized - Predicted'), (ax2, 'Normalized - Ground Truth'),
-                      (ax3, 'Denormalized - Predicted'), (ax4, 'Denormalized - Ground Truth')]:
-        ax.set_xlim(x_min, x_max)
-        ax.set_ylim(y_min, y_max)
-        ax.set_zlim(z_min, z_max)
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        ax.set_title(title, fontsize=11)
-        ax.view_init(elev=30, azim=45)
-        ax.set_box_aspect([x_range, y_range, z_range])
-
-    # Add colorbars with proper units
-    # Colorbar for normalized values (top row)
-    sm_norm = ScalarMappable(cmap=cmap, norm=norm_normalized)
-    sm_norm.set_array([])
-    cbar_norm = fig.colorbar(sm_norm, ax=[ax1, ax2], shrink=0.5, aspect=15, pad=0.05)
-    cbar_norm.set_label(f'{feature_name} (Normalized)', fontsize=10)
-
-    # Colorbar for denormalized values (bottom row)
-    sm_denorm = ScalarMappable(cmap=cmap, norm=norm_denormalized)
-    sm_denorm.set_array([])
-    cbar_denorm = fig.colorbar(sm_denorm, ax=[ax3, ax4], shrink=0.5, aspect=15, pad=0.05)
-    cbar_label_denorm = f'{feature_name} ({feature_unit})' if feature_unit else f'{feature_name} (Denormalized)'
-    cbar_denorm.set_label(cbar_label_denorm, fontsize=10)
-
-    # Build title with sample/timestep info and MAE for both normalized and denormalized
-    mae_norm = np.abs(pred_colors_norm - target_colors_norm).mean()
-    mae_denorm = np.abs(pred_colors_denorm - target_colors_denorm).mean()
-
-    title_parts = []
+    # Build header text
+    header_parts = []
     if sample_id is not None:
-        title_parts.append(f'Sample {sample_id}')
+        header_parts.append(f'Sample {sample_id}')
     if time_idx is not None:
-        title_parts.append(f'Timestep {time_idx}')
+        header_parts.append(f'Timestep {time_idx}')
     if face_part_ids is not None:
-        num_parts = len(np.unique(face_part_ids))
-        if num_parts > 1:
-            title_parts.append(f'{num_parts} Parts')
+        n_parts = len(np.unique(face_part_ids))
+        if n_parts > 1:
+            header_parts.append(f'{n_parts} Parts')
 
-    if title_parts:
-        mae_str = f'MAE Norm: {mae_norm:.4f} | MAE Denorm: {mae_denorm:.4f} {feature_unit}' if feature_unit else f'MAE Norm: {mae_norm:.4f} | MAE Denorm: {mae_denorm:.4f}'
-        title_str = ', '.join(title_parts) + f' | {mae_str}'
-    else:
-        mae_str = f'MAE Norm: {mae_norm:.4f} | MAE Denorm: {mae_denorm:.4f} {feature_unit}' if feature_unit else f'MAE Norm: {mae_norm:.4f} | MAE Denorm: {mae_denorm:.4f}'
-        title_str = f'{feature_name} | {mae_str}'
+    mae_str_norm = f'MAE: {mae_norm:.4f}'
+    mae_str_denorm = (f'MAE: {mae_denorm:.4f} {feature_unit}'.strip()
+                      if feature_unit else f'MAE: {mae_denorm:.4f}')
 
-    fig.suptitle(title_str, fontsize=14, weight='bold')
+    # Colorbar labels
+    cbar_label_norm = f'{feature_name} (Normalized)'
+    cbar_label_denorm = (f'{feature_name} ({feature_unit})'
+                         if feature_unit else f'{feature_name} (Denormalized)')
 
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
+    # Subplot definitions: (row, col, scalars, title, clim, show_cbar, cbar_title)
+    subplot_configs = [
+        (0, 0, pred_colors_norm,    'Normalized - Predicted',                         clim_norm,   False, ''),
+        (0, 1, target_colors_norm,  f'Normalized - Ground Truth | {mae_str_norm}',    clim_norm,   True,  cbar_label_norm),
+        (1, 0, pred_colors_denorm,  'Denormalized - Predicted',                       clim_denorm, False, ''),
+        (1, 1, target_colors_denorm, f'Denormalized - Ground Truth | {mae_str_denorm}', clim_denorm, True,  cbar_label_denorm),
+    ]
+
+    # Create 2x2 off-screen plotter
+    plotter = pv.Plotter(off_screen=True, shape=(2, 2), window_size=(1800, 1400))
+
+    for row, col, scalars, title, clim, show_cbar, cbar_title in subplot_configs:
+        plotter.subplot(row, col)
+        m = mesh.copy()
+        m.cell_data['values'] = scalars
+
+        sbar_args = dict(title=cbar_title, n_labels=5, fmt='%.4f', vertical=True)
+        plotter.add_mesh(
+            m,
+            scalars='values',
+            cmap='jet',
+            clim=clim,
+            show_edges=show_edges,
+            edge_color='gray',
+            line_width=0.3 if show_edges else 0,
+            show_scalar_bar=show_cbar,
+            scalar_bar_args=sbar_args,
+        )
+        plotter.add_text(title, font_size=10, position='upper_edge')
+        plotter.camera_position = 'iso'
+
+    # Add header with sample / timestep info in top-left subplot
+    if header_parts:
+        plotter.subplot(0, 0)
+        plotter.add_text(', '.join(header_parts), font_size=12, position='upper_left')
+
+    # Ensure output directory exists
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    plotter.screenshot(output_path)
+    plotter.close()
 
 
-def _plot_worker(plot_data):
-    """Worker function for parallel plotting."""
+def render_plot_data(plot_data):
+    """
+    Render a single visualization from a plot_data dict.
+
+    Args:
+        plot_data: dict returned by save_inference_results_fast when
+                   skip_visualization=False
+
+    Returns:
+        True on success, False on failure
+    """
     sample_id = plot_data.get('sample_id', 'unknown')
     time_idx = plot_data.get('time_idx', 'unknown')
-    plot_path = plot_data.get('plot_path', 'unknown')
+
+    if 'pred_values_norm' not in plot_data or 'target_values_norm' not in plot_data:
+        print(f"Error: Missing required data for sample_id={sample_id}, time_idx={time_idx}")
+        return False
 
     try:
-        feature_idx = plot_data.get('feature_idx', -1)
-
-        # Validate data before plotting
-        if 'pred_values_norm' not in plot_data or 'target_values_norm' not in plot_data:
-            err_msg = f"Error: Missing required data for sample_id={sample_id}, time_idx={time_idx}"
-            print(err_msg, flush=True)
-            return False
-
-        pred_shape = plot_data['pred_values_norm'].shape
-        target_shape = plot_data['target_values_norm'].shape
-
-        # Debug info
-        if time_idx == 1:
-            print(f"Worker processing timestep==1: sample_id={sample_id}", flush=True)
-            print(f"  pred_shape={pred_shape}, target_shape={target_shape}, feature_idx={feature_idx}", flush=True)
-
         plot_mesh_comparison(
             plot_data['pos'],
             plot_data['faces'],
@@ -572,80 +566,14 @@ def _plot_worker(plot_data):
             plot_data['pred_values_denorm'],
             plot_data['target_values_denorm'],
             plot_data['plot_path'],
-            feature_idx=feature_idx,
+            feature_idx=plot_data.get('feature_idx', -1),
             sample_id=sample_id,
             time_idx=time_idx,
-            face_part_ids=plot_data.get('face_part_ids')
+            face_part_ids=plot_data.get('face_part_ids'),
         )
         return True
     except Exception as e:
         import traceback
-        import sys
-        err_msg = f"\n{'='*60}\nERROR in visualization worker:\n"
-        err_msg += f"  sample_id: {sample_id}\n"
-        err_msg += f"  time_idx: {time_idx}\n"
-        err_msg += f"  plot_path: {plot_path}\n"
-        err_msg += f"  Exception: {type(e).__name__}: {e}\n"
-        err_msg += f"  Traceback:\n{traceback.format_exc()}"
-        err_msg += f"{'='*60}\n"
-        print(err_msg, flush=True)
-        sys.stderr.write(err_msg)
-        sys.stderr.flush()
+        print(f"Error rendering sample_id={sample_id}, time_idx={time_idx}: {e}")
+        traceback.print_exc()
         return False
-
-
-class ParallelVisualizer:
-    """
-    Parallel visualization manager using multiprocessing.
-
-    Usage:
-        visualizer = ParallelVisualizer(num_workers=4)
-
-        # During inference loop:
-        plot_data = save_inference_results_fast(..., skip_visualization=True)
-        if plot_data:
-            visualizer.submit(plot_data)
-
-        # After inference:
-        visualizer.close()
-    """
-
-    def __init__(self, num_workers=4):
-        self.num_workers = num_workers
-        self.pool = Pool(processes=num_workers)
-        self.pending_tasks = []
-
-    def submit(self, plot_data):
-        """Submit a plot task to the worker pool."""
-        if plot_data is not None:
-            result = self.pool.apply_async(_plot_worker, (plot_data,))
-            self.pending_tasks.append(result)
-
-    def close(self):
-        """Wait for all tasks to complete and close the pool."""
-        print(f"Waiting for {len(self.pending_tasks)} visualization tasks to complete...")
-
-        failed_count = 0
-        for i, task in enumerate(self.pending_tasks):
-            try:
-                success = task.get(timeout=60)  # 60 second timeout per task
-                if not success:
-                    failed_count += 1
-                    print(f"Task {i} completed but returned False (check error messages above)")
-            except Exception as e:
-                failed_count += 1
-                print(f"Task {i} failed with exception: {e}")
-
-        self.pool.close()
-        self.pool.join()
-
-        if failed_count > 0:
-            print(f"Visualization completed with {failed_count}/{len(self.pending_tasks)} failures.")
-        else:
-            print("All visualization tasks completed successfully.")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()

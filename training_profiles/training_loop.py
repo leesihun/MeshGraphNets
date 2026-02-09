@@ -1,7 +1,12 @@
 import tqdm
 import torch
 import numpy as np
-from general_modules.mesh_utils_fast import save_inference_results_fast, ParallelVisualizer
+from general_modules.mesh_utils_fast import (
+    save_inference_results_fast,
+    render_plot_data,
+    edges_to_triangles_gpu,
+    edges_to_triangles_optimized,
+)
 
 def save_debug_batch(epoch, batch_idx, graph, predicted, target, log_dir):
     """Save actual input/output values to debug file for inspection."""
@@ -204,8 +209,8 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
     use_gpu = device.type == 'cuda' if hasattr(device, 'type') else (device != 'cpu')
     mesh_device = device if use_gpu else 'cpu'
 
-    # Setup parallel visualization (4 workers for matplotlib rendering)
-    num_viz_workers = config.get('num_visualization_workers', 4)
+    # Cache reconstructed faces by sample_id (topology is constant across timesteps)
+    faces_cache = {}
 
     # Get denormalization parameters from dataset
     delta_mean = None
@@ -302,8 +307,21 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
                     predicted_denorm = predicted_np
                     target_denorm = target_np
 
-                # Use fast GPU-accelerated version, collect plot data
-                # Pass both normalized and denormalized values for visualization
+                # Look up or reconstruct faces for this sample
+                cached_faces = faces_cache.get(sample_id)
+                if cached_faces is None and sample_id is not None:
+                    # Reconstruct once and cache for this sample_id
+                    if use_gpu and torch.cuda.is_available():
+                        edge_index_gpu = graph.edge_index.to(mesh_device)
+                        cached_faces = edges_to_triangles_gpu(edge_index_gpu, device=mesh_device)
+                    else:
+                        ei_np = (graph.edge_index.cpu().numpy()
+                                 if hasattr(graph.edge_index, 'cpu')
+                                 else np.array(graph.edge_index))
+                        cached_faces = edges_to_triangles_optimized(ei_np)
+                    faces_cache[sample_id] = cached_faces
+
+                # Save HDF5 and collect plot data
                 display_testset = config.get('display_testset', True)
                 plot_feature_idx = config.get('plot_feature_idx', -1)
                 plot_data = save_inference_results_fast(
@@ -312,21 +330,24 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
                     predicted_denorm=predicted_denorm, target_denorm=target_denorm,
                     skip_visualization=not display_testset,
                     device=mesh_device,
-                    feature_idx=plot_feature_idx
+                    feature_idx=plot_feature_idx,
+                    precomputed_faces=cached_faces,
                 )
 
                 if plot_data:
                     plot_data_queue.append(plot_data)
 
-        # Now do all visualizations in parallel (after inference loop completes)
-        if len(plot_data_queue) > 0:
-            print(f"\nGenerating {len(plot_data_queue)} visualizations in parallel with {num_viz_workers} workers...")
-
-            with ParallelVisualizer(num_workers=num_viz_workers) as visualizer:
-                for plot_data in plot_data_queue:
-                    visualizer.submit(plot_data)
-
-            print("All visualizations complete!")
+        # Render all collected visualizations sequentially (PyVista is fast enough)
+        if plot_data_queue:
+            print(f"\nRendering {len(plot_data_queue)} visualizations...")
+            failed = 0
+            for i, pd in enumerate(plot_data_queue):
+                if not render_plot_data(pd):
+                    failed += 1
+            if failed:
+                print(f"Visualization done with {failed}/{len(plot_data_queue)} failures.")
+            else:
+                print("All visualizations complete!")
         
         # Print per-feature test loss breakdown
         if verbose and accumulated_per_feature_loss is not None and num_batches > 0:
