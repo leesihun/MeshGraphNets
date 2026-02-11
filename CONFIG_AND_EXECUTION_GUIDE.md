@@ -1,18 +1,28 @@
 # MeshGraphNets Configuration & Execution Guide
 
-**Purpose**: Complete reference for running MeshGraphNets training with hyperparameter optimization. Designed for automated LLM agent workflows.
+**Purpose**: Complete reference for running MeshGraphNets training and inference. Designed for automated LLM agent workflows.
 
 ---
 
 ## Quick Start
 
+### Training
 ```bash
-# 1. Edit config.txt (see template below)
+# 1. Edit config.txt with mode=Train
 # 2. Run training
 python MeshGraphNets_main.py
 
 # 3. Check results
 cat outputs/<gpu_ids>/<log_file_dir>
+```
+
+### Inference
+```bash
+# 1. Edit config.txt with mode=Inference and modelpath pointing to trained model
+# 2. Run inference
+python MeshGraphNets_main.py
+
+# 3. Check results (output saved to inference_output_dir)
 ```
 
 ---
@@ -30,33 +40,34 @@ cat outputs/<gpu_ids>/<log_file_dir>
 
 **NO OTHER FILE NAMES OR LOCATIONS ARE ALLOWED**
 
-### config.txt Template
+### config.txt Template (Training + Inference)
 
 ```
 model   MeshGraphNets
-mode    Train  # Train / Inference
+mode    Inference  # Train / Inference
 gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train0.log
+%   Datasets
+dataset_dir ./dataset/flag_simple.h5
+infer_dataset   ./infer/flag_inference.h5
+infer_timesteps 1000
+modelpath   ./output/flag_simple1.pth
 %   Common params
-%   Dim1		1000 # number of parameters
-%   Dim2		1   # number of timesteps
-%   Dim3		95008 # num nodes, unused in GNN
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-dataset_dir ./dataset/deforming_plate.h5
-%   norm_min    -0.7  # Normalization range minimum
-%   norm_max    0.7   # Normalization range maximum
 message_passing_num 15
-Training_epochs	50
-Batch_size	10
-LearningR	0.001
+Training_epochs	500
+Batch_size	50
+LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10
-std_noise   0.0000000000000000000001
+std_noise   0.001
+residual_scale  0.1  # Scale factor for residual connections (0.1 = 10% of update added to current state)
 verbose     False
+monitor_gradients  False
 '
 % Memory Optimization
 use_checkpointing   False
@@ -75,7 +86,7 @@ world_edge_backend      scipy_kdtree   # Backend: torch_cluster (GPU, fast) or s
 % Test set control
 display_testset True
 test_batch_idx  0, 1, 2, 3
-plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature, i.e., stress)
+plot_feature_idx    -2  # Feature index to visualize in plots (-2 = second to last feature, -1 = last feature)
 ```
 
 ---
@@ -91,7 +102,8 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 | **LearningR** | float | 0.0001 | 1e-6 to 1e-2 | Learning rate (AdamW optimizer) |
 | **Latent_dim** | int | 128 | 32-512 | Hidden dimension for all MLPs |
 | **message_passing_num** | int | 15 | 1-30 | Number of Graph Network blocks |
-| **Batch_size** | int | 1 | 1-32 | Batch size per GPU |
+| **Batch_size** | int | 50 | 1-128 | Batch size per GPU |
+| **residual_scale** | float | 0.1 | 0.0-1.0 | Scale factor for residual connections (0.1 = 10% of update) |
 
 **DO NOT change other parameters during hyperparameter optimization.**
 
@@ -108,9 +120,10 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| dataset_dir | str | ./dataset/dataset.h5 | Path to HDF5 dataset |
-| Dim1 | int | 2138 | Number of samples (informational) |
-| Dim2 | int | 1 | Timesteps per sample |
+| dataset_dir | str | ./dataset/dataset.h5 | Path to HDF5 training dataset |
+| infer_dataset | str | ./infer/inference.h5 | Path to HDF5 inference dataset (used in Inference mode) |
+| infer_timesteps | int | 1000 | Number of rollout timesteps for inference predictions |
+| modelpath | str | ./output/model.pth | Path to trained model checkpoint (required for Inference mode) |
 | input_var | int | 4 | Node features count |
 | output_var | int | 4 | Output features count |
 | edge_var | int | 4 | Edge features (fixed: dx, dy, dz, distance) |
@@ -119,10 +132,11 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 
 | Parameter | Type | Default | Valid Range | Description |
 |-----------|------|---------|-------------|-------------|
-| Training_epochs | int | 50 | 1-10000 | Total epochs |
+| Training_epochs | int | 500 | 1-10000 | Total epochs |
 | num_workers | int | 10 | 0-16 | DataLoader workers |
-| std_noise | float | 1e-22 | 0-0.1 | Input augmentation noise std (effectively disabled) |
+| std_noise | float | 0.001 | 0-0.1 | Input augmentation noise std |
 | verbose | bool | False | - | Verbose logging |
+| monitor_gradients | bool | False | - | Enable gradient monitoring for debugging |
 | norm_min | float | -0.7 | -1.0 to 0 | Normalization range min (optional, commented by default) |
 | norm_max | float | 0.7 | 0 to 1.0 | Normalization range max (optional, commented by default) |
 
