@@ -185,6 +185,40 @@ gpu_ids -1
 
 ---
 
+## Execution Modes (Training vs Inference)
+
+### Training Mode
+```
+mode    Train
+dataset_dir ./dataset/flag_simple.h5
+```
+- Uses [training_profiles/single_training.py](training_profiles/single_training.py) (single GPU)
+- Uses [training_profiles/distributed_training.py](training_profiles/distributed_training.py) (multi-GPU)
+- Saves checkpoints and logs to `outputs/<gpu_ids>/` directory
+- Best model saved to `outputs/best_model.pth`
+- Normalization statistics saved in checkpoint for inference
+
+### Inference Mode
+```
+mode    Inference
+modelpath   ./output/flag_simple1.pth
+infer_dataset   ./infer/flag_inference.h5
+infer_timesteps 1000
+```
+- Uses [inference_profiles/rollout.py](inference_profiles/rollout.py)
+- Loads pre-trained model from `modelpath`
+- Performs autoregressive rollout for `infer_timesteps` timesteps
+- Loads inference data from `infer_dataset`
+- Loads normalization stats from trained model checkpoint
+- Output predictions saved to `inference_output_dir`
+
+**Required for Inference:**
+- Pre-trained model checkpoint with saved normalization statistics
+- Separate inference dataset in HDF5 format
+- `modelpath` parameter pointing to the checkpoint
+
+---
+
 ## Hyperparameter Optimization
 
 ### Recommended Search Strategy
@@ -211,17 +245,31 @@ Elapsed time: 246.78s Epoch 1 Train Loss: 9.87e-03 Valid Loss: 1.23e-02 LR: 1.00
 
 ## Automated Workflow for LLM Agents
 
+### Training Workflow
+
 For each hyperparameter configuration:
 
-1. **Modify** `config.txt` using `write_config()` with new hyperparameters
-2. **Execute** `python MeshGraphNets_main.py` and wait for completion
-3. **Parse** `outputs/<gpu_ids>/train.log` to extract final validation loss
-4. **Track** best configuration based on lowest validation loss
-5. **Iterate** with refined hyperparameter search
+1. **Set mode**: `mode Train` in `config.txt`
+2. **Modify** `config.txt` using `write_config()` with new hyperparameters
+3. **Execute** `python MeshGraphNets_main.py` and wait for completion
+4. **Parse** `outputs/<gpu_ids>/train.log` to extract final validation loss
+5. **Track** best configuration based on lowest validation loss
+6. **Iterate** with refined hyperparameter search
 
 **Primary optimization metric**: Validation loss (lower is better)
 
 Best model checkpoint auto-saved to: `outputs/best_model.pth`
+
+### Inference Workflow
+
+Once a trained model is available:
+
+1. **Set mode**: `mode Inference` in `config.txt`
+2. **Set modelpath**: Point to trained checkpoint (e.g., `./output/flag_simple1.pth`)
+3. **Set infer_dataset**: Point to inference dataset (e.g., `./infer/flag_inference.h5`)
+4. **Set infer_timesteps**: Number of rollout steps (e.g., 1000)
+5. **Execute** `python MeshGraphNets_main.py`
+6. **Retrieve output**: Predictions saved to `inference_output_dir` (or stdout if specified)
 
 ---
 
