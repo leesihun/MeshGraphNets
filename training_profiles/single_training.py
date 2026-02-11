@@ -126,6 +126,8 @@ def single_worker(config, config_filename='config.txt'):
                 f.write(fc.read())
             fc.close()
 
+    modelname = config.get('modelpath')
+
     for epoch in range(config.get('training_epochs')):
     
         train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
@@ -141,7 +143,7 @@ def single_worker(config, config_filename='config.txt'):
         if valid_loss < best_valid_loss:
             best_valid_loss = valid_loss
             best_epoch = epoch
-            checkpoint_path = os.path.join("outputs/", "best_model.pth")
+            checkpoint_path = modelname
             normalization = {
                 'node_mean': dataset.node_mean,
                 'node_std': dataset.node_std,
@@ -155,6 +157,17 @@ def single_worker(config, config_filename='config.txt'):
                 normalization['num_node_types'] = dataset.num_node_types
             if dataset.use_world_edges and dataset.world_edge_radius is not None:
                 normalization['world_edge_radius'] = dataset.world_edge_radius
+            model_config = {
+                'input_var': config.get('input_var'),
+                'output_var': config.get('output_var'),
+                'edge_var': config.get('edge_var'),
+                'latent_dim': config.get('latent_dim'),
+                'message_passing_num': config.get('message_passing_num'),
+                'use_node_types': config.get('use_node_types', False),
+                'num_node_types': config.get('num_node_types', 0),
+                'use_world_edges': config.get('use_world_edges', False),
+                'use_checkpointing': config.get('use_checkpointing', False),
+            }
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
@@ -163,6 +176,7 @@ def single_worker(config, config_filename='config.txt'):
                 'train_loss': train_loss,
                 'valid_loss': valid_loss,
                 'normalization': normalization,
+                'model_config': model_config,
             }, checkpoint_path)
             print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
 

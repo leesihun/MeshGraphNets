@@ -61,7 +61,7 @@ def run_rollout(config, config_filename='config.txt'):
     # -------------------------------------------------------------------------
     # 2. Load checkpoint (model weights + normalization statistics)
     # -------------------------------------------------------------------------
-    model_path = config.get('model_path', 'outputs/best_model.pth')
+    model_path = config.get('modelpath')
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model checkpoint not found: {model_path}")
 
@@ -90,22 +90,36 @@ def run_rollout(config, config_filename='config.txt'):
     print(f"    delta_mean: {delta_mean}")
     print(f"    delta_std:  {delta_std}")
 
+    # Override config with model_config from checkpoint if available
+    if 'model_config' in checkpoint:
+        model_config = checkpoint['model_config']
+        print(f"\n  Model config loaded from checkpoint:")
+        for k, v in model_config.items():
+            old_val = config.get(k)
+            config[k] = v
+            if old_val is not None and old_val != v:
+                print(f"    {k}: {old_val} -> {v} (overridden by checkpoint)")
+            else:
+                print(f"    {k}: {v}")
+    else:
+        print(f"\n  WARNING: No model_config in checkpoint, using config file values")
+
     # Node type info
-    use_node_types = config.get('use_node_types', False)
-    node_type_to_idx = norm.get('node_type_to_idx', None)
-    num_node_types = norm.get('num_node_types', 0)
+    use_node_types = config.get('use_node_types')
+    node_type_to_idx = norm.get('node_type_to_idx')
+    num_node_types = norm.get('num_node_types')
 
     if use_node_types and num_node_types > 0:
         config['num_node_types'] = num_node_types
         print(f"  Node types: {num_node_types} types, mapping: {node_type_to_idx}")
 
     # World edge info
-    use_world_edges = config.get('use_world_edges', False)
-    world_edge_radius = norm.get('world_edge_radius', None)
-    world_max_num_neighbors = config.get('world_max_num_neighbors', 64)
+    use_world_edges = config.get('use_world_edges')
+    world_edge_radius = norm.get('world_edge_radius')
+    world_max_num_neighbors = config.get('world_max_num_neighbors')
 
     # Determine world edge backend
-    requested_backend = config.get('world_edge_backend', 'scipy_kdtree').lower()
+    requested_backend = config.get('world_edge_backend').lower()
     if requested_backend == 'torch_cluster' and HAS_TORCH_CLUSTER:
         world_edge_backend = 'torch_cluster'
     else:
@@ -130,10 +144,8 @@ def run_rollout(config, config_filename='config.txt'):
     # -------------------------------------------------------------------------
     # 4. Load initial condition from HDF5
     # -------------------------------------------------------------------------
-    dataset_dir = config.get('dataset_dir')
-    inference_sample_id = config.get('inference_sample_id', 0)
-    rollout_start_step = config.get('rollout_start_step', 0)
-    num_rollout_steps = config.get('num_rollout_steps')
+    dataset_dir = config.get('infer_dataset')
+    num_rollout_steps = config.get('infer_timesteps')
     input_dim = config.get('input_var')
     output_dim = config.get('output_var')
 
