@@ -1,5 +1,5 @@
 model   MeshGraphNets
-mode    Train  # Train / Inference
+mode    inference  # Train / Inference
 gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train0.log
 modelpath   ./output/flag_simple1.pth
