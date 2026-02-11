@@ -9,6 +9,7 @@ from general_modules.data_loader import load_data
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.distributed_training import train_worker
 from training_profiles.single_training import single_worker
+from inference_profiles.rollout import run_rollout
 
 def main():
     # Parse command-line arguments
@@ -71,8 +72,12 @@ def main():
     import os
     # Display the current absolute path
     print(f"Current absolute path: {os.path.abspath('.')}")
-    
-    if use_distributed==False:
+
+    if run_mode == 'inference':
+        # Inference mode: autoregressive rollout
+        run_rollout(config, args.config)
+
+    elif use_distributed==False:
         single_worker(config, args.config)
 
     else:

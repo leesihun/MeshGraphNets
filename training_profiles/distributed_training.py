@@ -196,6 +196,19 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
             best_valid_loss = valid_loss
             best_epoch = epoch
             checkpoint_path = os.path.join("outputs/", "best_model.pth")
+            normalization = {
+                'node_mean': dataset.node_mean,
+                'node_std': dataset.node_std,
+                'edge_mean': dataset.edge_mean,
+                'edge_std': dataset.edge_std,
+                'delta_mean': dataset.delta_mean,
+                'delta_std': dataset.delta_std,
+            }
+            if dataset.use_node_types and dataset.node_type_to_idx is not None:
+                normalization['node_type_to_idx'] = dataset.node_type_to_idx
+                normalization['num_node_types'] = dataset.num_node_types
+            if dataset.use_world_edges and dataset.world_edge_radius is not None:
+                normalization['world_edge_radius'] = dataset.world_edge_radius
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.module.state_dict(),  # Save unwrapped model
@@ -203,6 +216,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
                 'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': train_loss,
                 'valid_loss': valid_loss,
+                'normalization': normalization,
             }, checkpoint_path)
             print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
 
