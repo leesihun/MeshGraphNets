@@ -13,8 +13,11 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from PIL import Image
 import random
 import sys
+import os
 
-H5_PATH = "dataset/flag_simple.h5"
+# Use absolute path: repo_root/dataset/flag_simple.h5
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+H5_PATH = os.path.join(REPO_ROOT, "dataset", "flag_simple.h5")
 DT = 0.02
 FRAME_SKIP = 4
 GIF_FPS = 20

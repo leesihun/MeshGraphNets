@@ -309,8 +309,9 @@ def run_rollout(config, config_filename='config.txt'):
 
         output_filename = f"rollout_sample{sample_id}_steps{steps_this_sample}.h5"
         output_path = os.path.join(output_dir, output_filename)
+        output_path_abs = os.path.abspath(output_path)
 
-        print(f"\nSaving results to: {output_path}")
+        print(f"\nSaving results to: {output_path_abs}")
 
         with h5py.File(output_path, 'w') as f:
             # Metadata
@@ -365,9 +366,11 @@ def run_rollout(config, config_filename='config.txt'):
                 'Shape: [num_steps+1, num_nodes, 3]. '
                 'Computed as: ref_pos + displacement.'
             )
+            f.flush()  # Explicitly flush to disk before closing
 
         file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
         print(f"  Saved ({file_size_mb:.1f} MB)")
+        print(f"  File is now closed and ready to read.")
 
     print(f"\nRollout inference complete. Processed {len(sample_ids)} samples.")
 
