@@ -17,7 +17,7 @@ import os
 
 # Use absolute path: repo_root/dataset/flag_simple.h5
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-H5_PATH = os.path.join(REPO_ROOT, "dataset", "flag_simple.h5")
+H5_PATH = ''
 DT = 0.02
 FRAME_SKIP = 4
 GIF_FPS = 20
