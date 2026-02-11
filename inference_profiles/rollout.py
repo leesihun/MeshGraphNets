@@ -302,7 +302,7 @@ def run_rollout(config, config_filename='config.txt'):
             print(f"\nRollout completed in {total_rollout_time:.2f}s (no steps executed)")
 
         # -------------------------------------------------------------------------
-        # 6. Save results to HDF5
+        # 6. Save results to HDF5 (DATASET_FORMAT.md structure)
         # -------------------------------------------------------------------------
         output_dir = config.get('inference_output_dir', 'outputs/rollout')
         os.makedirs(output_dir, exist_ok=True)
@@ -314,18 +314,87 @@ def run_rollout(config, config_filename='config.txt'):
         print(f"\nSaving results to: {output_path_abs}")
 
         with h5py.File(output_path, 'w') as f:
-            # Metadata
-            meta = f.create_group('metadata')
-            meta.attrs['sample_id'] = sample_id
-            meta.attrs['num_rollout_steps'] = steps_this_sample
-            meta.attrs['num_nodes'] = num_nodes
-            meta.attrs['num_edges'] = mesh_edge.shape[1]
-            meta.attrs['model_path'] = model_path
-            meta.attrs['config_file'] = config_filename
-            meta.attrs['total_rollout_time_s'] = total_rollout_time
+            # Root attributes (mimics DATASET_FORMAT.md)
+            f.attrs['num_samples'] = 1
+            f.attrs['num_features'] = 8
+            f.attrs['num_timesteps'] = steps_this_sample + 1
 
-            # Normalization stats used
-            norm_grp = meta.create_group('normalization')
+            # ========================================
+            # data/{sample_id}/ group
+            # ========================================
+            data_grp = f.create_group('data')
+            sample_grp = data_grp.create_group(str(sample_id))
+
+            # Build nodal_data: [8, timesteps, nodes]
+            # Features: [x, y, z, x_disp, y_disp, z_disp, stress, part_number]
+            nodal_data = np.zeros((8, steps_this_sample + 1, num_nodes), dtype=np.float32)
+
+            # Reference position (constant across timesteps)
+            nodal_data[0, :, :] = ref_pos[:, 0]  # x_coord
+            nodal_data[1, :, :] = ref_pos[:, 1]  # y_coord
+            nodal_data[2, :, :] = ref_pos[:, 2]  # z_coord
+
+            # Displacements and stress from predicted states
+            # all_states shape: [steps+1, nodes, output_dim] where output_dim=4
+            nodal_data[3, :, :] = all_states[:, :, 0]  # x_disp
+            nodal_data[4, :, :] = all_states[:, :, 1]  # y_disp
+            nodal_data[5, :, :] = all_states[:, :, 2]  # z_disp
+            nodal_data[6, :, :] = all_states[:, :, 3]  # stress
+
+            # Part number (constant across timesteps)
+            if part_ids is not None:
+                nodal_data[7, :, :] = part_ids[np.newaxis, :]
+            else:
+                nodal_data[7, :, :] = 0  # Default if no part info
+
+            sample_grp.create_dataset(
+                'nodal_data', data=nodal_data,
+                compression='gzip', compression_opts=4
+            )
+
+            # mesh_edge: [2, M] unidirectional
+            sample_grp.create_dataset('mesh_edge', data=mesh_edge)
+
+            # ========================================
+            # Metadata group (per-sample)
+            # ========================================
+            meta_grp = sample_grp.create_group('metadata')
+
+            # Attributes
+            meta_grp.attrs['sample_id'] = sample_id
+            meta_grp.attrs['num_nodes'] = num_nodes
+            meta_grp.attrs['num_edges'] = mesh_edge.shape[1]
+            meta_grp.attrs['num_timesteps'] = steps_this_sample + 1
+            meta_grp.attrs['model_path'] = model_path
+            meta_grp.attrs['config_file'] = config_filename
+            meta_grp.attrs['total_rollout_time_s'] = total_rollout_time
+
+            # Feature statistics (per-feature, computed from predicted data)
+            feature_names = np.array([
+                b'x_coord', b'y_coord', b'z_coord',
+                b'x_disp(mm)', b'y_disp(mm)', b'z_disp(mm)',
+                b'stress(MPa)', b'Part No.'
+            ])
+            feature_min = np.array([nodal_data[i].min() for i in range(8)], dtype=np.float32)
+            feature_max = np.array([nodal_data[i].max() for i in range(8)], dtype=np.float32)
+            feature_mean = np.array([nodal_data[i].mean() for i in range(8)], dtype=np.float32)
+            feature_std = np.array([nodal_data[i].std() for i in range(8)], dtype=np.float32)
+
+            meta_grp.create_dataset('feature_min', data=feature_min)
+            meta_grp.create_dataset('feature_max', data=feature_max)
+            meta_grp.create_dataset('feature_mean', data=feature_mean)
+            meta_grp.create_dataset('feature_std', data=feature_std)
+
+            # ========================================
+            # Global metadata
+            # ========================================
+            global_meta = f.create_group('metadata')
+
+            # Feature names
+            global_meta.create_dataset('feature_names', data=feature_names)
+
+            # Normalization parameters used for inference
+            norm_grp = global_meta.create_group('normalization_params')
             norm_grp.create_dataset('node_mean', data=node_mean)
             norm_grp.create_dataset('node_std', data=node_std)
             norm_grp.create_dataset('edge_mean', data=edge_mean)
@@ -333,40 +402,7 @@ def run_rollout(config, config_filename='config.txt'):
             norm_grp.create_dataset('delta_mean', data=delta_mean)
             norm_grp.create_dataset('delta_std', data=delta_std)
 
-            # Mesh topology (fixed across all steps)
-            mesh_grp = f.create_group('mesh')
-            mesh_grp.create_dataset('edge_index', data=mesh_edge)  # [2, M] unidirectional
-            mesh_grp.create_dataset('ref_pos', data=ref_pos)       # [N, 3]
-            if part_ids is not None:
-                mesh_grp.create_dataset('part_ids', data=part_ids)
-
-            # Predicted states: [num_steps+1, N, output_dim]
-            pred_grp = f.create_group('predictions')
-            pred_grp.create_dataset(
-                'states', data=all_states,
-                compression='gzip', compression_opts=4
-            )
-            pred_grp.attrs['description'] = (
-                'Predicted states at each timestep. '
-                'Shape: [num_steps+1, num_nodes, output_dim]. '
-                'Index 0 is the initial condition. '
-                'Features: [x_disp, y_disp, z_disp, stress]'
-            )
-
-            # Also store per-step deformed positions for convenience
-            deformed_positions = np.zeros((steps_this_sample + 1, num_nodes, 3), dtype=np.float32)
-            for t in range(steps_this_sample + 1):
-                deformed_positions[t] = ref_pos + all_states[t, :, :3]
-            pred_grp.create_dataset(
-                'deformed_positions', data=deformed_positions,
-                compression='gzip', compression_opts=4
-            )
-            pred_grp.attrs['deformed_positions_description'] = (
-                'Deformed node positions at each timestep. '
-                'Shape: [num_steps+1, num_nodes, 3]. '
-                'Computed as: ref_pos + displacement.'
-            )
-            f.flush()  # Explicitly flush to disk before closing
+            f.flush()
 
         file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
         print(f"  Saved ({file_size_mb:.1f} MB)")
