@@ -2,7 +2,7 @@ model   MeshGraphNets
 mode    inference  # Train / Inference
 gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train1.log
-modelpath   ./output/flag_simple1.pth
+modelpath   ./outputs/flag_simple1.pth
 %   Datasets
 dataset_dir ./dataset/flag_simple.h5
 infer_dataset   ./infer/flag_inference.h5

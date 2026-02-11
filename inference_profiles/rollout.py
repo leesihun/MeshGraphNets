@@ -173,13 +173,21 @@ def run_rollout(config, config_filename='config.txt'):
         # Validate rollout range (use local copy so config value isn't mutated across samples)
         steps_this_sample = num_rollout_steps
         if steps_this_sample is None:
-            steps_this_sample = num_timesteps - 1
-            print(f"  Auto-set rollout steps to {steps_this_sample} (full trajectory)")
+            # If dataset has multiple timesteps, use them; otherwise use requested rollout steps
+            if num_timesteps > 1:
+                steps_this_sample = num_timesteps - 1
+                print(f"  Auto-set rollout steps to {steps_this_sample} (full trajectory)")
+            else:
+                raise ValueError(
+                    f"infer_timesteps not specified and dataset has only {num_timesteps} timestep(s). "
+                    f"Please set infer_timesteps in config.txt"
+                )
 
-        if steps_this_sample >= num_timesteps:
-            max_steps = num_timesteps - 1
-            print(f"  WARNING: Requested {steps_this_sample} steps but only {max_steps} available. Clamping.")
-            steps_this_sample = max_steps
+        # For inference, we typically want to generate MORE timesteps than in the dataset
+        # Only warn if explicitly requesting fewer steps than available
+        if steps_this_sample > num_timesteps and num_timesteps > 1:
+            print(f"  INFO: Requested {steps_this_sample} steps, dataset has {num_timesteps} timesteps. "
+                  f"Will generate {steps_this_sample} new predictions beyond the dataset.")
 
         # Extract initial state (always start from timestep 0)
         # nodal_data layout: [x, y, z, x_disp, y_disp, z_disp, stress, (part_number)]
@@ -288,7 +296,10 @@ def run_rollout(config, config_filename='config.txt'):
                     )
 
         total_rollout_time = time.time() - rollout_start_time
-        print(f"\nRollout completed in {total_rollout_time:.2f}s ({total_rollout_time/steps_this_sample:.3f}s/step)")
+        if steps_this_sample > 0:
+            print(f"\nRollout completed in {total_rollout_time:.2f}s ({total_rollout_time/steps_this_sample:.3f}s/step)")
+        else:
+            print(f"\nRollout completed in {total_rollout_time:.2f}s (no steps executed)")
 
         # -------------------------------------------------------------------------
         # 6. Save results to HDF5
