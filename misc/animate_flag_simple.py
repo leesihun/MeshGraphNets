@@ -3,7 +3,8 @@ Animated GIFs of transient response for a random flag_simple sample.
 Color = nodal_data[-2] (stress, feature index 6).
 Produces separate GIF files for XZ, XY, YZ, and 3D isometric views.
 
-Tkinter GUI for selecting H5_PATH and configuring parameters.
+Native Windows file dialog (no external dependencies).
+Fallback to CLI if not on Windows.
 """
 
 import h5py
@@ -16,10 +17,9 @@ from PIL import Image
 import random
 import sys
 import os
+import argparse
+import ctypes
 from pathlib import Path
-import tkinter as tk
-from tkinter import filedialog, messagebox
-import threading
 
 # Use absolute path: repo_root/dataset/flag_simple.h5
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -334,131 +334,161 @@ def generate_animations(h5_path, dt=0.02, frame_skip=4, gif_fps=20, progress_cal
 
 
 # ================================================================== #
-#  Tkinter GUI
+#  Cross-platform File Dialog
 # ================================================================== #
-class AnimationGUI:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Flag Simple Animation Generator")
-        self.root.geometry("600x400")
-        self.running = False
+def browse_for_file():
+    """
+    Try to open native file dialog based on platform.
+    Falls back to CLI input if unavailable.
+    """
+    import subprocess
+    import platform
 
-        # File selection
-        file_frame = tk.Frame(root, pady=10)
-        file_frame.pack(fill=tk.X, padx=10)
+    system = platform.system()
 
-        tk.Label(file_frame, text="H5 File:", font=("Arial", 10)).pack(side=tk.LEFT)
-        self.file_path = tk.StringVar()
-        tk.Entry(file_frame, textvariable=self.file_path, width=50).pack(side=tk.LEFT, padx=5)
-        tk.Button(file_frame, text="Browse", command=self.browse_file).pack(side=tk.LEFT)
-
-        # Parameters
-        params_frame = tk.LabelFrame(root, text="Parameters", padx=10, pady=10)
-        params_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        # Time Step
-        tk.Label(params_frame, text="Time Step (s):").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.dt_var = tk.DoubleVar(value=0.02)
-        tk.Spinbox(params_frame, from_=0.001, to=1.0, increment=0.001,
-                  textvariable=self.dt_var, width=15).grid(row=0, column=1, sticky=tk.W)
-
-        # Frame Skip
-        tk.Label(params_frame, text="Frame Skip:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.frame_skip_var = tk.IntVar(value=4)
-        tk.Spinbox(params_frame, from_=1, to=50, increment=1,
-                  textvariable=self.frame_skip_var, width=15).grid(row=1, column=1, sticky=tk.W)
-
-        # GIF FPS
-        tk.Label(params_frame, text="GIF FPS:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.gif_fps_var = tk.IntVar(value=20)
-        tk.Spinbox(params_frame, from_=1, to=60, increment=1,
-                  textvariable=self.gif_fps_var, width=15).grid(row=2, column=1, sticky=tk.W)
-
-        # Progress
-        progress_frame = tk.LabelFrame(root, text="Progress", padx=10, pady=10)
-        progress_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-
-        self.progress_text = tk.Text(progress_frame, height=10, width=70, state=tk.DISABLED)
-        self.progress_text.pack(fill=tk.BOTH, expand=True)
-
-        # Buttons
-        button_frame = tk.Frame(root, pady=10)
-        button_frame.pack(fill=tk.X, padx=10)
-
-        self.start_btn = tk.Button(button_frame, text="Generate Animations",
-                                    command=self.start_animation, bg="#4CAF50", fg="white")
-        self.start_btn.pack(side=tk.LEFT, padx=5)
-
-        self.stop_btn = tk.Button(button_frame, text="Stop", command=self.stop_animation,
-                                  bg="#f44336", fg="white", state=tk.DISABLED)
-        self.stop_btn.pack(side=tk.LEFT, padx=5)
-
-    def browse_file(self):
-        file = filedialog.askopenfilename(
-            title="Select HDF5 File",
-            filetypes=[("HDF5 Files", "*.h5"), ("All Files", "*.*")]
-        )
-        if file:
-            self.file_path.set(file)
-
-    def log_progress(self, message):
-        self.progress_text.config(state=tk.NORMAL)
-        self.progress_text.insert(tk.END, message + "\n")
-        self.progress_text.see(tk.END)
-        self.progress_text.config(state=tk.DISABLED)
-        self.root.update()
-
-    def start_animation(self):
-        h5_path = self.file_path.get()
-        if not h5_path:
-            messagebox.showerror("Error", "Please select an H5 file")
-            return
-
-        if not os.path.exists(h5_path):
-            messagebox.showerror("Error", f"File not found: {h5_path}")
-            return
-
-        self.running = True
-        self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        self.progress_text.config(state=tk.NORMAL)
-        self.progress_text.delete(1.0, tk.END)
-        self.progress_text.config(state=tk.DISABLED)
-
-        # Run in background thread
-        thread = threading.Thread(target=self._run_animation, args=(h5_path,), daemon=True)
-        thread.start()
-
-    def _run_animation(self, h5_path):
+    # Try Windows native dialog
+    if system == "Windows":
         try:
-            generate_animations(
-                h5_path,
-                dt=self.dt_var.get(),
-                frame_skip=self.frame_skip_var.get(),
-                gif_fps=self.gif_fps_var.get(),
-                progress_callback=self.log_progress
-            )
-            if self.running:
-                self.root.after(0, lambda: messagebox.showinfo("Success", "Animations generated successfully!"))
+            import ctypes.wintypes as wintypes
+            from ctypes import windll
+
+            # Initialize COM
+            windll.ole32.CoInitializeEx(None, 0)
+
+            # Create file open dialog
+            file_dialog = windll.comdlg32.GetOpenFileNameA
+            file_dialog.argtypes = [wintypes.c_char_p]
+
+            # File filter
+            filter_str = b"HDF5 Files (*.h5)\0*.h5\0All Files (*.*)\0*.*\0"
+
+            # Prepare buffer
+            file_path = ctypes.create_string_buffer(260)
+
+            # OPENFILENAME structure
+            class OPENFILENAME(ctypes.Structure):
+                pass
+
+            OPENFILENAME._fields_ = [
+                ("lStructSize", wintypes.DWORD),
+                ("hwndOwner", wintypes.HWND),
+                ("hInstance", wintypes.HANDLE),
+                ("lpstrFilter", wintypes.LPCSTR),
+                ("lpstrCustomFilter", wintypes.LPCSTR),
+                ("nMaxCustFilter", wintypes.DWORD),
+                ("nFilterIndex", wintypes.DWORD),
+                ("lpstrFile", wintypes.LPSTR),
+                ("nMaxFile", wintypes.DWORD),
+                ("lpstrFileTitle", wintypes.LPSTR),
+                ("nMaxFileTitle", wintypes.DWORD),
+                ("lpstrInitialDir", wintypes.LPCSTR),
+                ("lpstrTitle", wintypes.LPCSTR),
+                ("Flags", wintypes.DWORD),
+                ("nFileOffset", wintypes.WORD),
+                ("nFileExtension", wintypes.WORD),
+                ("lpstrDefExt", wintypes.LPCSTR),
+                ("lCustData", wintypes.LPARAM),
+                ("lpfnHook", wintypes.c_void_p),
+                ("lpTemplateName", wintypes.LPCSTR),
+            ]
+
+            ofn = OPENFILENAME()
+            ofn.lStructSize = ctypes.sizeof(OPENFILENAME)
+            ofn.lpstrFilter = filter_str
+            ofn.lpstrFile = file_path
+            ofn.nMaxFile = 260
+            ofn.lpstrTitle = b"Select HDF5 File"
+            ofn.Flags = 0x00000004  # OFN_FILEMUSTEXIST
+
+            if windll.comdlg32.GetOpenFileNameA(ctypes.byref(ofn)):
+                return file_path.value.decode("utf-8")
+            return None
         except Exception as e:
-            if self.running:
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to generate animations:\n{str(e)}"))
-        finally:
-            self.running = False
-            self.root.after(0, lambda: self.start_btn.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
+            print(f"Warning: Could not open Windows file dialog: {e}\n")
 
-    def stop_animation(self):
-        self.running = False
-        self.log_progress("Stopped.")
-        self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
+    # Try Linux/Unix zenity
+    elif system in ["Linux", "Darwin"]:
+        try:
+            result = subprocess.run(
+                ["zenity", "--file-selection", "--file-filter=HDF5 Files (*.h5) | *.h5",
+                 "--file-filter=All Files | *"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except FileNotFoundError:
+            pass
+
+        # Try kdialog as fallback for KDE
+        try:
+            result = subprocess.run(
+                ["kdialog", "--getopenfilename", str(Path.home()),
+                 "*.h5 | HDF5 Files"],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except FileNotFoundError:
+            pass
+
+    print("Note: Could not open native file dialog.")
+    return None
 
 
+# ================================================================== #
+#  Main Entry Point
+# ================================================================== #
 def main():
-    root = tk.Tk()
-    gui = AnimationGUI(root)
-    root.mainloop()
+    parser = argparse.ArgumentParser(
+        description="Generate animated GIFs from flag_simple HDF5 dataset",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python animate_flag_simple.py                                    # Opens file browser
+  python animate_flag_simple.py dataset/flag_simple.h5             # Use default parameters
+  python animate_flag_simple.py data.h5 --dt 0.01 --frame-skip 2   # Custom parameters
+        """
+    )
+    parser.add_argument("h5_file", nargs="?", default=None, help="Path to HDF5 file")
+    parser.add_argument("--dt", type=float, default=0.02, help="Time step in seconds (default: 0.02)")
+    parser.add_argument("--frame-skip", type=int, default=4, help="Skip every N frames (default: 4)")
+    parser.add_argument("--gif-fps", type=int, default=20, help="GIF frames per second (default: 20)")
+
+    args = parser.parse_args()
+
+    # Get file path
+    h5_file = args.h5_file
+    if not h5_file:
+        print("No H5 file specified. Opening file browser...")
+        h5_file = browse_for_file()
+        if not h5_file:
+            print("No file selected. Exiting.")
+            sys.exit(1)
+
+    # Validate file
+    if not os.path.exists(h5_file):
+        print(f"Error: File not found: {h5_file}")
+        sys.exit(1)
+
+    print(f"\nGenerating animations from: {h5_file}")
+    print(f"  Time step (dt): {args.dt} s")
+    print(f"  Frame skip: {args.frame_skip}")
+    print(f"  GIF FPS: {args.gif_fps}\n")
+
+    try:
+        generate_animations(
+            h5_file,
+            dt=args.dt,
+            frame_skip=args.frame_skip,
+            gif_fps=args.gif_fps
+        )
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
