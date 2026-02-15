@@ -18,7 +18,7 @@ This document describes the HDF5 dataset format for Graph Neural Network (GNN) t
 dataset.h5
 ├── [Attributes]                           # File-level metadata
 │   ├── num_samples: int                   # Total number of samples (2138)
-│   ├── num_features: int                  # Number of features per node (7)
+│   ├── num_features: int                  # Number of features per node (8)
 │   └── num_timesteps: int                 # Timesteps per sample (1)
 │
 ├── data/                                  # Main data group
@@ -30,17 +30,17 @@ dataset.h5
 │   │   │                                  # Node indices remapped to compact numbering
 │   │   └── metadata/                      # Sample-specific metadata group
 │   │       ├── [Attributes]
-│   │       │   ├── source_filename: str   # Original .h5 filename
-│   │       │   ├── filename_id: str       # Filename stem (e.g., "634_421")
-│   │       │   ├── num_nodes: int         # Number of corner nodes in graph
-│   │       │   ├── num_edges: int         # Number of unique edges
-│   │       │   ├── num_cells: int         # Number of cells in source mesh
-│   │       │   ├── num_corner_nodes: int  # Same as num_nodes (corner nodes)
-│   │       │   └── num_total_nodes: int   # Total nodes in original FEA mesh
-│   │       ├── feature_min                # Dataset: (8,) float32 - per-feature minimums
-│   │       ├── feature_max                # Dataset: (8,) float32 - per-feature maximums
-│   │       ├── feature_mean               # Dataset: (8,) float32 - per-feature means
-│   │       └── feature_std                # Dataset: (8,) float32 - per-feature std devs
+│   │       │   ├── source_filename: str   # Original .h5 filename, Optional
+│   │       │   ├── filename_id: str       # Filename stem (e.g., "634_421"), Optional
+│   │       │   ├── num_nodes: int         # Number of corner nodes in graph, Required
+│   │       │   ├── num_edges: int         # Number of unique edges, Required
+│   │       │   ├── num_cells: int         # Number of cells in source mesh, Optional
+│   │       │   ├── num_corner_nodes: int  # Same as num_nodes (corner nodes), Optional
+│   │       │   └── num_total_nodes: int   # Total nodes in original FEA mesh, Optional
+│   │       ├── feature_min                # Dataset: (8,) float32 - per-feature minimums, Optional
+│   │       ├── feature_max                # Dataset: (8,) float32 - per-feature maximums, Optional
+│   │       ├── feature_mean               # Dataset: (8,) float32 - per-feature means, Optional
+│   │       └── feature_std                # Dataset: (8,) float32 - per-feature std devs, Optional
 │   ├── 2/                                 # Sample 2
 │   │   └── ...
 │   └── 2138/                              # Sample 2138
@@ -56,9 +56,9 @@ dataset.h5
     │   ├── mean                           # Dataset: (8,) float32 - global means
     │   └── std                            # Dataset: (8,) float32 - global std devs
     └── splits/                            # Train/validation/test splits
-        ├── train                          # Dataset: (N_train,) int64 - sample IDs
-        ├── val                            # Dataset: (N_val,) int64 - sample IDs
-        └── test                           # Dataset: (N_test,) int64 - sample IDs
+        ├── train                          # Dataset: (N_train,) int64 - sample IDs, optional
+        ├── val                            # Dataset: (N_val,) int64 - sample IDs, optional
+        └── test                           # Dataset: (N_test,) int64 - sample IDs, optional
 ```
 
 ---
