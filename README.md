@@ -424,16 +424,6 @@ By sensitivity:
 - **Reference Implementation**: NVIDIA PhysicsNeMo (deforming_plate example)
 - **Technologies**: PyTorch + PyTorch Geometric
 
-## Additional Documentation
-
-- [CONFIG_AND_EXECUTION_GUIDE.md](CONFIG_AND_EXECUTION_GUIDE.md) - Complete parameter reference with all defaults and ranges
-- [docs/MESHGRAPHNET_ARCHITECTURE.md](docs/MESHGRAPHNET_ARCHITECTURE.md) - Detailed architecture walkthrough
-- [docs/WORLD_EDGES_DOCUMENTATION.md](docs/WORLD_EDGES_DOCUMENTATION.md) - Collision detection (world edges) implementation
-- [docs/VRAM_OPTIMIZATION_PLAN.md](docs/VRAM_OPTIMIZATION_PLAN.md) - Memory optimization strategies and profiling
-- [docs/VISUALIZATION_DENORMALIZATION.md](docs/VISUALIZATION_DENORMALIZATION.md) - Denormalization techniques for visualization
-- [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md) - HDF5 dataset structure specification
-- [misc/README.md](misc/README.md) - Training visualization tools (plotting, real-time dashboard)
-
 ## Project Structure
 
 ```
@@ -486,9 +476,6 @@ MeshGraphNets/
         └── train.log               # Training logs
 ```
 
-## License
-
-[Add your license here]
 
 ## Citation
 
