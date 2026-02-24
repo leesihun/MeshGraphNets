@@ -12,8 +12,8 @@ import os
 from pathlib import Path
 
 def generate_inference_dataset(
-    source_dataset="dataset/flag_simple.h5",
-    output_path="infer/flag_inference.h5",
+    source_dataset="dataset/warpage.h5",
+    output_path="dataset/warpage_infer.h5",
     num_samples=10,
     random_seed=42
 ):
