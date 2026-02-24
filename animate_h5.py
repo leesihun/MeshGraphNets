@@ -131,7 +131,7 @@ def make_2d_gif(nd, edges, timesteps, norm, cmap, sample_id, num_nodes,
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.02)
     cbar.set_label(color_label)
-    fig.suptitle(f"Flag Simple  sample {sample_id}  (N={num_nodes})  [{view_tag}]",
+    fig.suptitle(f"Inference  sample {sample_id}  (N={num_nodes})  [{view_tag}]",
                  fontsize=12, fontweight="bold")
 
     frames = []
@@ -454,9 +454,9 @@ Examples:
         """
     )
     parser.add_argument("h5_file", nargs="?", default=None, help="Path to HDF5 file")
-    parser.add_argument("--dt", type=float, default=0.02, help="Time step in seconds (default: 0.02)")
-    parser.add_argument("--frame-skip", type=int, default=4, help="Skip every N frames (default: 4)")
-    parser.add_argument("--gif-fps", type=int, default=20, help="GIF frames per second (default: 20)")
+    parser.add_argument("--dt", type=float, default=1, help="Time step in seconds (default: 0.02)")
+    parser.add_argument("--frame-skip", type=int, default=1, help="Skip every N frames (default: 4)")
+    parser.add_argument("--gif-fps", type=int, default=10, help="GIF frames per second (default: 20)")
 
     args = parser.parse_args()
 
