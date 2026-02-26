@@ -4,367 +4,159 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**MeshGraphNets** is a Graph Neural Network (GNN) implementation for simulating deformable mesh dynamics. The model predicts node displacements and stresses in meshes under load using graph message passing with an encoder-processor-decoder architecture. Based on NVIDIA PhysicsNeMo and the original DeepMind MeshGraphNets paper.
+**MeshGraphNets** is a GNN for simulating deformable mesh dynamics. It predicts node displacements and stresses using an Encoder-Processor-Decoder architecture with graph message passing. Based on NVIDIA PhysicsNeMo and DeepMind's MeshGraphNets paper (Pfaff et al., ICML 2020).
 
-The model predicts **normalized deltas** (state_{t+1} - state_t), not absolute values. This design allows the same model to generalize across different geometry scales and simulation conditions.
+The model predicts **normalized deltas** (state_{t+1} - state_t), not absolute values. This decouples geometry scale from learned dynamics.
 
-## Quick Start
+## Commands
 
-### Training
 ```bash
-# Edit configuration
-vim config.txt  # Set mode=Train
-
-# Run training (auto-detects single/multi-GPU based on gpu_ids)
+# Training (reads config.txt by default, or specify --config)
 python MeshGraphNets_main.py
+python MeshGraphNets_main.py --config _warpage_input/config_train1.txt
 
-# Monitor in real-time
-python misc/plot_loss_realtime.py config.txt  # Visit http://localhost:5000
+# Inference (set mode=Inference in config)
+python MeshGraphNets_main.py --config _warpage_input/config_infer1.txt
 
-# View final logs
-cat outputs/<gpu_ids>/<log_file_dir>
-```
+# Real-time loss dashboard
+pip install -r misc/requirements_plotting.txt
+python misc/plot_loss_realtime.py config.txt  # http://localhost:5000
 
-### Inference (Autoregressive Rollout)
-```bash
-# Configure inference
-vim config.txt  # Set mode=Inference, modelpath, infer_dataset, infer_timesteps
-
-# Run inference
-python MeshGraphNets_main.py
-
-# Output: infer/<model_name>_sample_<id>.h5
-```
-
-### Debugging & Analysis
-```bash
-# Check model outputs for NaNs/zeros
-python misc/debug_model_output.py
-
-# Generate training loss plot (after training)
+# Static loss plot
 python misc/plot_loss.py config.txt --output loss_plot.png
 
-# Visualize mesh deformation
-python misc/animate_flag_simple.py
+# Debug model outputs
+python misc/debug_model_output.py
+
+# Generate inference dataset from training data
+python generate_inference_dataset.py
+
+# Animate mesh deformation from HDF5
+python animate_h5.py
 ```
+
+No test suite exists. No linter is configured.
 
 ## Configuration (config.txt)
 
-**Critical requirements:**
-- **File name**: Must be `config.txt` (exact case), located in repo root alongside `MeshGraphNets_main.py`
-- **Format**: Plain text with custom syntax
-  - Lines starting with `%` are comments
-  - `'` marks section separators (optional)
-  - Keys are case-insensitive (converted to lowercase internally)
-  - Comments with `#` are stripped from values
+Plain text format: `key value`. Lines starting with `%` are comments. `'` marks section separators. `#` inline comments are stripped. Keys are **case-insensitive** (lowercased by [load_config.py](general_modules/load_config.py)). Comma-separated values become lists.
 
-### Essential Parameters
+Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage_input/).
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| **mode** | str | - | `Train` or `Inference` |
-| **gpu_ids** | int/list | 0 | Single GPU (e.g., `0`), multi-GPU DDP (e.g., `0, 1, 2, 3`), or CPU (`-1`) |
-| **dataset_dir** | str | - | Path to HDF5 training dataset |
-| **infer_dataset** | str | - | Path to HDF5 inference dataset (Inference mode only) |
-| **modelpath** | str | - | Path to trained model checkpoint (Inference mode only) |
-| **log_file_dir** | str | train.log | Training log filename |
-| **input_var** | int | 4 | Node input features (excluding node types) |
-| **output_var** | int | 4 | Node output features |
-| **edge_var** | int | 4 | Edge features (always: [dx, dy, dz, distance]) |
+### Key Parameters
 
-### Network Hyperparameters (Key Tuning Parameters)
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| mode | - | `Train` or `Inference` |
+| gpu_ids | 0 | `-1`=CPU, `0`=single GPU, `0,1,2,3`=multi-GPU DDP |
+| modelpath | - | Checkpoint save/load path |
+| dataset_dir | - | HDF5 training dataset |
+| infer_dataset | - | HDF5 inference dataset |
+| infer_timesteps | - | Rollout steps for inference |
+| input_var | 4 | Node input features (excluding node types) |
+| output_var | 4 | Node output features |
+| edge_var | 4 | Always `[dx, dy, dz, distance]` |
+| Latent_dim | 128 | MLP hidden dimension |
+| message_passing_num | 15 | GNN depth (number of processor blocks) |
+| Batch_size | 50 | Per-GPU batch size |
+| LearningR | 0.0001 | Adam learning rate |
+| Training_epochs | 500 | |
+| std_noise | 0.001 | Gaussian noise augmentation (training only) |
+| use_checkpointing | False | Gradient checkpointing (saves ~60-70% VRAM) |
+| use_node_types | False | One-hot encode node types from HDF5 metadata |
+| use_world_edges | False | Radius-based collision detection edges |
+| use_parallel_stats | True | Parallel normalization stat computation |
+| verbose | False | Per-feature loss breakdowns |
+| monitor_gradients | True | Gradient norm tracking |
+| world_edge_backend | `torch_cluster` | `torch_cluster` (GPU) or `scipy_kdtree` (CPU). **Required in every config** — rollout.py has no default and crashes if absent |
 
-| Parameter | Type | Default | Range | Impact |
-|-----------|------|---------|-------|--------|
-| **LearningR** | float | 0.0001 | 1e-6 to 1e-2 | **High** - most sensitive parameter |
-| **Latent_dim** | int | 128 | 32-512 | **High** - MLP hidden dimension, affects VRAM quadratically |
-| **message_passing_num** | int | 15 | 1-30 | **Medium** - GNN depth, affects expressiveness and VRAM linearly |
-| **Batch_size** | int | 50 | 1-128 | **High** - per-GPU batch size, affects VRAM linearly |
-| **Training_epochs** | int | 500 | - | Total training epochs |
-| **num_workers** | int | 10 | 0-16 | DataLoader workers (reduce if CPU bound) |
+Full reference: [CONFIG_AND_EXECUTION_GUIDE.md](CONFIG_AND_EXECUTION_GUIDE.md)
 
-### Advanced Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| **use_checkpointing** | bool | False | Gradient checkpointing: trades 20-30% compute for 60-70% VRAM reduction |
-| **use_parallel_stats** | bool | True | Parallel stat computation (3-5× speedup for 100+ samples; requires ~80% CPU cores) |
-| **use_node_types** | bool | True | One-hot encode node types from HDF5 metadata |
-| **use_world_edges** | bool | True | Radius-based collision detection edges |
-| **world_radius_multiplier** | float | 1.5 | Collision radius = multiplier × min_mesh_edge_length |
-| **world_max_num_neighbors** | int | 64 | Max neighbors per node in KDTree query (prevents explosion) |
-| **std_noise** | float | 0.001 | Gaussian noise augmentation during training |
-| **verbose** | bool | False | Detailed CUDA memory and per-feature loss breakdowns |
-| **display_testset** | bool | True | Show test set predictions during training |
-| **test_batch_idx** | list | 0, 1, 2, 3 | Test batch indices to visualize |
-| **plot_feature_idx** | int | -1 | Feature to plot (-1 = last feature, typically stress) |
-
-See [CONFIG_AND_EXECUTION_GUIDE.md](CONFIG_AND_EXECUTION_GUIDE.md) for complete parameter reference.
-
-## Architecture Overview
+## Architecture
 
 ### Execution Flow
-1. **Entry point**: [MeshGraphNets_main.py](MeshGraphNets_main.py)
-   - Parses `config.txt` via [general_modules/load_config.py](general_modules/load_config.py)
-   - Auto-detects GPU configuration and routes to appropriate training pipeline
-   - Routes based on `mode`: `Train` → training, `Inference` → autoregressive rollout
 
-2. **Training pipelines**:
-   - Single GPU/CPU: [training_profiles/single_training.py](training_profiles/single_training.py)
-   - Multi-GPU DDP: [training_profiles/distributed_training.py](training_profiles/distributed_training.py)
-   - Both use [training_profiles/training_loop.py](training_profiles/training_loop.py) for epoch logic
-   - Saves best model and normalization stats to `outputs/<gpu_ids>/best_model.pth`
-
-3. **Inference pipeline**:
-   - [inference_profiles/rollout.py](inference_profiles/rollout.py)
-   - Loads trained model with normalization statistics
-   - Iteratively predicts normalized deltas and updates state
-   - Saves autoregressive trajectories to HDF5
-
-### Core Model: Encoder-Processor-Decoder (EPD)
-
-**Structure** (in [model/MeshGraphNets.py](model/MeshGraphNets.py)):
 ```
-Input (node + edge features)
-         ↓
-      Encoder (project to latent_dim)
-         ↓
-      Processor (message_passing_num blocks)
-      ├─ EdgeBlock: concatenates sender/receiver nodes + edge features → MLP
-      └─ NodeBlock: aggregates incident edges (sum) → concatenates with node features → MLP
-      (repeat message_passing_num times)
-         ↓
-      Decoder (project to output_dim, no LayerNorm)
-         ↓
-      Output (normalized deltas)
+MeshGraphNets_main.py (entry point, --config flag)
+  ├── mode=Train + single GPU  → single_training.py → training_loop.py
+  ├── mode=Train + multi GPU   → distributed_training.py (DDP) → training_loop.py
+  └── mode=Inference            → rollout.py (autoregressive)
 ```
 
-**Components** (in [model/](model/)):
-- **Encoder**: Linear projection from input_dim to latent_dim
-- **GnBlock** (EdgeBlock + NodeBlock): Message passing iteration
-  - EdgeBlock ([model/blocks.py](model/blocks.py)): Updates edges based on node pairs
-  - NodeBlock ([model/blocks.py](model/blocks.py)): Aggregates incident edges with sum operation
-  - HybridNodeBlock: Extends NodeBlock for mesh + world edges
-  - Optional gradient checkpointing ([model/checkpointing.py](model/checkpointing.py)): reduces VRAM ~60-70%
-- **Decoder**: Linear projection from latent_dim to output_dim
+### Model: EncoderProcessorDecoder ([model/MeshGraphNets.py](model/MeshGraphNets.py))
 
-**Neural Network Details**:
-- **MLP structure**: 2 hidden layers with LayerNorm on output (except decoder)
-- **Activation**: ReLU (default), also supports gelu, silu, tanh, sigmoid
-- **Initialization**: Kaiming/He (uniform, nonlinearity='relu')
-- **Aggregation**: Sum (matches NVIDIA PhysicsNeMo)—forces/stresses accumulate at nodes
+```
+Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
+```
 
-### Data Pipeline (in [general_modules/](general_modules/))
+- **Encoder**: Projects node features and edge features to `latent_dim` via MLPs
+- **GnBlock** ([model/blocks.py](model/blocks.py)): EdgeBlock updates edges, NodeBlock aggregates edges to nodes
+  - **Residual connections on nodes only** (not edges), matching NVIDIA implementation
+  - With `use_world_edges`: HybridNodeBlock aggregates mesh + world edges separately then concatenates
+- **Decoder**: Projects `latent_dim` to `output_var` (no LayerNorm on output)
+- **MLP**: 2 hidden layers, ReLU, LayerNorm on output (except decoder)
+- **Initialization**: Kaiming/He uniform
+- **Aggregation**: Sum (forces/stresses accumulate at nodes)
 
-- **[data_loader.py](general_modules/data_loader.py)**: Creates PyTorch DataLoaders
-  - DistributedSampler for multi-GPU DDP (automatic shuffling, no-repeat)
-  - Regular sampler for single-GPU
+### Data Pipeline ([general_modules/](general_modules/))
 
-- **[mesh_dataset.py](general_modules/mesh_dataset.py)**: Custom Dataset class
-  - Loads HDF5 mesh data (nodal_data, mesh_edge, metadata)
-  - Computes Z-score normalization (separate stats for: node features, edge features, delta features)
-  - Parallel stat computation (`use_parallel_stats`) for large datasets
-  - Optional: one-hot node type encoding (`use_node_types`)
-  - Optional: world edge computation (`use_world_edges`)
-  - Returns torch_geometric.data.Data graphs
+- [mesh_dataset.py](general_modules/mesh_dataset.py): Loads HDF5, computes Z-score normalization stats, returns `torch_geometric.data.Data` graphs
+- [data_loader.py](general_modules/data_loader.py): Creates DataLoaders (DistributedSampler for DDP)
+- [mesh_utils_fast.py](general_modules/mesh_utils_fast.py): Edge features, world edge KDTree queries, GPU triangle reconstruction, PyVista rendering
 
-- **[mesh_utils_fast.py](general_modules/mesh_utils_fast.py)**: Mesh utilities
-  - Edge feature computation from deformed positions
-  - World edge radius query (scipy KDTree backend, optional torch_cluster GPU backend)
-  - Visualization helpers
+### Training
 
-### Training Loop ([training_profiles/training_loop.py](training_profiles/training_loop.py))
-
-**Key functions**:
-- `train_epoch()`: Forward pass, MSE loss on normalized deltas, backward, gradient clipping (max_norm=1.0)
-- `validate_epoch()`: Evaluation without gradient updates
-- `test_model()`: Test set evaluation with optional visualization
-- `save_debug_batch()`: Optionally saves model predictions vs. targets
-
-**Optimization**:
 - **Optimizer**: Adam
-- **Learning rate scheduler**: ExponentialLR (gamma=0.995, decays each epoch)
-- **Loss**: MSE on normalized deltas per feature
-- **Gradient clipping**: max_norm=1.0 (stabilizes deep networks)
+- **LR Scheduler**: ExponentialLR(gamma=0.995) for single-GPU; ReduceLROnPlateau(factor=0.5, patience=2, min_lr=1e-8) for DDP
+- **Loss**: MSE on normalized deltas
+- **Gradient clipping**: max_norm=5.0
+- **Checkpoint path**: single-GPU uses `modelpath` from config; DDP always saves to `outputs/best_model.pth` regardless of `modelpath`
+- **Checkpoint contents**: model_state_dict, optimizer, scheduler, normalization stats, model_config
 
-## Data Concepts
+### Inference ([inference_profiles/rollout.py](inference_profiles/rollout.py))
 
-### HDF5 Dataset Format
-See [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md) for complete spec.
+Autoregressive rollout: normalize state → build graph → forward pass → denormalize delta → update state → repeat. Outputs HDF5 with predicted trajectories.
 
-**Per-sample structure**:
-- `nodal_data`: `(num_features, num_timesteps, num_nodes)` float32
-  - Features: `[x, y, z, x_disp, y_disp, z_disp, stress, ...]`
-- `mesh_edge`: `(2, num_edges)` int64 (FEM connectivity, stored bidirectional)
-- `metadata`: Sample attributes (num_nodes, num_edges, source_filename, etc.)
+## Critical Invariants
 
-**Edge features** (computed dynamically):
-- `[dx, dy, dz, distance]` from deformed positions (reference + displacement)
-- Always bidirectional: `edge_index = [mesh_edge; mesh_edge[[1,0]]]`
+These are easy to break if you don't know them:
 
-### Normalization
-- **Method**: Z-score normalization per feature
-  - `x_norm = (x_raw - mean) / std`
-- **Statistics**: Computed separately for:
-  - Node features (from first timestep, all training samples)
-  - Edge features (from deformed positions)
-  - Delta features (state transitions—critical for loss)
-- **Storage**: Saved in checkpoint under `checkpoint['normalization']` dict
-  - Includes: node_mean, node_std, edge_mean, edge_std, delta_mean, delta_std
-  - Also: node_type_to_idx (if `use_node_types`), world_edge_radius (if `use_world_edges`)
+1. **Edges are always bidirectional**: `edge_index = [mesh_edge; mesh_edge[[1,0]]]`
+2. **Node types are one-hot encoded AFTER normalization** and concatenated to normalized features
+3. **Edge features are computed from deformed positions** (reference + displacement), not reference positions
+4. **Decoder has NO LayerNorm** — this allows full output range for delta prediction
+5. **Residual connections only on nodes**, not edges (matches NVIDIA PhysicsNeMo)
+6. **Delta normalization is separate** from node normalization (delta_mean/delta_std vs node_mean/node_std)
+7. **All samples must have equal timestep counts** (current limitation, printed at startup)
+8. **HDF5 nodal_data shape**: `[num_features, num_timesteps, num_nodes]` — features-first, not nodes-first
+9. **World edges exclude existing mesh edges** to avoid duplication
+10. **Config keys are case-insensitive** — `LearningR` becomes `learningr` internally
+11. **`world_edge_backend` is required in all configs** — `rollout.py` calls `.get('world_edge_backend').lower()` with no default; omitting it crashes inference with `AttributeError`
+12. **For T=1 (static) datasets**, the model input `x` is all-zeros and the target delta equals the feature values themselves
+13. **`num_node_types` is assigned to config by code** (not from config file) after dataset load; do not set it manually
 
-### Model Prediction & Inference
+## HDF5 Dataset Format
 
-**Training**:
-- Model receives normalized input (node + edge features)
-- Predicts normalized deltas: `Δy_norm = model(x_norm, edge_norm)`
-- Loss: MSE between predicted and target normalized deltas
+Per-sample: `nodal_data` `[features, time, nodes]`, `mesh_edge` `[2, edges]`, `metadata` attributes.
+Features: `[x, y, z, x_disp, y_disp, z_disp, stress, (part_number)]`.
+Full spec: [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md)
 
-**Inference** (autoregressive rollout):
-1. Load initial state at t=`rollout_start_step`
-2. For each step t → t+1:
-   - Normalize current state using checkpoint stats
-   - Build graph (edges from deformed positions)
-   - Forward pass → predicted normalized delta
-   - Denormalize: `delta = delta_norm * std + mean`
-   - Update state: `state_{t+1} = state_t + delta`
-3. Save all predicted timesteps to HDF5
+## Normalization
 
-## Output Structure
+Z-score per feature, computed separately for three domains:
+- **Node**: from physical features `nodal_data[3:3+input_var]` across all samples and sampled timesteps (up to 500 per sample)
+- **Edge**: from deformed edge positions `[dx, dy, dz, distance]`
+- **Delta**: from actual `state_{t+1} - state_t` transitions (for T=1 datasets, delta = feature value itself)
 
-### Training Outputs
-- **Logs**: `outputs/<gpu_ids>/<log_file_dir>`
-  - Format: `Elapsed time: XXXs Epoch N Train Loss: X.XXe-0X Valid Loss: X.XXe-0X LR: X.XXXXe-0X`
-  - If `verbose=True`: Per-feature loss breakdowns
-- **Checkpoints**: `outputs/<gpu_ids>/`
-  - `best_model.pth`: Best epoch (by validation loss)
-  - Contains: model_state_dict, optimizer_state_dict, scheduler_state_dict, normalization stats, model config
-
-### Inference Outputs
-- **Rollout trajectories**: `<inference_output_dir>/<model_name>_sample_<id>.h5`
-  - Predicted nodal_data for all rollout timesteps
-  - Mesh connectivity copied from input dataset
-  - Ready for visualization or analysis
-
-## Visualization Tools
-
-Located in [misc/](misc/), see [misc/README.md](misc/README.md) for full details:
-
-### Static Loss Plot
-```bash
-python misc/plot_loss.py config.txt --output loss_plot.png
-```
-Generates PNG image of training/validation loss on log scale.
-
-### Real-Time Dashboard
-```bash
-# Install dependencies (FastAPI + Uvicorn)
-pip install -r misc/requirements_plotting.txt
-
-# Start server (auto-updates every 2s)
-python misc/plot_loss_realtime.py config.txt
-# Open browser: http://localhost:5000
-```
-Live dashboard with statistics, training metadata, and interactive tooltips. Includes FastAPI documentation at `/docs`.
-
-### Mesh Visualization
-```bash
-python misc/animate_flag_simple.py
-```
-Generates animated GIFs of mesh deformation from `flag_simple.h5`, colored by stress. Creates 4 views: XZ, XY, YZ, 3D isometric.
-
-### Model Debug
-```bash
-python misc/debug_model_output.py
-```
-Checks model for NaN/zero outputs; prints per-layer activations and ranges.
-
-## Common Development Tasks
-
-### Troubleshooting
-
-| Issue | Symptoms | Solutions |
-|-------|----------|-----------|
-| **Out of Memory (OOM)** | `RuntimeError: CUDA out of memory` | 1. Reduce `Batch_size` (most effective)<br>2. Enable `use_checkpointing=True`<br>3. Reduce `Latent_dim` to 64-128<br>4. Use multi-GPU (`gpu_ids 0, 1, 2, 3`) |
-| **Loss not decreasing** | Loss constant or increasing | 1. Reduce `LearningR` by 10× (e.g., 1e-4→1e-5)<br>2. Increase `message_passing_num`<br>3. Verify dataset path and format |
-| **NaN loss** | Loss becomes `nan` during training | 1. Reduce `LearningR` to 1e-5<br>2. Reduce `std_noise`<br>3. Check normalization stats (may indicate data issues) |
-| **Slow training** | Epochs take very long | 1. Adjust `num_workers` (typically 2-8)<br>2. Use multi-GPU<br>3. Reduce dataset size for debugging |
-
-### Hyperparameter Optimization
-
-**Workflow**:
-1. Create multiple config files with different hyperparameters (e.g., `config_lr_1e3.txt`, `config_lat_256.txt`)
-2. Run training: `python MeshGraphNets_main.py`
-3. Compare validation losses in output logs
-4. Refine search based on results
-
-**Most impactful parameters** (by sensitivity):
-- `LearningR`: [1e-4, 1e-3, 1e-2]
-- `Latent_dim`: [64, 128, 256, 512]
-- `message_passing_num`: [5, 10, 15, 20, 30]
-- `Batch_size`: [1, 5, 10, 20]
-
-### Adding Features
-
-**New node/edge features**:
-1. Modify HDF5 dataset generation to include new features in nodal_data
-2. Update `input_var` and `output_var` in config.txt
-3. Update [mesh_dataset.py](general_modules/mesh_dataset.py) feature loading (~lines 150-200)
-4. Normalization stats auto-recompute
-
-**New model architecture**:
-- Edit [model/blocks.py](model/blocks.py): EdgeBlock, NodeBlock, HybridNodeBlock
-- Edit [model/MeshGraphNets.py](model/MeshGraphNets.py): Encoder, GnBlock, Decoder
-- Test with `message_passing_num=2` for fast iteration
-
-**Custom loss functions**:
-- Modify [training_profiles/training_loop.py](training_profiles/training_loop.py) `train_epoch()` function
-- Currently: MSE on normalized deltas
-- Alternatives: L1, weighted MSE per feature, etc.
-
-### Running Inference
-
-**Workflow**:
-1. Train model: `python MeshGraphNets_main.py` (get `outputs/<gpu_id>/best_model.pth`)
-2. Prepare inference dataset: `python generate_inference_dataset.py`
-3. Edit `config.txt`:
-   ```
-   mode            Inference
-   modelpath       outputs/0/best_model.pth
-   infer_dataset   ./infer/flag_inference.h5
-   infer_timesteps 100
-   ```
-4. Run: `python MeshGraphNets_main.py`
-5. Check output: `infer/<model_name>_sample_<id>.h5`
-
-**Key config parameters**:
-- `modelpath`: Full path to checkpoint (lowercase!)
-- `infer_dataset`: HDF5 file with initial conditions
-- `infer_timesteps`: Number of rollout steps to predict
-- `inference_output_dir`: Output directory (auto-created)
-
-## Design Notes
-
-**Key design choices**:
-- **Sum aggregation** (not mean): Matches NVIDIA PhysicsNeMo; physical interpretation is forces/stresses add at nodes
-- **Z-score normalization**: Stable across feature ranges; enables scale generalization
-- **Normalized delta prediction**: Decouples geometry scale from learned dynamics; allows models to work across geometry sizes
-- **Autoregressive inference**: Enables multi-step predictions beyond training horizon
-- **Bidirectional edges**: Graph is undirected; connectivity stored both directions
-- **Kaiming/He initialization**: Suits ReLU; stabilizes gradient flow in deep networks
-- **Gradient clipping (max_norm=1.0)**: Stabilizes training in deep networks
-
-**References**:
-- Original paper: "Learning Mesh-Based Simulation with Graph Networks" (Pfaff et al., ICML 2020, DeepMind)
-- Reference: NVIDIA PhysicsNeMo (deforming_plate example)
-- Implementation: PyTorch + PyTorch Geometric
+Stored in checkpoint: `checkpoint['normalization']` dict with `node_mean`, `node_std`, `edge_mean`, `edge_std`, `delta_mean`, `delta_std`, plus `node_type_to_idx` and `world_edge_radius` if applicable.
 
 ## Additional Documentation
 
-- [CONFIG_AND_EXECUTION_GUIDE.md](CONFIG_AND_EXECUTION_GUIDE.md): Complete parameter reference with all defaults and ranges
-- [docs/MESHGRAPHNET_ARCHITECTURE.md](docs/MESHGRAPHNET_ARCHITECTURE.md): Detailed architecture walkthrough
-- [docs/WORLD_EDGES_DOCUMENTATION.md](docs/WORLD_EDGES_DOCUMENTATION.md): Collision detection (world edges) implementation
-- [docs/VRAM_OPTIMIZATION_PLAN.md](docs/VRAM_OPTIMIZATION_PLAN.md): Memory optimization strategies and profiling
-- [docs/VISUALIZATION_DENORMALIZATION.md](docs/VISUALIZATION_DENORMALIZATION.md): Denormalization techniques for visualization
-- [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md): HDF5 dataset structure specification
-- [misc/README.md](misc/README.md): Training visualization tools (plotting, real-time dashboard)
+- [CONFIG_AND_EXECUTION_GUIDE.md](CONFIG_AND_EXECUTION_GUIDE.md): Complete parameter reference
+- [docs/MESHGRAPHNET_ARCHITECTURE.md](docs/MESHGRAPHNET_ARCHITECTURE.md): Architecture walkthrough
+- [docs/WORLD_EDGES_DOCUMENTATION.md](docs/WORLD_EDGES_DOCUMENTATION.md): Collision detection implementation
+- [docs/VRAM_OPTIMIZATION_PLAN.md](docs/VRAM_OPTIMIZATION_PLAN.md): Memory optimization strategies
+- [docs/VISUALIZATION_DENORMALIZATION.md](docs/VISUALIZATION_DENORMALIZATION.md): Denormalization for visualization
+- [docs/ADAPTIVE_REMESHING_PLAN.md](docs/ADAPTIVE_REMESHING_PLAN.md): Adaptive remeshing plan
+- [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md): HDF5 dataset structure
+- [misc/README.md](misc/README.md): Visualization tools

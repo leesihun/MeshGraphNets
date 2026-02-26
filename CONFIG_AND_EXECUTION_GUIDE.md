@@ -1,6 +1,6 @@
 # Configuration and Execution Guide
 
-Complete reference for all configuration parameters and execution modes in MeshGraphNets.
+Complete reference for all configuration parameters and execution modes in MeshGraphNets. This guide also serves as a specification for generating valid config files and HDF5 datasets programmatically.
 
 ## Table of Contents
 
@@ -21,6 +21,8 @@ Complete reference for all configuration parameters and execution modes in MeshG
   - [Training (Multi-GPU DDP)](#training-multi-gpu-ddp)
   - [Training (CPU)](#training-cpu)
   - [Inference (Autoregressive Rollout)](#inference-autoregressive-rollout)
+- [HDF5 Dataset Structure](#hdf5-dataset-structure)
+- [Data Flow: How the Model Uses Data](#data-flow-how-the-model-uses-data)
 - [Example Configurations](#example-configurations)
 - [Config File Parsing Details](#config-file-parsing-details)
 - [Checkpoint Contents](#checkpoint-contents)
@@ -31,7 +33,11 @@ Complete reference for all configuration parameters and execution modes in MeshG
 
 ## Config File Format
 
-Configuration is stored in a plain-text file (default: `config.txt`) in the repository root.
+Configuration is stored in a plain-text file (default: `config.txt`) in the repository root. The config file path can be overridden via command-line:
+
+```bash
+python MeshGraphNets_main.py --config my_custom_config.txt
+```
 
 ### Syntax Rules
 
@@ -55,15 +61,13 @@ Values are automatically parsed in this order:
 4. **Numeric** -> int (no decimal point) or float (with decimal point)
 5. **String** -> lowercase string (fallback)
 
-### Command-Line Override
-
-The config file path can be overridden via command-line:
-
-```bash
-python MeshGraphNets_main.py --config my_custom_config.txt
-```
-
-Default is `config.txt` in the current working directory.
+**Important implications:**
+- `LearningR 0.0001` is stored as `config['learningr'] = 0.0001` (float)
+- `gpu_ids 0, 1, 2, 3` is stored as `config['gpu_ids'] = [0, 1, 2, 3]` (list of int)
+- `gpu_ids 0` is stored as `config['gpu_ids'] = 0` (int, not list)
+- `verbose True` is stored as `config['verbose'] = True` (bool)
+- `mode Train` is stored as `config['mode'] = 'train'` (lowercase string)
+- String values with spaces may be parsed as lists: `my_param hello world` -> `['hello', 'world']`
 
 ---
 
@@ -74,16 +78,15 @@ Default is `config.txt` in the current working directory.
 | Parameter | Type | Default | Required | Description |
 |-----------|------|---------|----------|-------------|
 | `model` | str | - | Yes | Model architecture name. Currently only `MeshGraphNets` is supported. |
-| `mode` | str | - | Yes | Execution mode: `Train` or `Inference`. Case-insensitive (stored as lowercase internally). |
-| `gpu_ids` | int or list | - | Yes | GPU device(s) to use. Single int for single-GPU, comma-separated list for multi-GPU DDP, `-1` for CPU. |
-| `log_file_dir` | str | - | No | Log filename relative to `outputs/`. Training logs are written to `outputs/<log_file_dir>`. The parent directory is auto-created. |
+| `mode` | str | - | Yes | Execution mode: `Train` or `Inference`. Case-insensitive (stored as lowercase). |
+| `gpu_ids` | int or list | - | Yes | GPU device(s). Single int for single-GPU, comma-separated for multi-GPU DDP, `-1` for CPU. |
+| `log_file_dir` | str | - | No | Log filename relative to `outputs/`. E.g., `train0.log` writes to `outputs/train0.log`. |
+| `modelpath` | str | - | Yes | Path to save/load model checkpoint (`.pth` file). **Single-GPU only**: this path is used when saving. For multi-GPU DDP, the checkpoint is always saved to `outputs/best_model.pth` regardless of this value (but the key must still be present to avoid errors). |
 
-**Notes:**
-- `gpu_ids` determines the execution pipeline automatically:
-  - Single value (e.g., `0`): Routes to `single_training.py`
-  - Multiple values (e.g., `0, 1, 2, 3`): Routes to `distributed_training.py` with DDP
-  - `-1`: Routes to `single_training.py` on CPU
-- `log_file_dir` is the full relative path from `outputs/`, e.g., `train0.log` writes to `outputs/train0.log`, `gpu0/train.log` writes to `outputs/gpu0/train.log`
+**GPU routing logic:**
+- Single value (e.g., `0`): Routes to `single_training.py`
+- Multiple values (e.g., `0, 1, 2, 3`): Routes to `distributed_training.py` with DDP
+- `-1`: Routes to `single_training.py` on CPU
 
 ---
 
@@ -96,8 +99,9 @@ Default is `config.txt` in the current working directory.
 
 **Notes:**
 - Paths can be relative (to working directory) or absolute
-- HDF5 dataset must follow the structure defined in [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md)
-- The dataset is automatically split 80/10/10 (train/val/test) during training
+- HDF5 dataset must follow the structure defined in [HDF5 Dataset Structure](#hdf5-dataset-structure) below
+- The dataset is automatically split 80/10/10 (train/val/test) during training with seed=42
+- **All samples must have the same number of timesteps** (current limitation)
 
 ---
 
@@ -110,14 +114,17 @@ These parameters define the model structure. They are saved in the checkpoint an
 | `input_var` | int | - | 1+ | Number of physical node input features (excluding node types). Typically 4: `[x_disp, y_disp, z_disp, stress]`. |
 | `output_var` | int | - | 1+ | Number of node output features. Typically 4: `[x_disp, y_disp, z_disp, stress]`. |
 | `edge_var` | int | - | 1+ | Number of edge features. Always 4: `[dx, dy, dz, distance]`. |
-| `Latent_dim` | int | 128 | 32-512 | Hidden dimension of all MLPs in the encoder, processor, and decoder. Affects VRAM usage **quadratically** (MLP weights scale as latent_dim^2). |
-| `message_passing_num` | int | 15 | 1-30 | Number of message passing iterations in the processor. More iterations = larger receptive field but more VRAM (linear scaling). |
+| `Latent_dim` | int | 128 | 32-512 | Hidden dimension of all MLPs. Affects VRAM **quadratically** (MLP weights scale as latent_dim^2). |
+| `message_passing_num` | int | 15 | 1-30 | Number of message passing iterations. More = larger receptive field but more VRAM (linear scaling). |
 
-**Notes:**
+**Architecture details:**
 - The actual model input dimension is `input_var + num_node_types` when `use_node_types=True`
 - All MLPs use 2 hidden layers with ReLU activation and LayerNorm (except the decoder, which has no LayerNorm)
 - Each message passing block contains an EdgeBlock and a NodeBlock (or HybridNodeBlock if world edges are enabled)
 - Residual connections are applied to **node features only** (not edges), matching the NVIDIA PhysicsNeMo implementation
+- EdgeBlock input: concatenation of sender nodes, receiver nodes, and edge features -> `3 * latent_dim`
+- NodeBlock input: concatenation of node features and aggregated edges -> `2 * latent_dim` (or `3 * latent_dim` for HybridNodeBlock with world edges)
+- Aggregation: **sum** (not mean) -- forces/stresses accumulate at nodes
 
 ---
 
@@ -130,17 +137,16 @@ These parameters define the model structure. They are saved in the checkpoint an
 | `LearningR` | float | 0.0001 | 1e-6 to 1e-2 | Initial learning rate for Adam optimizer. **Most sensitive hyperparameter.** |
 | `num_workers` | int | 10 | 0-16 | Number of DataLoader worker processes. Set to 0 for debugging (single-process loading). |
 | `std_noise` | float | 0.001 | 0-0.1 | Standard deviation of Gaussian noise added to input features during training. Set to 0 to disable. |
-| `residual_scale` | float | 0.1 | 0-1.0 | Scale factor for residual connections. Currently defined in config but **not used in the model code** (residual connections use scale=1.0). Reserved for future use. |
-| `monitor_gradients` | bool | True | - | Enable gradient norm monitoring during training. Logs per-epoch average gradient norms and warnings for vanishing/exploding gradients. |
+| `residual_scale` | float | 0.1 | 0-1.0 | Defined in config but **not currently used** in model code (residual connections use scale=1.0). Reserved for future use. |
 
-**Optimizer Details:**
-- **Optimizer**: Adam (torch.optim.Adam)
-- **LR Scheduler (Single GPU)**: ExponentialLR with gamma=0.995 (decays every epoch)
-- **LR Scheduler (Multi-GPU DDP)**: ReduceLROnPlateau (factor=0.5, patience=2, min_lr=1e-8)
-- **Gradient Clipping**: max_norm=5.0 (applied after gradient computation)
-- **Loss Function**: MSE on normalized deltas per feature
-- **Weight Initialization**: Kaiming/He uniform (nonlinearity='relu')
-- **Data Split**: 80% train, 10% validation, 10% test (fixed seed=42)
+**Optimizer & scheduler details:**
+- **Optimizer**: Adam (`torch.optim.Adam`)
+- **LR Scheduler (Single GPU)**: `ExponentialLR` with `gamma=0.995` (decays every epoch)
+- **LR Scheduler (Multi-GPU DDP)**: `ReduceLROnPlateau` (`factor=0.5`, `patience=2`, `min_lr=1e-8`)
+- **Gradient Clipping**: `max_norm=5.0` (applied after gradient computation)
+- **Loss Function**: MSE on normalized deltas (averaged across all nodes and features)
+- **Weight Initialization**: Kaiming/He uniform (`nonlinearity='relu'`)
+- **Data Split**: 80% train, 10% validation, 10% test (fixed `seed=42`)
 
 ---
 
@@ -150,12 +156,12 @@ These parameters define the model structure. They are saved in the checkpoint an
 |-----------|------|---------|-------------|
 | `use_node_types` | bool | False | Enable one-hot encoding of node types from HDF5 metadata. Node types are read from the **last feature** (index -1) of `nodal_data`. |
 
-**Notes:**
-- When enabled, unique node types are auto-discovered from the first 10 samples in the dataset
-- Node types are mapped to contiguous indices (e.g., `{0: 0, 1: 1, 3: 2}`)
-- One-hot vectors are concatenated **after** z-score normalization of physical features
-- The model input dimension becomes `input_var + num_node_types`
-- Node type mapping (`node_type_to_idx`) and count (`num_node_types`) are saved in the checkpoint for inference
+**How node types work:**
+1. Unique node types are auto-discovered from the first 10 samples
+2. Types are mapped to contiguous indices (e.g., `{0: 0, 1: 1, 3: 2}`)
+3. One-hot vectors are concatenated **after** z-score normalization of physical features
+4. Model input dimension becomes `input_var + num_node_types`
+5. The mapping (`node_type_to_idx`) and count (`num_node_types`) are saved in the checkpoint
 
 ---
 
@@ -165,18 +171,23 @@ World edges provide radius-based collision detection between non-adjacent nodes.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `use_world_edges` | bool | False | Enable world edge computation. Adds radius-based proximity edges between nodes that are not connected by mesh edges. |
-| `world_radius_multiplier` | float | 1.5 | Collision detection radius = multiplier * min_mesh_edge_length. The min edge length is auto-computed from the first 10 dataset samples. |
-| `world_max_num_neighbors` | int | 64 | Maximum number of neighbors per node in the radius query. Prevents edge count explosion in dense regions. |
-| `world_edge_backend` | str | `torch_cluster` | Backend for radius queries: `torch_cluster` (GPU-accelerated, 5-10x faster) or `scipy_kdtree` (CPU fallback, always available). Falls back to `scipy_kdtree` if `torch_cluster` is not installed. |
+| `use_world_edges` | bool | False | Enable world edge computation. |
+| `world_radius_multiplier` | float | 1.5 | Collision radius = multiplier * min_mesh_edge_length. Auto-computed from first 10 samples. |
+| `world_max_num_neighbors` | int | 64 | Maximum neighbors per node in radius query. Prevents edge explosion in dense regions. |
+| `world_edge_backend` | str | `torch_cluster` | Backend: `torch_cluster` (GPU, 5-10x faster) or `scipy_kdtree` (CPU fallback, always available). Falls back to `scipy_kdtree` if `torch_cluster` is not installed. **Must be explicitly specified in inference configs** — `rollout.py` has no fallback default and will crash if this key is absent. |
 
-**Notes:**
-- World edges are **filtered** to exclude edges that already exist in the mesh topology
-- World edge features use the same `[dx, dy, dz, distance]` format as mesh edges
-- World edge features are normalized using the **same statistics** as mesh edges
-- When world edges are enabled, the processor uses `HybridNodeBlock` which aggregates from both mesh and world edges separately before combining
-- The computed `world_edge_radius` value is saved in the checkpoint for inference
+**How world edges work:**
+- Filtered to exclude edges already in the mesh topology
+- Use same `[dx, dy, dz, distance]` format and normalization as mesh edges
+- When enabled, the processor uses `HybridNodeBlock` which aggregates from both mesh and world edges separately (each through sum aggregation) before combining: `[node_features, mesh_agg, world_agg]`
+- The computed `world_edge_radius` is saved in the checkpoint for inference
 - See [docs/WORLD_EDGES_DOCUMENTATION.md](docs/WORLD_EDGES_DOCUMENTATION.md) for full details
+
+**Backend default discrepancy:**
+- `mesh_dataset.py` default (training): `torch_cluster` (falls back to `scipy_kdtree` if not installed)
+- `rollout.py` (inference): **no default** — will crash with `AttributeError` if `world_edge_backend` is absent from the config
+- All provided example configs explicitly set `world_edge_backend scipy_kdtree` for portability
+- Recommended practice: always explicitly specify this key in every config file
 
 ---
 
@@ -184,13 +195,7 @@ World edges provide radius-based collision detection between non-adjacent nodes.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `use_checkpointing` | bool | False | Enable gradient checkpointing for message passing blocks. Trades 20-30% extra compute time for 60-70% VRAM reduction. |
-
-**Notes:**
-- Gradient checkpointing only activates during training (no effect during inference/eval)
-- When enabled, intermediate activations in the processor are recomputed during the backward pass instead of being stored
-- Particularly useful for deep networks (high `message_passing_num`) or large latent dimensions
-- See [docs/VRAM_OPTIMIZATION_PLAN.md](docs/VRAM_OPTIMIZATION_PLAN.md) for detailed memory optimization strategies
+| `use_checkpointing` | bool | False | Gradient checkpointing for message passing blocks. Trades 20-30% compute for 60-70% VRAM reduction. Only active during training. |
 
 ---
 
@@ -198,13 +203,12 @@ World edges provide radius-based collision detection between non-adjacent nodes.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `use_parallel_stats` | bool | True | Enable multiprocessing for dataset normalization statistics computation. Uses ~45% of available CPU cores (max 64 workers). |
+| `use_parallel_stats` | bool | True | Parallel processing for dataset normalization statistics. Uses ~45% of CPU cores (max 64 workers). Auto-disabled for < 10 samples. |
 
 **Notes:**
-- Automatically disabled for datasets with fewer than 10 samples
 - Falls back to serial processing if multiprocessing fails
-- Each worker opens its own HDF5 file handle (read-only) to avoid file locking issues
-- For datasets with many timesteps, statistics are computed from a subsample of up to 500 timesteps per sample to limit memory usage
+- Each worker opens its own HDF5 file handle (read-only) to avoid file locking
+- For datasets with many timesteps, statistics are computed from a subsample of up to 500 timesteps per sample
 
 ---
 
@@ -212,16 +216,16 @@ World edges provide radius-based collision detection between non-adjacent nodes.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `verbose` | bool | False | Enable detailed diagnostics: per-feature loss breakdowns, CUDA memory tracking per batch, per-layer gradient statistics. |
-| `monitor_gradients` | bool | True | Track gradient norms during training. Logs average gradient norm per epoch and warns about vanishing (<1e-6) or exploding (>100) gradients. |
-| `display_testset` | bool | True | Generate visualizations when evaluating on the test set (every 10 epochs). Set to `False` to skip rendering for faster training. |
-| `test_batch_idx` | list | `0, 1, 2, 3` | Which test batch indices to visualize and save to HDF5 during test evaluation. |
-| `plot_feature_idx` | int | -1 | Feature index to visualize in test plots. `-1` = last feature (typically stress), `-2` = second-to-last, or a positive index for a specific feature. |
+| `verbose` | bool | False | Detailed diagnostics: per-feature loss breakdowns, CUDA memory tracking, per-layer gradient statistics. |
+| `monitor_gradients` | bool | True | Track gradient norms during training. Warns about vanishing (<1e-6) or exploding (>100) gradients. |
+| `display_testset` | bool | True | Generate PyVista visualizations during test evaluation (every 10 epochs). |
+| `test_batch_idx` | list | `[0]` | Which test batch indices to visualize and save to HDF5. Code fallback default is `[0]`. All standard config files explicitly set this to `0, 1, 2, 3`. |
+| `plot_feature_idx` | int | -1 | Feature index to visualize. `-1` = last feature (stress), `-2` = second-to-last (z_disp), or positive index. Standard configs use `-2`. |
 
 **Notes:**
 - Test evaluation runs every 10 epochs, saving results to `outputs/test/<gpu_ids>/<epoch>/`
 - Test outputs include both normalized and denormalized predictions vs. ground truth
-- When `verbose=True`, per-feature MSE loss is printed for train, validation, and test sets
+- Debug data (`.npz` files with predictions/targets) is saved starting from epoch 5
 
 ---
 
@@ -231,17 +235,17 @@ These parameters are only used when `mode=Inference`.
 
 | Parameter | Type | Default | Required | Description |
 |-----------|------|---------|----------|-------------|
-| `modelpath` | str | - | Yes | Path to the trained model checkpoint (`.pth` file). Must contain `model_state_dict`, `normalization`, and `model_config` keys. |
+| `modelpath` | str | - | Yes | Path to trained model checkpoint (`.pth`). Must contain `model_state_dict`, `normalization`, and `model_config` keys. |
 | `infer_dataset` | str | - | Yes | Path to HDF5 dataset with initial conditions for rollout. |
-| `infer_timesteps` | int | - | Yes* | Number of autoregressive rollout steps to predict. If `None` and dataset has multiple timesteps, defaults to `num_timesteps - 1`. |
-| `inference_output_dir` | str | `outputs/rollout` | No | Directory for rollout output HDF5 files. Auto-created if it doesn't exist. |
+| `infer_timesteps` | int | - | Yes* | Number of autoregressive steps. If `None` and dataset has multiple timesteps, defaults to `num_timesteps - 1`. |
+| `inference_output_dir` | str | `outputs/rollout` | No | Output directory for rollout HDF5 files. Auto-created. |
 
 **Notes:**
-- During inference, model architecture parameters (`input_var`, `output_var`, `latent_dim`, `message_passing_num`, etc.) are **overridden** by values stored in the checkpoint's `model_config`
-- Normalization statistics (means/stds) are loaded from the checkpoint's `normalization` dict
+- Architecture parameters (`input_var`, `output_var`, `latent_dim`, etc.) are **overridden** by values in the checkpoint's `model_config`
+- Normalization statistics are loaded from the checkpoint's `normalization` dict
 - All samples in `infer_dataset` are processed sequentially
-- Output files are named `rollout_sample{id}_steps{N}.h5`
-- Rollout always starts from timestep 0 of each sample
+- Output files: `rollout_sample{id}_steps{N}.h5`
+- Rollout always starts from timestep 0
 
 ---
 
@@ -254,6 +258,7 @@ These parameters are only used when `mode=Inference`.
 mode        Train
 gpu_ids     0
 dataset_dir ./dataset/my_data.h5
+modelpath   ./outputs/my_model.pth
 ```
 
 ```bash
@@ -262,9 +267,8 @@ python MeshGraphNets_main.py
 
 **Pipeline**: `MeshGraphNets_main.py` -> `single_training.py` -> `training_loop.py`
 
-**Details:**
-- Uses `torch.optim.lr_scheduler.ExponentialLR` (gamma=0.995)
-- Saves checkpoint to path specified by `modelpath`
+- Uses `ExponentialLR` scheduler (gamma=0.995)
+- Saves best model to path specified by `modelpath`
 - Logs to `outputs/<log_file_dir>`
 - Test evaluation every 10 epochs
 
@@ -283,14 +287,12 @@ python MeshGraphNets_main.py
 
 **Pipeline**: `MeshGraphNets_main.py` -> `mp.spawn()` -> `distributed_training.py` -> `training_loop.py`
 
-**Details:**
-- Uses `torch.distributed` with NCCL backend (or Gloo on CPU)
+- Uses `torch.distributed` with NCCL backend (Gloo on CPU)
 - `DistributedSampler` ensures each GPU sees different data
 - Effective batch size = `Batch_size * num_GPUs`
-- Uses `torch.optim.lr_scheduler.ReduceLROnPlateau` (factor=0.5, patience=2)
-- Only rank 0 saves checkpoints and writes logs
-- Checkpoint saved to `outputs/best_model.pth`
-- Communication: localhost:12355
+- Uses `ReduceLROnPlateau` scheduler (factor=0.5, patience=2)
+- Only rank 0 saves checkpoints (to `outputs/best_model.pth`) and writes logs
+- Communication: `localhost:12355`
 
 ### Training (CPU)
 
@@ -301,11 +303,7 @@ gpu_ids     -1
 dataset_dir ./dataset/my_data.h5
 ```
 
-```bash
-python MeshGraphNets_main.py
-```
-
-**Pipeline**: Same as single GPU, but on CPU. Useful for debugging.
+Same pipeline as single GPU, but on CPU. Useful for debugging.
 
 ### Inference (Autoregressive Rollout)
 
@@ -313,9 +311,9 @@ python MeshGraphNets_main.py
 # config.txt
 mode            Inference
 gpu_ids         0
-modelpath       ./outputs/best_model.pth
-infer_dataset   ./infer/my_initial_conditions.h5
-infer_timesteps 1000
+modelpath       ./outputs/my_model.pth
+infer_dataset   ./infer/initial_conditions.h5
+infer_timesteps 100
 ```
 
 ```bash
@@ -324,14 +322,202 @@ python MeshGraphNets_main.py
 
 **Pipeline**: `MeshGraphNets_main.py` -> `rollout.py`
 
-**Details:**
-1. Loads checkpoint (model weights + normalization stats + model config)
-2. Overrides config with model config from checkpoint
+**Rollout loop:**
+1. Load checkpoint (model weights + normalization stats + model config)
+2. Override config with `model_config` from checkpoint
 3. For each sample in `infer_dataset`:
-   - Extracts initial state at timestep 0
-   - Runs autoregressive loop for `infer_timesteps` steps
-   - Each step: normalize -> build graph -> forward pass -> denormalize delta -> update state
-4. Saves predicted trajectory to `<inference_output_dir>/rollout_sample{id}_steps{N}.h5`
+   a. Extract initial state at timestep 0
+   b. For each step t -> t+1:
+      - Normalize current state using checkpoint stats
+      - Compute edge features from **deformed** positions
+      - Build graph (including world edges if enabled)
+      - Forward pass -> predicted normalized delta
+      - Denormalize: `delta = delta_norm * delta_std + delta_mean`
+      - Update state: `state_{t+1} = state_t + delta`
+4. Save predicted trajectory to `<inference_output_dir>/rollout_sample{id}_steps{N}.h5`
+
+---
+
+## HDF5 Dataset Structure
+
+This section defines the exact HDF5 structure that the training code expects. Use this as a specification when generating datasets.
+
+### Complete Hierarchy
+
+```
+dataset.h5
+|-- [Attributes]                           # File-level metadata
+|   |-- num_samples: int                   # Total number of samples
+|   |-- num_features: int                  # Number of features per node (typically 8)
+|   +-- num_timesteps: int                 # Timesteps per sample (must be equal across all samples)
+|
+|-- data/                                  # Main data group
+|   |-- {sample_id}/                       # Sample (integer ID, not necessarily sequential)
+|   |   |-- nodal_data                     # Dataset: (num_features, num_timesteps, num_nodes) float32
+|   |   |-- mesh_edge                      # Dataset: (2, num_edges) int64
+|   |   +-- metadata/                      # Per-sample metadata group
+|   |       |-- [Attributes]
+|   |       |   |-- num_nodes: int         # Required
+|   |       |   |-- num_edges: int         # Required
+|   |       |   |-- source_filename: str   # Optional
+|   |       |   +-- ...                    # Other optional attributes
+|   |       |-- feature_min                # (num_features,) float32, Optional
+|   |       |-- feature_max                # (num_features,) float32, Optional
+|   |       |-- feature_mean               # (num_features,) float32, Optional
+|   |       +-- feature_std                # (num_features,) float32, Optional
+|   |-- {sample_id}/
+|   |   +-- ...
+|   +-- ...
+|
++-- metadata/                              # Global metadata group
+    |-- feature_names                      # (num_features,) variable-length byte string
+    |-- normalization_params/              # Global normalization statistics
+    |   |-- min                            # (num_features,) float32
+    |   |-- max                            # (num_features,) float32
+    |   |-- mean                           # (num_features,) float32
+    |   |-- std                            # (num_features,) float32
+    |   |-- delta_mean                     # (output_var,) float32 -- auto-updated by training
+    |   +-- delta_std                      # (output_var,) float32 -- auto-updated by training
+    +-- splits/                            # Optional pre-defined splits
+        |-- train                          # (N_train,) int64
+        |-- val                            # (N_val,) int64
+        +-- test                           # (N_test,) int64
+```
+
+### nodal_data
+
+**Path**: `data/{sample_id}/nodal_data`
+**Shape**: `(num_features, num_timesteps, num_nodes)` -- **features-first layout**
+**Dtype**: `float32`
+
+**Standard feature order** (8 features):
+
+| Index | Name | Description | Used by model |
+|-------|------|-------------|---------------|
+| 0 | `x_coord` | X coordinate (reference position) | Yes -- reference geometry |
+| 1 | `y_coord` | Y coordinate (reference position) | Yes -- reference geometry |
+| 2 | `z_coord` | Z coordinate (reference position) | Yes -- reference geometry |
+| 3 | `x_disp` | X displacement (mm) | Yes -- input/output feature |
+| 4 | `y_disp` | Y displacement (mm) | Yes -- input/output feature |
+| 5 | `z_disp` | Z displacement (mm) | Yes -- input/output feature |
+| 6 | `stress` | Stress (MPa) | Yes -- input/output feature |
+| 7 | `part_number` | Part number (integer) | Optional -- for node types |
+
+**How the model reads this:**
+- **Reference position**: `nodal_data[:3, t, :]` -> `[x, y, z]` coordinates
+- **Physical features (input/output)**: `nodal_data[3:3+input_var, t, :]` -> typically `[x_disp, y_disp, z_disp, stress]`
+- **Node types**: `nodal_data[-1, 0, :]` -> last feature, first timestep (if `use_node_types=True`)
+- **Deformed position**: `reference + displacement` = `nodal_data[:3, t, :] + nodal_data[3:6, t, :]`
+
+**Configuring for different feature counts:**
+- `input_var` and `output_var` control which features starting from index 3 are used
+- If `input_var=4`: features at indices [3, 4, 5, 6] are used as node input
+- If `input_var=3`: only features at indices [3, 4, 5] are used (no stress)
+- The first 3 features (indices 0-2) are **always** coordinates and are never directly fed to the model as node features
+
+### mesh_edge
+
+**Path**: `data/{sample_id}/mesh_edge`
+**Shape**: `(2, num_edges)` -- stored **unidirectional**
+**Dtype**: `int64`
+
+- Row 0: source node indices
+- Row 1: target node indices
+- Node indices use compact numbering (0 to num_nodes-1)
+- No self-loops, no duplicates
+- The code automatically creates bidirectional edges: `edge_index = [mesh_edge; mesh_edge[[1,0]]]`
+
+### Timestep Handling
+
+The model supports both single-timestep and multi-timestep datasets:
+
+| Scenario | `num_timesteps` | Training pairs per sample | Target computation |
+|----------|-----------------|--------------------------|-------------------|
+| **Static** | 1 | 1 | `delta = feature_values - 0` (from zero initial state) |
+| **Transient** | T > 1 | T - 1 | `delta = state_{t+1} - state_t` |
+
+For transient data:
+- Total training samples = `num_samples * (num_timesteps - 1)`
+- Each training pair uses consecutive timesteps: `(t, t+1)`
+- **All samples must have the same number of timesteps**
+
+---
+
+## Data Flow: How the Model Uses Data
+
+This section traces exactly how raw HDF5 data is transformed into model inputs and outputs. Use this to verify that your generated data will be processed correctly.
+
+### 1. Loading and Feature Extraction
+
+```
+nodal_data shape: [features, timesteps, nodes]
+
+For timestep t:
+  reference_pos     = nodal_data[:3, t, :].T            -> [N, 3]
+  physical_features = nodal_data[3:3+input_var, t, :].T  -> [N, input_var]
+
+For single timestep (T=1):
+  x_raw = zeros(N, input_var)     <-- input is all zeros
+  y_raw = nodal_data[3:3+output_var, 0, :].T
+  target_delta = y_raw - x_raw    <-- delta equals the feature values themselves
+
+For multi-timestep (T>1):
+  x_raw = nodal_data[3:3+input_var, t, :].T       <-- state at time t
+  y_raw = nodal_data[3:3+output_var, t+1, :].T    <-- state at time t+1
+  target_delta = y_raw - x_raw                     <-- delta between consecutive steps
+```
+
+### 2. Normalization
+
+```
+Node features:    x_norm      = (x_raw - node_mean) / node_std           -> [N, input_var]
+Target deltas:    target_norm = (target_delta - delta_mean) / delta_std   -> [N, output_var]
+Edge features:    edge_norm   = (edge_raw - edge_mean) / edge_std        -> [2M, 4]
+```
+
+Normalization stats are computed from the **entire training dataset** during initialization:
+- **Node stats**: Computed from `nodal_data[3:3+input_var]` across all samples and sampled timesteps
+- **Edge stats**: Computed from edge features `[dx, dy, dz, distance]` using deformed positions
+- **Delta stats**: Computed from actual `state_{t+1} - state_t` differences (or feature values for T=1)
+- Minimum std clamped to `1e-8` to prevent division by zero
+
+### 3. Edge Feature Computation
+
+```
+deformed_pos = reference_pos + displacement     <-- displacement = x_raw[:, :3]
+relative_pos = deformed_pos[dst] - deformed_pos[src]   -> [2M, 3]
+distance     = ||relative_pos||                         -> [2M, 1]
+edge_features = [relative_pos, distance]                -> [2M, 4]
+```
+
+Edge features are **always computed from deformed (current) positions**, not reference positions. This ensures the graph structure reflects the actual geometry at each timestep.
+
+### 4. Node Type Encoding (if enabled)
+
+```
+node_types = nodal_data[-1, 0, :]     <-- last feature, first timestep
+one_hot    = to_one_hot(node_types)   -> [N, num_node_types]
+x_final    = concat(x_norm, one_hot)  -> [N, input_var + num_node_types]
+```
+
+Node types are one-hot encoded and concatenated **after** normalization.
+
+### 5. Model Forward Pass
+
+```
+Input:  x_final [N, input_var (+node_types)], edge_attr [2M, 4]
+  -> Encoder: project to latent_dim
+  -> Processor: message_passing_num x (EdgeBlock + NodeBlock) with node residuals
+  -> Decoder: project to output_var (no LayerNorm)
+Output: predicted_delta_norm [N, output_var]
+```
+
+### 6. Denormalization (Inference)
+
+```
+predicted_delta = predicted_delta_norm * delta_std + delta_mean
+state_{t+1}     = state_t + predicted_delta
+```
 
 ---
 
@@ -369,7 +555,7 @@ modelpath       ./outputs/my_model.pth
 % Dataset
 dataset_dir     ./dataset/my_data.h5
 infer_dataset   ./infer/my_inference.h5
-infer_timesteps 1000
+infer_timesteps 100
 %
 % Feature dimensions
 input_var       4       # x_disp, y_disp, z_disp, stress
@@ -382,11 +568,11 @@ Latent_dim      256
 '
 % Training hyperparameters
 Training_epochs 500
-Batch_size      50
+Batch_size      10
 LearningR       0.0001
 num_workers     10
-std_noise       0.001
-residual_scale  0.1
+std_noise       0.01
+residual_scale  0.2
 verbose         False
 monitor_gradients   False
 '
@@ -397,10 +583,10 @@ use_checkpointing   False
 use_parallel_stats  True
 '
 % Node types
-use_node_types  True
+use_node_types  False
 '
 % World edges
-use_world_edges         True
+use_world_edges         False
 world_radius_multiplier 1.5
 world_max_num_neighbors 64
 world_edge_backend      scipy_kdtree
@@ -430,8 +616,6 @@ LearningR       0.0001
 Latent_dim      256
 num_workers     4               # Fewer workers per GPU to avoid CPU contention
 use_checkpointing   True        # Save VRAM for larger models
-use_node_types      True
-use_world_edges     True
 ```
 
 ### Inference Config
@@ -442,7 +626,7 @@ mode            Inference
 gpu_ids         0
 modelpath       ./outputs/my_model.pth
 infer_dataset   ./infer/initial_conditions.h5
-infer_timesteps 1000
+infer_timesteps 100
 %
 % These are needed for parsing but overridden by checkpoint during inference:
 input_var       4
@@ -450,11 +634,139 @@ output_var      4
 edge_var        4
 message_passing_num  15
 Latent_dim      256
-use_node_types      True
-use_world_edges     True
+%
+% World edge backend must match training (if world edges were used):
+use_world_edges     False
 world_edge_backend  scipy_kdtree
 world_max_num_neighbors 64
 ```
+
+### Hyperparameter Sweep (Parallel Training on Multiple GPUs)
+
+Create separate config files to run simultaneously:
+
+**`_warpage_input/config_train1.txt`** (GPU 0, Latent_dim=256):
+```
+model           MeshGraphNets
+mode            Train
+gpu_ids         0
+modelpath       ./outputs/warpage1.pth
+log_file_dir    train0.log
+dataset_dir     ./dataset/warpage.h5
+input_var       4
+output_var      4
+edge_var        4
+message_passing_num  15
+Training_epochs 500
+Batch_size      10
+LearningR       0.0001
+Latent_dim      256
+num_workers     10
+std_noise       0.01
+```
+
+**`_warpage_input/config_train2.txt`** (GPU 1, Latent_dim=128):
+```
+model           MeshGraphNets
+mode            Train
+gpu_ids         1
+modelpath       ./outputs/warpage2.pth
+log_file_dir    train1.log
+dataset_dir     ./dataset/warpage.h5
+input_var       4
+output_var      4
+edge_var        4
+message_passing_num  15
+Training_epochs 500
+Batch_size      10
+LearningR       0.0001
+Latent_dim      128
+num_workers     10
+std_noise       0.01
+```
+
+Run in parallel terminals:
+```bash
+python MeshGraphNets_main.py --config _warpage_input/config_train1.txt
+python MeshGraphNets_main.py --config _warpage_input/config_train2.txt
+```
+
+### Transient (Multi-Timestep) Training Config
+
+For datasets with multiple timesteps (e.g., flag dynamics). Note `Batch_size 1` because each sample already generates `T-1` training pairs:
+
+```
+model           MeshGraphNets
+mode            Train
+gpu_ids         0
+log_file_dir    train_flag_dynamic1.log
+modelpath       ./outputs/flag_dynamic1.pth
+dataset_dir     ./dataset/flag_dynamic.h5
+infer_dataset   ./infer/flag_inference.h5
+infer_timesteps 1000
+input_var       4
+output_var      4
+edge_var        4
+'
+message_passing_num 15
+Training_epochs	500
+Batch_size	1               # Small: each sample generates T-1 pairs
+LearningR	0.0001
+Latent_dim	256
+num_workers 10
+std_noise   0.0001          # Smaller noise for transient dynamics
+residual_scale  0.1
+verbose     False
+monitor_gradients  False
+'
+use_checkpointing   False
+use_parallel_stats  True
+use_node_types  True
+use_world_edges         True
+world_radius_multiplier 1.5
+world_max_num_neighbors 64
+world_edge_backend      scipy_kdtree
+display_testset True
+test_batch_idx  0, 1, 2, 3
+plot_feature_idx    -2
+```
+
+---
+
+## Internally-Assigned Config Keys
+
+These keys are **written to the config dict by the code itself** during execution. They are not read from the config file and should not be set by the user:
+
+| Key | Assigned by | Value | Purpose |
+|-----|-------------|-------|---------|
+| `num_node_types` | `single_training.py`, `distributed_training.py`, `rollout.py` | Computed from dataset | Passes node type count from dataset to model constructor |
+| `log_dir` | `single_training.py` | Derived from `log_file_dir` | Directory for debug `.npz` files (passed to `training_loop.py`) |
+
+---
+
+## Required Keys by Mode
+
+### Train (single or multi-GPU)
+
+These keys **must** be present (no fallback default):
+
+```
+model, mode, gpu_ids, modelpath, dataset_dir,
+input_var, output_var, edge_var,
+Latent_dim, message_passing_num,
+Training_epochs, Batch_size, LearningR, num_workers
+```
+
+### Inference
+
+These keys must be present:
+
+```
+model, mode, gpu_ids, modelpath, infer_dataset,
+infer_timesteps, world_edge_backend
+```
+
+Note: `world_edge_backend` is required even if `use_world_edges=False` because `rollout.py` reads it unconditionally with no default.
 
 ---
 
@@ -475,30 +787,22 @@ The config parser (`general_modules/load_config.py`) processes each line as foll
    - Float (has `.`) -> float
    - Otherwise -> lowercase string
 
-**Important implications:**
-- `LearningR 0.0001` is stored as `config['learningr'] = 0.0001` (float)
-- `gpu_ids 0, 1, 2, 3` is stored as `config['gpu_ids'] = [0, 1, 2, 3]` (list of int)
-- `gpu_ids 0` is stored as `config['gpu_ids'] = 0` (int, not list)
-- `verbose True` is stored as `config['verbose'] = True` (bool)
-- `mode Train` is stored as `config['mode'] = 'train'` (lowercase string)
-- String values with spaces may be parsed as lists: `my_param hello world` -> `['hello', 'world']`
-
 ---
 
 ## Checkpoint Contents
 
-Checkpoints (`.pth` files) saved during training contain the following keys:
+Checkpoints (`.pth` files) saved during training contain:
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `epoch` | int | Epoch number when this checkpoint was saved |
-| `model_state_dict` | OrderedDict | Model weights (from `model.state_dict()` or `model.module.state_dict()` for DDP) |
+| `epoch` | int | Epoch number when saved |
+| `model_state_dict` | OrderedDict | Model weights |
 | `optimizer_state_dict` | dict | Adam optimizer state |
 | `scheduler_state_dict` | dict | LR scheduler state |
 | `train_loss` | float | Training loss at this epoch |
-| `valid_loss` | float | Validation loss at this epoch (best so far) |
-| `normalization` | dict | Z-score normalization statistics (see below) |
-| `model_config` | dict | Model architecture parameters (see below) |
+| `valid_loss` | float | Best validation loss so far |
+| `normalization` | dict | Z-score normalization statistics |
+| `model_config` | dict | Model architecture parameters |
 
 ### `normalization` dict
 
@@ -510,7 +814,7 @@ Checkpoints (`.pth` files) saved during training contain the following keys:
 | `edge_std` | `[4]` | Per-feature std of edge features (min 1e-8) |
 | `delta_mean` | `[output_var]` | Per-feature mean of target deltas |
 | `delta_std` | `[output_var]` | Per-feature std of target deltas (min 1e-8) |
-| `node_type_to_idx` | dict | *(optional)* Node type value -> contiguous index mapping |
+| `node_type_to_idx` | dict | *(optional)* Node type -> contiguous index mapping |
 | `num_node_types` | int | *(optional)* Number of unique node types |
 | `world_edge_radius` | float | *(optional)* Computed world edge radius |
 
@@ -536,34 +840,32 @@ Checkpoints (`.pth` files) saved during training contain the following keys:
 
 ```
 outputs/
-├── <log_file_dir>              # Training log (e.g., train0.log)
-├── best_model.pth              # Best checkpoint (multi-GPU DDP)
-├── <modelpath>                 # Best checkpoint (single GPU, path from config)
-└── test/
-    └── <gpu_ids>/
-        └── <epoch>/
-            ├── sample0_t5.h5   # Test predictions (HDF5)
-            ├── sample1_t12.h5
-            └── ...
++-- <log_file_dir>              # Training log (e.g., train0.log)
++-- <modelpath>                 # Best checkpoint (single GPU)
++-- best_model.pth              # Best checkpoint (multi-GPU DDP)
++-- debug_epoch*.npz            # Debug data (from epoch 5+)
++-- test/
+    +-- <gpu_ids>/
+        +-- <epoch>/
+            +-- sample{id}_t{time}.h5    # Test predictions (HDF5)
+            +-- ...
 ```
 
 ### Inference
 
 ```
 <inference_output_dir>/         # Default: outputs/rollout/
-├── rollout_sample0_steps1000.h5
-├── rollout_sample1_steps1000.h5
-└── ...
++-- rollout_sample{id}_steps{N}.h5
++-- rollout_sample{id}_steps{N}.h5
++-- ...
 ```
 
 ### Training Log Format
 
-Each line in the log file follows this format:
+Header includes timestamp and full config file contents. Each epoch line:
 ```
 Elapsed time: <seconds>s Epoch <N> Train Loss: <X.XXXXe-XX> Valid Loss: <X.XXXXe-XX> LR: <X.XXXXe-XX>
 ```
-
-The log file header includes the timestamp and the full contents of the config file used.
 
 ---
 
@@ -573,18 +875,20 @@ The log file header includes the timestamp and the full contents of the config f
 
 | Error | Cause | Solution |
 |-------|-------|----------|
-| `KeyError: 'batch_size'` | Config key is case-sensitive in code but `Batch_size` gets lowercased to `batch_size` | Ensure your config has `Batch_size` (the parser lowercases it to `batch_size`) |
 | `RuntimeError: CUDA out of memory` | Insufficient GPU VRAM | Reduce `Batch_size`, enable `use_checkpointing`, reduce `Latent_dim`, or use multi-GPU |
-| `FileNotFoundError: Model checkpoint not found` | Wrong `modelpath` in inference mode | Check the path exists and is correct |
-| `KeyError: 'normalization'` | Old checkpoint missing normalization stats | Re-train with the current code, which saves normalization stats |
-| `ValueError: HDF5 file missing 'data' group` | Invalid dataset format | Check your HDF5 file follows [DATASET_FORMAT.md](dataset/DATASET_FORMAT.md) |
-| Loss is `nan` | Learning rate too high or data issues | Reduce `LearningR` to 1e-5, check data for NaN/Inf values |
-| Loss not decreasing | Learning rate too high, insufficient model capacity, or data mismatch | Reduce `LearningR` by 10x, increase `message_passing_num` or `Latent_dim` |
-| `Address already in use` (DDP) | Previous DDP training left port 12355 occupied | Wait for cleanup or kill lingering processes |
+| `FileNotFoundError: Model checkpoint not found` | Wrong `modelpath` | Check path exists |
+| `KeyError: 'normalization'` | Old checkpoint format | Re-train with current code |
+| `ValueError: HDF5 file missing 'data' group` | Invalid dataset | Check HDF5 follows structure above |
+| Loss is `nan` | LR too high or data issues | Reduce `LearningR` to 1e-5, check data for NaN/Inf |
+| Loss not decreasing | LR too high or insufficient capacity | Reduce `LearningR` by 10x, increase `message_passing_num` or `Latent_dim` |
+| `Address already in use` (DDP) | Port 12355 occupied | Wait or kill lingering processes |
+| Near-zero delta std warning | Constant target features | Check dataset -- features may not vary between timesteps |
+| `AttributeError: 'NoneType' has no attribute 'lower'` during inference | `world_edge_backend` missing from config | Add `world_edge_backend scipy_kdtree` to the inference config |
+| `torch.save` error with `None` path | `modelpath` missing from config | Add `modelpath ./outputs/my_model.pth` to the config |
 
 ### VRAM Usage Estimates
 
-Approximate VRAM usage for a single sample with ~10k nodes:
+Approximate VRAM for a single sample with ~10k nodes:
 
 | Latent_dim | MP Blocks | Checkpointing | Approx. VRAM |
 |------------|-----------|---------------|--------------|
@@ -594,19 +898,19 @@ Approximate VRAM usage for a single sample with ~10k nodes:
 | 512 | 15 | Off | ~8-16 GB |
 | 512 | 30 | On | ~6-10 GB |
 
-Actual usage depends on batch size, number of nodes/edges, and world edges. Multiply by `Batch_size` for total VRAM.
+Multiply by `Batch_size` for total VRAM.
 
 ### Hyperparameter Tuning Order
 
-For best results, tune parameters in this order (most to least impactful):
+Tune in this order (most to least impactful):
 
 1. **LearningR**: Start with 1e-4, try 1e-3 and 1e-5
 2. **Latent_dim**: Start with 128, try 256 if underfitting
 3. **Batch_size**: Largest that fits in VRAM
 4. **message_passing_num**: Start with 15, increase if loss plateaus
-5. **std_noise**: Start with 0.001, reduce if loss is noisy
+5. **std_noise**: Start with 0.01, reduce if loss is noisy
 6. **Training_epochs**: Monitor validation loss for convergence
 
 ---
 
-*Last updated: 2026-02-18*
+*Last updated: 2026-02-26*
