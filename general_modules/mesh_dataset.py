@@ -15,13 +15,52 @@ except ImportError:
     HAS_TORCH_CLUSTER = False
 
 
-def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
-                          output_dim: int, num_timesteps: int) -> Dict[str, np.ndarray]:
-    """
-    Worker function to process a chunk of samples in parallel.
+def _welford_update(stats, batch):
+    """Update running (n, mean, M2) with a new batch [B, D]. O(D) memory."""
+    b = batch.shape[0]
+    if b == 0:
+        return stats
+    b_mean = np.mean(batch, axis=0, dtype=np.float64)
+    b_M2 = np.var(batch, axis=0, dtype=np.float64) * b
+    if stats is None:
+        return (b, b_mean, b_M2)
+    n_a, mean_a, M2_a = stats
+    n = n_a + b
+    delta = b_mean - mean_a
+    mean = mean_a + delta * (b / n)
+    M2 = M2_a + b_M2 + delta ** 2 * (n_a * b / n)
+    return (n, mean, M2)
 
-    This function is defined at module level to support multiprocessing pickling.
-    Each worker opens the HDF5 file independently and processes its assigned samples.
+
+def _welford_combine(stats_a, stats_b):
+    """Merge two sets of Welford statistics from parallel workers."""
+    if stats_a is None:
+        return stats_b
+    if stats_b is None:
+        return stats_a
+    n_a, mean_a, M2_a = stats_a
+    n_b, mean_b, M2_b = stats_b
+    n = n_a + n_b
+    delta = mean_b - mean_a
+    mean = mean_a + delta * (n_b / n)
+    M2 = M2_a + M2_b + delta ** 2 * (n_a * n_b / n)
+    return (n, mean, M2)
+
+
+def _welford_finalize(stats):
+    """Extract (mean, std) as float32 from Welford stats. Clamps std >= 1e-8."""
+    n, mean, M2 = stats
+    std = np.sqrt(M2 / n)
+    return mean.astype(np.float32), np.maximum(std.astype(np.float32), 1e-8)
+
+
+def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
+                          output_dim: int, num_timesteps: int) -> Dict:
+    """
+    Worker function to process a chunk of samples using streaming statistics.
+
+    Uses Welford's online algorithm so each worker only keeps O(features) memory
+    instead of accumulating all raw data. Returns compact (n, mean, M2) tuples.
 
     Args:
         h5_file: Path to HDF5 dataset file
@@ -31,92 +70,80 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
         num_timesteps: Number of timesteps in the dataset
 
     Returns:
-        Dictionary containing:
-            - 'node_features': Stacked node features [N_total, input_dim]
-            - 'edge_features': Stacked edge features [E_total, 4]
-            - 'delta_features': List of delta features per output dimension
-            - 'num_samples_processed': Number of samples successfully processed
+        Dictionary with Welford stats for node/edge/delta features plus delta min/max.
     """
-    all_node_features = []
-    all_edge_features = []
-    all_delta_features = [[] for _ in range(output_dim)]
+    node_stats = None
+    edge_stats = None
+    delta_stats = [None for _ in range(output_dim)]
+    delta_min = np.full(output_dim, np.inf, dtype=np.float64)
+    delta_max = np.full(output_dim, -np.inf, dtype=np.float64)
 
     try:
-        # Each process opens its own HDF5 file handle (read-only)
         with h5py.File(h5_file, 'r') as f:
             for sid in sample_ids:
                 try:
                     data = f[f'data/{sid}/nodal_data'][:]  # [features, time, nodes]
                     mesh_edge = f[f'data/{sid}/mesh_edge'][:]  # [2, edges]
 
-                    # Sample timesteps for multi-timestep data
-                    # For statistics computation, we don't need all timesteps - sample a subset
-                    max_timesteps_for_stats = 500  # Limit to prevent memory issues in parallel workers
+                    max_timesteps_for_stats = 500
                     if num_timesteps > 1:
                         num_samples_t = min(max_timesteps_for_stats, num_timesteps)
                         timesteps = np.linspace(0, num_timesteps - 1, num_samples_t, dtype=int)
                     else:
                         timesteps = [0]
 
-                    for t in timesteps:
-                        # Node features: [disp_x, disp_y, disp_z, stress]
-                        node_feat = data[3:3+input_dim, t, :].T  # [N, 4]
-                        all_node_features.append(node_feat)
+                    edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
 
-                        # Edge features: [dx, dy, dz, distance]
-                        pos = (data[:3, t, :] + data[3:6, t, :]).T  # [N, 3] - Deformed position
-                        # Bidirectional edges
-                        edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
-                        rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]  # Deformed relative position
+                    for t in timesteps:
+                        node_feat = data[3:3+input_dim, t, :].T  # [N, input_dim]
+                        node_stats = _welford_update(node_stats, node_feat)
+
+                        pos = (data[:3, t, :] + data[3:6, t, :]).T  # [N, 3]
+                        rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]
                         dist = np.linalg.norm(rel_pos, axis=1, keepdims=True)
                         edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
-                        all_edge_features.append(edge_feat)
+                        edge_stats = _welford_update(edge_stats, edge_feat)
 
-                    # Compute delta features (differences between consecutive timesteps)
+                    # Delta features
                     if num_timesteps > 1:
-                        # Sample delta timesteps to prevent memory issues
                         num_delta_samples = min(max_timesteps_for_stats, num_timesteps - 1)
                         delta_timesteps = np.linspace(0, num_timesteps - 2, num_delta_samples, dtype=int)
                         for t in delta_timesteps:
                             for feat_idx in range(output_dim):
-                                feat_t = data[3 + feat_idx, t, :]      # [N]
-                                feat_t1 = data[3 + feat_idx, t + 1, :]  # [N]
-                                delta = feat_t1 - feat_t
-                                all_delta_features[feat_idx].append(delta)
+                                delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
+                                delta_2d = delta.reshape(-1, 1)
+                                delta_stats[feat_idx] = _welford_update(delta_stats[feat_idx], delta_2d)
+                                delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(delta)))
+                                delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(delta)))
                     else:
-                        # Single timestep: delta is the final value itself
                         for feat_idx in range(output_dim):
-                            feat = data[3 + feat_idx, 0, :]  # [N]
-                            all_delta_features[feat_idx].append(feat)
+                            feat = data[3 + feat_idx, 0, :]
+                            feat_2d = feat.reshape(-1, 1)
+                            delta_stats[feat_idx] = _welford_update(delta_stats[feat_idx], feat_2d)
+                            delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(feat)))
+                            delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(feat)))
 
                 except Exception as e:
                     print(f"Warning: Failed to process sample {sid}: {e}")
                     continue
 
-        # Stack results
-        if all_node_features:
-            return {
-                'node_features': np.vstack(all_node_features),
-                'edge_features': np.vstack(all_edge_features),
-                'delta_features': all_delta_features,
-                'num_samples_processed': len(sample_ids)
-            }
-        else:
-            # Return empty arrays if no samples were processed
-            return {
-                'node_features': np.zeros((0, input_dim), dtype=np.float32),
-                'edge_features': np.zeros((0, 4), dtype=np.float32),
-                'delta_features': [np.array([], dtype=np.float32) for _ in range(output_dim)],
-                'num_samples_processed': 0
-            }
+        return {
+            'node_stats': node_stats,
+            'edge_stats': edge_stats,
+            'delta_stats': delta_stats,
+            'delta_min': delta_min,
+            'delta_max': delta_max,
+            'num_samples_processed': len(sample_ids)
+        }
 
     except Exception as e:
         print(f"Error in worker process: {e}")
-        # Return empty results on catastrophic failure
         return {
-            'node_features': np.zeros((0, input_dim), dtype=np.float32),
-            'edge_features': np.zeros((0, 4), dtype=np.float32),
-            'delta_features': [np.array([], dtype=np.float32) for _ in range(output_dim)],
+            'node_stats': None,
+            'edge_stats': None,
+            'delta_stats': [None for _ in range(output_dim)],
+            'delta_min': np.full(output_dim, np.inf, dtype=np.float64),
+            'delta_max': np.full(output_dim, -np.inf, dtype=np.float64),
             'num_samples_processed': 0
         }
 
@@ -213,42 +240,31 @@ class MeshGraphDataset(Dataset):
 
         if num_workers > 1:
             print(f'  Using parallel processing: {num_workers} workers for {num_samples} samples')
-            all_node_features, all_edge_features, all_delta_features = self._compute_stats_parallel(num_workers, num_samples)
+            stats = self._compute_stats_parallel(num_workers, num_samples)
         else:
             if not use_parallel:
                 print(f'  Parallel processing disabled (use_parallel_stats=False)')
             else:
                 print(f'  Using serial processing ({num_samples} samples, threshold={min_samples_for_parallel})')
-            all_node_features, all_edge_features, all_delta_features = self._compute_stats_serial(num_samples)
+            stats = self._compute_stats_serial(num_samples)
 
-        # Compute node and edge statistics
-        all_node_features = np.vstack(all_node_features)
-        all_edge_features = np.vstack(all_edge_features)
-
-        self.node_mean = np.mean(all_node_features, axis=0).astype(np.float32)
-        self.node_std = np.std(all_node_features, axis=0).astype(np.float32)
-        self.node_std = np.maximum(self.node_std, 1e-8)  # Prevent division by zero
-
-        self.edge_mean = np.mean(all_edge_features, axis=0).astype(np.float32)
-        self.edge_std = np.std(all_edge_features, axis=0).astype(np.float32)
-        self.edge_std = np.maximum(self.edge_std, 1e-8)  # Prevent division by zero
+        # Finalize node and edge statistics from Welford accumulators
+        self.node_mean, self.node_std = _welford_finalize(stats['node_stats'])
+        self.edge_mean, self.edge_std = _welford_finalize(stats['edge_stats'])
 
         print(f'  Node features - mean: {self.node_mean}, std: {self.node_std}')
         print(f'  Edge features - mean: {self.edge_mean}, std: {self.edge_std}')
 
-        # Compute delta statistics from actual data
+        # Finalize delta statistics per feature
         self.delta_mean = np.zeros(self.output_dim, dtype=np.float32)
         self.delta_std = np.zeros(self.output_dim, dtype=np.float32)
-        delta_min = np.zeros(self.output_dim, dtype=np.float32)
-        delta_max = np.zeros(self.output_dim, dtype=np.float32)
+        delta_min = stats['delta_min'].astype(np.float32)
+        delta_max = stats['delta_max'].astype(np.float32)
 
         for feat_idx in range(self.output_dim):
-            deltas = np.concatenate(all_delta_features[feat_idx])
-            self.delta_mean[feat_idx] = np.mean(deltas)
-            self.delta_std[feat_idx] = np.std(deltas)
-            self.delta_std[feat_idx] = max(self.delta_std[feat_idx], 1e-8)  # Prevent division by zero
-            delta_min[feat_idx] = np.min(deltas)
-            delta_max[feat_idx] = np.max(deltas)
+            mean, std = _welford_finalize(stats['delta_stats'][feat_idx])
+            self.delta_mean[feat_idx] = mean[0]
+            self.delta_std[feat_idx] = std[0]
 
         print(f'  Delta features - mean: {self.delta_mean}, std: {self.delta_std}')
         print(f'  Delta features - min: {delta_min}, max: {delta_max}')
@@ -287,68 +303,41 @@ class MeshGraphDataset(Dataset):
             print('  ✓ All normalization statistics look reasonable')
 
         # Update HDF5 file with computed normalization parameters
-        self._update_hdf5_normalization_params()
+        self._update_hdf5_normalization_params(delta_min, delta_max)
 
-    def _update_hdf5_normalization_params(self) -> None:
-        """Update HDF5 file with computed delta normalization parameters."""
+    def _update_hdf5_normalization_params(self, delta_min: np.ndarray, delta_max: np.ndarray) -> None:
+        """Update HDF5 file with computed delta normalization parameters.
+
+        Uses pre-computed delta_min/delta_max from the streaming stats pass,
+        avoiding a redundant full re-read of all samples.
+        """
         try:
             with h5py.File(self.h5_file, 'r+') as f:
                 if 'metadata/normalization_params' not in f:
-                    norm_params = f.create_group('metadata/normalization_params')
+                    f.create_group('metadata/normalization_params')
 
                 norm_params = f['metadata/normalization_params']
 
-                # Check if stored params differ from computed ones
                 if 'delta_mean' in norm_params and 'delta_std' in norm_params:
-
                     norm_params['delta_mean'][...] = self.delta_mean
                     norm_params['delta_std'][...] = self.delta_std
 
-                    # Also update delta_max and delta_min if they exist
                     if 'delta_max' in norm_params and 'delta_min' in norm_params:
-                        # Compute correct min/max from the same data
-                        delta_max = np.zeros(self.output_dim, dtype=np.float32)
-                        delta_min = np.zeros(self.output_dim, dtype=np.float32)
-
-                        # Use sampled data from _compute_zscore_stats
-                        # Use existing file handle 'f' instead of opening a new one
-                        num_samples = len(self.sample_ids)
-                        all_deltas = [[] for _ in range(self.output_dim)]
-                        for i in range(num_samples):
-                            sid = self.sample_ids[i]
-                            data = f[f'data/{sid}/nodal_data'][:]
-                            if self.num_timesteps > 1:
-                                delta_timesteps = np.linspace(0, self.num_timesteps - 2,
-                                                                min(10, self.num_timesteps - 1), dtype=int)
-                                for t in delta_timesteps:
-                                    for feat_idx in range(self.output_dim):
-                                        delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
-                                        all_deltas[feat_idx].append(delta)
-                            else:
-                                for feat_idx in range(self.output_dim):
-                                    all_deltas[feat_idx].append(data[3 + feat_idx, 0, :])
-
-                        for feat_idx in range(self.output_dim):
-                            deltas = np.concatenate(all_deltas[feat_idx])
-                            delta_max[feat_idx] = np.max(deltas)
-                            delta_min[feat_idx] = np.min(deltas)
-
                         norm_params['delta_max'][...] = delta_max
                         norm_params['delta_min'][...] = delta_min
 
                     print(f'  [OK] HDF5 delta normalization parameters updated successfully')
-                    f.close()
-        except (OSError, BlockingIOError) as e:
+        except (OSError, BlockingIOError):
             print(f'  [INFO] Could not update HDF5 normalization params (file locked by another process)')
-            pass
 
-    def _compute_stats_serial(self, num_samples: int) -> Tuple[List[np.ndarray], List[np.ndarray], List[List[np.ndarray]]]:
-        """Serial implementation of statistics computation (original logic)."""
-        all_node_features = []
-        all_edge_features = []
-        all_delta_features = [[] for _ in range(self.output_dim)]
+    def _compute_stats_serial(self, num_samples: int) -> Dict:
+        """Serial streaming statistics using Welford's online algorithm. O(features) memory."""
+        node_stats = None
+        edge_stats = None
+        delta_stats = [None for _ in range(self.output_dim)]
+        delta_min = np.full(self.output_dim, np.inf, dtype=np.float64)
+        delta_max = np.full(self.output_dim, -np.inf, dtype=np.float64)
 
-        # Limit timestep sampling to prevent memory issues (same as parallel version)
         max_timesteps_for_stats = 500
 
         with h5py.File(self.h5_file, 'r') as f:
@@ -357,58 +346,59 @@ class MeshGraphDataset(Dataset):
                 data = f[f'data/{sid}/nodal_data'][:]  # [features, time, nodes]
                 mesh_edge = f[f'data/{sid}/mesh_edge'][:]  # [2, edges]
 
-                # Sample timesteps for multi-timestep data
                 if self.num_timesteps > 1:
                     num_samples_t = min(max_timesteps_for_stats, self.num_timesteps)
                     timesteps = np.linspace(0, self.num_timesteps - 1, num_samples_t, dtype=int)
                 else:
                     timesteps = [0]
 
+                edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
+
                 for t in timesteps:
-                    # Node features: [disp_x, disp_y, disp_z, stress]
-                    node_feat = data[3:3+self.input_dim, t, :].T  # [N, 4]
-                    all_node_features.append(node_feat)
+                    node_feat = data[3:3+self.input_dim, t, :].T  # [N, input_dim]
+                    node_stats = _welford_update(node_stats, node_feat)
 
-                    # Edge features: [dx, dy, dz, distance]
-                    pos = (data[:3, t, :]+data[3:6, t, :]).T  # [N, 3] - Deformed position (reference + displacement)
-                    # Bidirectional edges
-                    edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
-                    rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]] # Deformed relative position
+                    pos = (data[:3, t, :] + data[3:6, t, :]).T  # [N, 3]
+                    rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]
                     dist = np.linalg.norm(rel_pos, axis=1, keepdims=True)
-                    edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4] - Deformed edge features (relative position + distance)
-                    all_edge_features.append(edge_feat)
+                    edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
+                    edge_stats = _welford_update(edge_stats, edge_feat)
 
-                # Compute delta features (differences between consecutive timesteps)
+                # Delta features
                 if self.num_timesteps > 1:
-                    # Sample consecutive timestep pairs
                     num_delta_samples = min(max_timesteps_for_stats, self.num_timesteps - 1)
                     delta_timesteps = np.linspace(0, self.num_timesteps - 2, num_delta_samples, dtype=int)
                     for t in delta_timesteps:
                         for feat_idx in range(self.output_dim):
-                            feat_t = data[3 + feat_idx, t, :]      # [N]
-                            feat_t1 = data[3 + feat_idx, t + 1, :]  # [N] - Next timestep feature
-                            delta = feat_t1 - feat_t # Delta nodal feature (including node type)
-                            all_delta_features[feat_idx].append(delta)
+                            delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
+                            delta_2d = delta.reshape(-1, 1)
+                            delta_stats[feat_idx] = _welford_update(delta_stats[feat_idx], delta_2d)
+                            delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(delta)))
+                            delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(delta)))
                 else:
-                    # Single timestep: delta is the final value itself (from zero initial state)
                     for feat_idx in range(self.output_dim):
-                        feat = data[3 + feat_idx, 0, :]  # [N]
-                        all_delta_features[feat_idx].append(feat)
+                        feat = data[3 + feat_idx, 0, :]
+                        feat_2d = feat.reshape(-1, 1)
+                        delta_stats[feat_idx] = _welford_update(delta_stats[feat_idx], feat_2d)
+                        delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(feat)))
+                        delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(feat)))
 
-        return all_node_features, all_edge_features, all_delta_features
+        return {
+            'node_stats': node_stats,
+            'edge_stats': edge_stats,
+            'delta_stats': delta_stats,
+            'delta_min': delta_min,
+            'delta_max': delta_max,
+        }
 
-    def _compute_stats_parallel(self, num_workers: int, num_samples: int) -> Tuple[List[np.ndarray], List[np.ndarray], List[List[np.ndarray]]]:
-        """Parallel implementation of statistics computation using multiprocessing."""
-        # Split samples into chunks for each worker
+    def _compute_stats_parallel(self, num_workers: int, num_samples: int) -> Dict:
+        """Parallel streaming statistics — each worker returns compact Welford stats, master merges."""
         chunk_size = max(1, num_samples // num_workers)
         sample_chunks = []
-
         for i in range(0, num_samples, chunk_size):
-            chunk = self.sample_ids[i:i+chunk_size]
-            sample_chunks.append(chunk)
+            sample_chunks.append(self.sample_ids[i:i+chunk_size])
 
         try:
-            # Create worker pool and process chunks in parallel
             with mp.Pool(num_workers) as pool:
                 worker_args = [
                     (self.h5_file, chunk, self.input_dim, self.output_dim, self.num_timesteps)
@@ -416,18 +406,23 @@ class MeshGraphDataset(Dataset):
                 ]
                 results = pool.starmap(_process_sample_chunk, worker_args)
 
-            # Aggregate results from all workers
-            all_node_features = []
-            all_edge_features = []
-            all_delta_features = [[] for _ in range(self.output_dim)]
+            # Merge Welford stats from all workers — O(workers * features) memory
+            node_stats = None
+            edge_stats = None
+            delta_stats = [None for _ in range(self.output_dim)]
+            delta_min = np.full(self.output_dim, np.inf, dtype=np.float64)
+            delta_max = np.full(self.output_dim, -np.inf, dtype=np.float64)
 
             total_processed = 0
             for result in results:
                 if result['num_samples_processed'] > 0:
-                    all_node_features.append(result['node_features'])
-                    all_edge_features.append(result['edge_features'])
+                    node_stats = _welford_combine(node_stats, result['node_stats'])
+                    edge_stats = _welford_combine(edge_stats, result['edge_stats'])
                     for feat_idx in range(self.output_dim):
-                        all_delta_features[feat_idx].extend(result['delta_features'][feat_idx])
+                        delta_stats[feat_idx] = _welford_combine(
+                            delta_stats[feat_idx], result['delta_stats'][feat_idx])
+                    np.minimum(delta_min, result['delta_min'], out=delta_min)
+                    np.maximum(delta_max, result['delta_max'], out=delta_max)
                     total_processed += result['num_samples_processed']
 
             print(f'  Successfully processed {total_processed}/{num_samples} samples')
@@ -435,7 +430,13 @@ class MeshGraphDataset(Dataset):
             if total_processed == 0:
                 raise RuntimeError("No samples were successfully processed in parallel mode")
 
-            return all_node_features, all_edge_features, all_delta_features
+            return {
+                'node_stats': node_stats,
+                'edge_stats': edge_stats,
+                'delta_stats': delta_stats,
+                'delta_min': delta_min,
+                'delta_max': delta_max,
+            }
 
         except Exception as e:
             print(f'  Warning: Parallel processing failed ({e}), falling back to serial processing')
