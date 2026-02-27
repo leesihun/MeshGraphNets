@@ -1,8 +1,8 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
 gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
-log_file_dir    train1.log
-modelpath   ./outputs/warpage1.pth
+log_file_dir    train4.log
+modelpath   ./outputs/warpage2.pth
 %   Datasets
 dataset_dir ./dataset/warpage_all.h5
 infer_dataset   ./dataset/warpage_infer.h5
@@ -13,9 +13,9 @@ output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-message_passing_num 15
+message_passing_num 5
 Training_epochs	100
-Batch_size	1
+Batch_size	10
 LearningR	0.001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10

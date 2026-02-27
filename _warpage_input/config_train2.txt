@@ -1,8 +1,8 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
-log_file_dir    train0.log
-modelpath   ./outputs/warpage1.pth
+gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
+log_file_dir    train2.log
+modelpath   ./outputs/warpage2.pth
 %   Datasets
 dataset_dir ./dataset/warpage_all.h5
 infer_dataset   ./dataset/warpage_infer.h5
