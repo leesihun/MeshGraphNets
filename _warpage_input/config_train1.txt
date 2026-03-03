@@ -8,8 +8,8 @@ dataset_dir ./dataset/warpage_all.h5
 infer_dataset   ./dataset/warpage_infer.h5
 infer_timesteps 34
 %   Common params
-input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
-output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
+input_var   3   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
+output_var  3   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
