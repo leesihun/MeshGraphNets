@@ -12,12 +12,11 @@ input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (exc
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 edge_var    4   # dx, dy, dz, disp
 '
-%   Network parameters
-message_passing_num 15
-Training_epochs	100
-Batch_size	1
-LearningR	0.001
-Latent_dim	128	# MeshGraphNets latent dimension
+%   Network paramete5
+Training_epochs	50
+Batch_size	8
+LearningR	0.0001
+Latent_dim	64	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.02
 residual_scale  0.1  # Scale factor for residual connections (0.1 = 10% of update added to current state)

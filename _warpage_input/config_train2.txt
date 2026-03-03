@@ -13,19 +13,19 @@ output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-message_passing_num 5
-Training_epochs	100
-Batch_size	1
-LearningR	0.001
-Latent_dim	128	# MeshGraphNets latent dimension
+message_passing_num 15
+Training_epochs	50
+Batch_size	4
+LearningR	0.0001
+Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 10
-std_noise   0.02
-residual_scale  0.1  # Scale factor for residual connections (0.1 = 10% of update added to current state)
+std_noise   0.1
+residual_scale  1.0  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 verbose     False
 monitor_gradients  False
 '
 % Memory Optimization
-use_checkpointing   False
+use_checkpointing   True
 '
 % Performance Optimization
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
