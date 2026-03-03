@@ -60,7 +60,6 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         print("\nCreating dataloaders with distributed samplers...")
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
     val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
-    test_sampler = DistributedSampler(test_dataset, num_replicas=world_size, rank=rank, shuffle=False)
 
     # Create dataloaders
     train_loader = DataLoader(
@@ -79,10 +78,11 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         pin_memory=True
     )
 
+    # Test loader only needed on rank 0 (no DDP forward, uses unwrapped model)
     test_loader = DataLoader(
         test_dataset,
         batch_size=1,
-        sampler=test_sampler,
+        shuffle=True,
         pin_memory=True
     )
     if torch.cuda.is_available() and rank == 0:
@@ -95,7 +95,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
 
     # Wrap with DistributedDataParallel
     if torch.cuda.is_available():
-        model = DDP(
+        ddp_model = DDP(
             model,
             device_ids=[gpu_id],
             broadcast_buffers=True,
@@ -103,7 +103,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
             gradient_as_bucket_view=True
         )
     else:
-        model = DDP(
+        ddp_model = DDP(
             model,
             broadcast_buffers=True,
             find_unused_parameters=False,
@@ -115,14 +115,11 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
 
     if rank == 0:
         print('\n'*2)
-        print("Model architecture/summary:")
-        print(model)
-        print('\n'*2)
         print("Model initialized successfully")
         if config.get('use_checkpointing', False):
             print("Gradient checkpointing: ENABLED")
-        total_params = sum(p.numel() for p in model.parameters())
-        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in ddp_model.parameters())
+        trainable_params = sum(p.numel() for p in ddp_model.parameters() if p.requires_grad)
         print(f"Total parameters: {total_params:,}")
         print(f"Trainable parameters: {trainable_params:,}")
 
@@ -133,7 +130,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     if rank == 0:
         print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(ddp_model.parameters(), lr=learning_rate)
 
     # Initialize learning rate scheduler
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -144,7 +141,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         min_lr=1e-8
     )
     if rank == 0:
-        print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=10)")
+        print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=2)")
 
     if torch.cuda.is_available() and rank == 0:
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
@@ -158,12 +155,17 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     start_time = time.time()
 
     log_file = None
+    log_dir = None
     log_file_dir = config.get('log_file_dir')
     if log_file_dir and rank == 0:
         log_file = 'outputs/' + log_file_dir
+        log_dir = os.path.dirname(log_file)
         # if log_file doesn't exist, create it
         if not os.path.exists(log_file):
-            os.makedirs(os.path.dirname(log_file), exist_ok=True)
+            os.makedirs(log_dir, exist_ok=True)
+
+        # Pass log directory to config for debug output
+        config['log_dir'] = log_dir
         with open(log_file, 'w') as f:
             f.write(f"Training epoch log file\n")
             f.write(f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
@@ -176,12 +178,22 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     # Synchronize all processes before starting training
     dist.barrier()
 
+    modelname = config.get('modelpath')
+
     for epoch in range(config.get('training_epochs')):
         # Set epoch for distributed sampler (important for shuffling)
         train_sampler.set_epoch(epoch)
 
-        train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
-        valid_loss = validate_epoch(model, val_loader, device, config, epoch)
+        train_loss = train_epoch(ddp_model, train_loader, optimizer, device, config, epoch)
+        valid_loss = validate_epoch(ddp_model, val_loader, device, config, epoch)
+
+        # All-reduce losses across ranks for accurate logging and checkpoint decisions
+        train_loss_tensor = torch.tensor([train_loss], device=device)
+        valid_loss_tensor = torch.tensor([valid_loss], device=device)
+        dist.all_reduce(train_loss_tensor, op=dist.ReduceOp.AVG)
+        dist.all_reduce(valid_loss_tensor, op=dist.ReduceOp.AVG)
+        train_loss = train_loss_tensor.item()
+        valid_loss = valid_loss_tensor.item()
 
         # Step the learning rate scheduler based on validation loss
         scheduler.step(valid_loss)
@@ -195,7 +207,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         if valid_loss < best_valid_loss and rank == 0:
             best_valid_loss = valid_loss
             best_epoch = epoch
-            checkpoint_path = os.path.join("outputs/", "best_model.pth")
+            checkpoint_path = modelname
             normalization = {
                 'node_mean': dataset.node_mean,
                 'node_std': dataset.node_std,
@@ -222,7 +234,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
             }
             torch.save({
                 'epoch': epoch,
-                'model_state_dict': model.module.state_dict(),  # Save unwrapped model
+                'model_state_dict': ddp_model.module.state_dict(),  # Save unwrapped model
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': train_loss,
@@ -236,12 +248,44 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
             with open(log_file, 'a') as f:
                 f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
 
-        # For each 10 epochs, test the model on the test set and save the results with the ground truth in a file
+        # For each 10 epochs, test the model on the test set
+        # Use unwrapped model.module to avoid DDP deadlock (only rank 0 runs this)
         if epoch % 10 == 0 and rank == 0:
             test_loss = test_model(model, test_loader, device, config, epoch, dataset)
 
     if rank == 0:
         print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+
+    # Analyze debug files if they exist
+    if rank == 0 and log_dir:
+        import glob
+        import numpy as np
+        debug_files = sorted(glob.glob(os.path.join(log_dir, 'debug_*.npz')))
+
+        if debug_files:
+            print("\n" + "="*60)
+            print("DEBUG OUTPUT ANALYSIS (first 5 epochs)")
+            print("="*60)
+            for f in debug_files[:5]:
+                try:
+                    data = np.load(f)
+                    fname = os.path.basename(f)
+                    print(f"\n{fname}")
+                    print(f"  Input (x):")
+                    print(f"    mean={data['x_mean']}")
+                    print(f"    std={data['x_std']}")
+                    print(f"  Target (y):")
+                    print(f"    mean={data['y_mean']}")
+                    print(f"    std={data['y_std']}")
+                    print(f"  Prediction (pred):")
+                    print(f"    mean={data['pred_mean']}")
+                    print(f"    std={data['pred_std']}")
+                    pred_target_ratio = data['pred_std'] / (data['y_std'] + 1e-8)
+                    print(f"  Pred/Target std ratio: {pred_target_ratio}")
+                    if np.any(pred_target_ratio < 0.1):
+                        print(f"    ^ WARNING: Pred much smaller than target!")
+                except Exception as e:
+                    print(f"  Error reading {f}: {e}")
 
     # Cleanup
     cleanup_distributed()

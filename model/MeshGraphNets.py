@@ -197,6 +197,7 @@ class GnBlock(nn.Module):
         super(GnBlock, self).__init__()
 
         self.use_world_edges = use_world_edges
+        self.residual_scale = config.get('residual_scale', 1.0)
         # Note: NVIDIA implementation uses full residual (scale=1.0) only for nodes, not edges
 
         eb_input_dim = 3 * latent_dim  # Sender, Receiver, edge latent dim
@@ -253,8 +254,7 @@ class GnBlock(nn.Module):
         node_graph = self.nb_module(node_graph)
 
         # Residual connection ONLY for nodes (matches NVIDIA implementation)
-        # node_x = node_x + node_block_output
-        x = x_input + node_graph.x
+        x = x_input + self.residual_scale * node_graph.x
 
         out = Data(x=x, edge_attr=edge_attr, edge_index=node_graph.edge_index)
         if self.use_world_edges:
