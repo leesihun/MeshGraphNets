@@ -13,13 +13,13 @@ output_var  3   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-message_passing_num 15
+message_passing_num 3
 Training_epochs	50
-Batch_size	4
+Batch_size	32
 LearningR	0.0001
-Latent_dim	256	# MeshGraphNets latent dimension
+Latent_dim	64	# MeshGraphNets latent dimension
 num_workers 10
-std_noise   0.1
+std_noise   0.02
 residual_scale  1.0  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 verbose     False
 monitor_gradients  False

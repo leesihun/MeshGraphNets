@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
+gpu_ids 0,1      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train1.log
 modelpath   ./outputs/warpage1.pth
 %   Datasets
@@ -13,13 +13,13 @@ output_var  3   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-message_passing_num 5
+message_passing_num 3
 Training_epochs	50
-Batch_size	32
+Batch_size	16
 LearningR	0.0001
 Latent_dim	64	# MeshGraphNets latent dimension
 num_workers 10
-std_noise   0.1
+std_noise   0.02
 residual_scale  1.0  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 verbose     False
 monitor_gradients  False
