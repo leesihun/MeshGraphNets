@@ -13,9 +13,9 @@ output_var  3   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-message_passing_num 3
+message_passing_num 10
 Training_epochs	50
-Batch_size	32
+Batch_size	16
 LearningR	0.0001
 Latent_dim	64	# MeshGraphNets latent dimension
 num_workers 10
