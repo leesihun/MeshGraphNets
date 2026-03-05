@@ -45,9 +45,8 @@ class MeshGraphNets(nn.Module):
         if self.training:
             noise_std = self.config.get('std_noise', 0.0)
             if noise_std > 0:
-                # noise = torch.randn_like(graph.x) * noise_std
-                graph.x = graph.x * noise_std + noise_std
-
+                noise = torch.randn_like(graph.x) * noise_std
+                graph.x = graph.x + noise
         # Forward through encoder-processor-decoder
         predicted = self.model(graph, debug=debug)
 
