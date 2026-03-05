@@ -1,5 +1,6 @@
 import os
 import time
+import datetime
 
 import torch
 import torch.distributed as dist
@@ -176,7 +177,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
             fc.close()
 
     # Synchronize all processes before starting training
-    dist.barrier()
+    dist.barrier(device_ids=[gpu_id])
 
     modelname = config.get('modelpath')
 
@@ -249,9 +250,13 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
                 f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
 
         # For each 10 epochs, test the model on the test set
-        # Use unwrapped model.module to avoid DDP deadlock (only rank 0 runs this)
-        if epoch % 10 == 0 and rank == 0:
-            test_loss = test_model(model, test_loader, device, config, epoch, dataset)
+        # Use unwrapped model to avoid DDP deadlock (only rank 0 runs this)
+        # Barrier ensures all ranks wait so rank 1+ don't race into next epoch's
+        # DDP forward/backward while rank 0 is still running test_model
+        if epoch % 10 == 0:
+            if rank == 0:
+                test_loss = test_model(model, test_loader, device, config, epoch, dataset)
+            dist.barrier(device_ids=[gpu_id])
 
     if rank == 0:
         print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
@@ -302,10 +307,12 @@ def setup_distributed(rank, world_size, gpu_id):
     os.environ['MASTER_PORT'] = '12355'
 
     # Initialize the process group
+    # Longer timeout (30 min) to accommodate test_model runs between epochs
     dist.init_process_group(
         backend='nccl' if torch.cuda.is_available() else 'gloo',
         rank=rank,
-        world_size=world_size
+        world_size=world_size,
+        timeout=datetime.timedelta(minutes=30)
     )
 
     # Set device for this process using the specified GPU ID
