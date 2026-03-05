@@ -93,8 +93,8 @@ def single_worker(config, config_filename='config.txt'):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     # Initialize learning rate scheduler (ExponentialLR like NVIDIA PhysicsNeMo)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.995)
-    print(f"Learning rate scheduler: ExponentialLR (gamma=0.995)")
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.97)
+    print(f"Learning rate scheduler: ExponentialLR (gamma=0.99)")
 
     if torch.cuda.is_available():
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')

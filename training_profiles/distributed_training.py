@@ -136,16 +136,10 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     learning_rate = config.get('learningr')
     optimizer = torch.optim.Adam(ddp_model.parameters(), lr=learning_rate)
 
-    # Initialize learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',
-        factor=0.5,
-        patience=2,
-        min_lr=1e-8
-    )
+    # Initialize learning rate scheduler (ExponentialLR like single-GPU training)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.97)
     if rank == 0:
-        print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=2)")
+        print(f"Learning rate scheduler: ExponentialLR (gamma=0.99)")
 
     if torch.cuda.is_available() and rank == 0:
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
@@ -199,8 +193,8 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         train_loss = train_loss_tensor.item()
         valid_loss = valid_loss_tensor.item()
 
-        # Step the learning rate scheduler based on validation loss
-        scheduler.step(valid_loss)
+        # Step the learning rate scheduler (ExponentialLR decays every epoch)
+        scheduler.step()
 
         # Per epoch, batch-averaged train, validation losses.
         current_lr = optimizer.param_groups[0]['lr']
