@@ -22,6 +22,9 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         gpu_ids: List of GPU IDs to use
         config_filename: Path to the config file (default: config.txt)
     """
+    # Disable HDF5 file locking — multiple ranks + workers open the same file read-only
+    os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
+
     # Get the physical GPU ID for this rank
     gpu_id = gpu_ids[rank]
     setup_distributed(rank, world_size, gpu_id)
