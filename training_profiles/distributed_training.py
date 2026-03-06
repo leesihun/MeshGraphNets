@@ -134,7 +134,10 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     if rank == 0:
         print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
-    optimizer = torch.optim.Adam(ddp_model.parameters(), lr=learning_rate)
+    weight_decay = float(config.get('weight_decay', 1e-4))
+    optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    if rank == 0:
+        print(f"Optimizer: AdamW (weight_decay={weight_decay})")
 
     # Initialize learning rate scheduler (ReduceLROnPlateau for DDP training)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(

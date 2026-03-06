@@ -90,11 +90,15 @@ def single_worker(config, config_filename='config.txt'):
     # Initialize optimizer
     print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    weight_decay = float(config.get('weight_decay', 1e-4))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    print(f"Optimizer: AdamW (weight_decay={weight_decay})")
 
-    # Initialize learning rate scheduler (ExponentialLR like NVIDIA PhysicsNeMo)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.995)
-    print(f"Learning rate scheduler: ExponentialLR (gamma=0.995)")
+    # Initialize learning rate scheduler (ReduceLROnPlateau)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-8
+    )
+    print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=2)")
 
     if torch.cuda.is_available():
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
@@ -148,8 +152,8 @@ def single_worker(config, config_filename='config.txt'):
         train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
         valid_loss = validate_epoch(model, val_loader, device, config, epoch)
 
-        # Step the learning rate scheduler (ExponentialLR decays every epoch)
-        scheduler.step()
+        # Step the learning rate scheduler (ReduceLROnPlateau requires validation loss)
+        scheduler.step(valid_loss)
 
         # Per epoch, batch-averaged train, validation losses.
         current_lr = optimizer.param_groups[0]['lr']
