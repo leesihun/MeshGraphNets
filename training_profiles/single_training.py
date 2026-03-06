@@ -93,12 +93,25 @@ def single_worker(config, config_filename='config.txt'):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     # Initialize learning rate scheduler (ExponentialLR like NVIDIA PhysicsNeMo)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.97)
-    print(f"Learning rate scheduler: ExponentialLR (gamma=0.99)")
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.995)
+    print(f"Learning rate scheduler: ExponentialLR (gamma=0.995)")
 
     if torch.cuda.is_available():
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
         print(f'Peak memory so far: {torch.cuda.max_memory_allocated()/1e9:.2f}GB')
+
+    # Log per-feature loss weights if configured
+    loss_weights_cfg = config.get('feature_loss_weights', None)
+    if loss_weights_cfg is not None:
+        if not isinstance(loss_weights_cfg, list):
+            loss_weights_cfg = [loss_weights_cfg]
+        import torch as _torch
+        w = _torch.tensor(loss_weights_cfg, dtype=_torch.float32)
+        w_normalized = (w * len(w) / w.sum()).tolist()
+        print(f"Per-feature loss weights (raw): {loss_weights_cfg}")
+        print(f"Per-feature loss weights (normalized): {[f'{v:.3f}' for v in w_normalized]}")
+    else:
+        print("Per-feature loss weights: equal (default)")
 
     print("\n" + "="*60)
     print("Starting training loop...")

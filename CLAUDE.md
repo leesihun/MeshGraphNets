@@ -62,6 +62,7 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | LearningR | 0.0001 | Adam learning rate |
 | Training_epochs | 500 | |
 | std_noise | 0.001 | Gaussian noise augmentation (training only) |
+| feature_loss_weights | None | Per-feature loss weights (comma-separated). Example: `1.0, 1.0, 5.0` emphasizes z_disp. Auto-normalized. |
 | use_checkpointing | False | Gradient checkpointing (saves ~60-70% VRAM) |
 | use_node_types | False | One-hot encode node types from HDF5 metadata |
 | use_world_edges | False | Radius-based collision detection edges |
@@ -107,8 +108,8 @@ Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
 ### Training
 
 - **Optimizer**: Adam
-- **LR Scheduler**: ExponentialLR(gamma=0.995) for single-GPU; ReduceLROnPlateau(factor=0.5, patience=2, min_lr=1e-8) for DDP
-- **Loss**: MSE on normalized deltas
+- **LR Scheduler**: ExponentialLR(gamma=0.995) for single-GPU; ReduceLROnPlateau(factor=0.5, patience=10, min_lr=1e-8) for DDP
+- **Loss**: MSE on normalized deltas, with optional per-feature weighting (via `feature_loss_weights` config)
 - **Gradient clipping**: max_norm=5.0
 - **Checkpoint path**: single-GPU uses `modelpath` from config; DDP always saves to `outputs/best_model.pth` regardless of `modelpath`
 - **Checkpoint contents**: model_state_dict, optimizer, scheduler, normalization stats, model_config
@@ -134,6 +135,8 @@ These are easy to break if you don't know them:
 11. **`world_edge_backend` is required in all configs** — `rollout.py` calls `.get('world_edge_backend').lower()` with no default; omitting it crashes inference with `AttributeError`
 12. **For T=1 (static) datasets**, the model input `x` is all-zeros and the target delta equals the feature values themselves
 13. **`num_node_types` is assigned to config by code** (not from config file) after dataset load; do not set it manually
+14. **Per-feature loss weights are auto-normalized** — specified weights are scaled so they sum to `output_var`, preserving loss magnitude comparability across configs
+15. **Loss weights apply to all three phases** (train, validation, test) for consistent optimization and reporting
 
 ## HDF5 Dataset Format
 

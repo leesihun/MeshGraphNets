@@ -204,11 +204,12 @@ Values are auto-parsed in this order by `general_modules/load_config.py`:
 | `num_workers` | int | 10 | DataLoader workers. Set 0 for debugging. |
 | `std_noise` | float | 0.001 | Gaussian noise std added to inputs during training. 0 to disable. |
 | `residual_scale` | float | 0.1 | Defined in config but **not currently used** in code (residual = scale 1.0). |
+| `feature_loss_weights` | list[float] | None | Per-feature loss weights (comma-separated). Example: `1.0, 1.0, 5.0` emphasizes z_disp 5x. Auto-normalized to sum to `output_var`. |
 
 **Training details:**
 - **Optimizer**: Adam
 - **Gradient clipping**: max_norm=5.0
-- **Loss**: MSE on normalized deltas
+- **Loss**: MSE on normalized deltas, optionally weighted per-feature
 - **Weight init**: Kaiming/He uniform
 - **Data split**: 80% train / 10% val / 10% test (seed=42)
 
@@ -331,6 +332,7 @@ python MeshGraphNets_main.py --config _warpage_input/config_train1.txt
 - Scheduler: ExponentialLR(gamma=0.995)
 - Saves best model to `modelpath`
 - Test evaluation every 10 epochs
+- Logs per-feature loss weights (if configured) at startup
 
 ### Training (Multi-GPU DDP)
 
@@ -345,7 +347,7 @@ Set `gpu_ids 0, 1, 2, 3` in the config to enable DDP.
 - Uses `torch.distributed` with NCCL backend (Gloo on CPU)
 - `DistributedSampler` for data partitioning
 - Effective batch size = `Batch_size * num_GPUs`
-- Scheduler: ReduceLROnPlateau(factor=0.5, patience=2, min_lr=1e-8)
+- Scheduler: ReduceLROnPlateau(factor=0.5, patience=10, min_lr=1e-8)
 - Only rank 0 saves checkpoints (to `outputs/best_model.pth`)
 - Communication: `localhost:12355`
 
@@ -844,7 +846,8 @@ Elapsed time: <seconds>s Epoch <N> Train Loss: <X.XXXXe-XX> Valid Loss: <X.XXXXe
 | `AttributeError: 'NoneType' has no attribute 'lower'` | `world_edge_backend` missing | Add `world_edge_backend scipy_kdtree` to config |
 | `torch.save` error with `None` path | `modelpath` missing | Add `modelpath ./outputs/my_model.pth` |
 | Loss is `nan` | LR too high or bad data | Reduce `LearningR` to 1e-5, check data for NaN/Inf |
-| Loss plateaus | Insufficient capacity or LR too high | Reduce `LearningR` by 10x, increase `Latent_dim` or `message_passing_num` |
+| Loss plateaus at 1e-1+ | Insufficient capacity, LR too high, or noise too high | Try: (1) Reduce `std_noise` to 0.001 or 0.0; (2) Reduce `LearningR` by 2-5x; (3) Check per-feature loss with `verbose True`; (4) Increase `Latent_dim` or `message_passing_num` |
+| Loss doesn't drop after warm-up | Learning rate decays too fast or plateaus | Check scheduler: single GPU uses ExponentialLR(gamma=0.995); DDP uses ReduceLROnPlateau. Verify initial `LearningR` is appropriate |
 | `Address already in use` (DDP) | Port 12355 in use | Kill lingering processes or wait |
 | Near-zero delta std warning | Constant features | Check that features actually vary between timesteps |
 
@@ -866,12 +869,13 @@ Multiply by `Batch_size` for total VRAM.
 
 Tune in this order (most to least impactful):
 
-1. **LearningR**: Start 1e-4, try 1e-3 and 1e-5
-2. **Latent_dim**: Start 128, try 256 if underfitting
-3. **Batch_size**: Largest that fits in VRAM
-4. **message_passing_num**: Start 15, increase if loss plateaus
-5. **std_noise**: Start 0.001, reduce if loss is noisy
-6. **Training_epochs**: Monitor validation loss for convergence
+1. **LearningR**: Start 1e-4, try 1e-3 and 1e-5. **Single-GPU note**: ExponentialLR(gamma=0.995) decays LR by ~26% every 50 epochs; if training plateaus early, reduce LR before training
+2. **std_noise**: Start 0.001 (originally 0.02 was too high for normalized features). Reduce to 0.0 if loss is unstable
+3. **Latent_dim**: Start 128, try 256 if underfitting
+4. **feature_loss_weights**: If one feature dominates loss, down-weight it. Example: `1.0, 1.0, 5.0` emphasizes z_disp 5x
+5. **Batch_size**: Largest that fits in VRAM
+6. **message_passing_num**: Start 15, increase if loss plateaus
+7. **Training_epochs**: Monitor validation loss for convergence
 
 ---
 

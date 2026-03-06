@@ -34,6 +34,25 @@ def save_debug_batch(epoch, batch_idx, graph, predicted, target, log_dir):
     except Exception as e:
         tqdm.tqdm.write(f"  Warning: Could not save debug data: {e}")
 
+def _build_loss_weights(config, device):
+    """Build per-feature loss weight tensor from config. Returns None if not configured."""
+    loss_weights = config.get('feature_loss_weights', None)
+    if loss_weights is not None:
+        if not isinstance(loss_weights, list):
+            loss_weights = [loss_weights]
+        loss_weights = torch.tensor(loss_weights, dtype=torch.float32, device=device)
+        # Normalize so weights sum to output_var (preserves loss magnitude scale)
+        loss_weights = loss_weights * len(loss_weights) / loss_weights.sum()
+    return loss_weights
+
+
+def _weighted_mse(errors, loss_weights):
+    """Compute MSE loss with optional per-feature weighting."""
+    if loss_weights is not None:
+        return torch.mean(errors * loss_weights)
+    return torch.mean(errors)
+
+
 def train_epoch(model, dataloader, optimizer, device, config, epoch):
     model.train()
     total_loss = 0.0
@@ -42,6 +61,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
 
     verbose = config.get('verbose')
     monitor_gradients = config.get('monitor_gradients', True)
+    loss_weights = _build_loss_weights(config, device)
 
     pbar = tqdm.tqdm(dataloader)
     for batch_idx, graph in enumerate(pbar):
@@ -66,7 +86,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
                 save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
 
         errors = ((predicted_acc - target_acc) ** 2)
-        loss = torch.mean(errors) # MSE Loss
+        loss = _weighted_mse(errors, loss_weights)
 
         optimizer.zero_grad()
         loss.backward()
@@ -147,11 +167,12 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
 
     verbose = config.get('verbose')
     output_var = config.get('output_var', 4)
+    loss_weights = _build_loss_weights(config, device)
 
     with torch.no_grad():
         total_loss = 0.0
         num_batches = 0
-        
+
         # Accumulate per-feature losses across all batches
         accumulated_per_feature_loss = None
 
@@ -166,8 +187,8 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
             graph = graph.to(device)
             predicted, target = model(graph)
             errors = ((predicted - target) ** 2)
-            loss = torch.mean(errors)  # MSE Loss
-            
+            loss = _weighted_mse(errors, loss_weights)
+
             # Accumulate per-feature losses
             per_feature_loss = torch.mean(errors, dim=0)  # Average across nodes
             if accumulated_per_feature_loss is None:
@@ -204,6 +225,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
 
     verbose = config.get('verbose')
     output_var = config.get('output_var', 4)
+    loss_weights = _build_loss_weights(config, device)
 
     # Use GPU for triangle reconstruction if available
     use_gpu = device.type == 'cuda' if hasattr(device, 'type') else (device != 'cpu')
@@ -237,8 +259,8 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
             graph = graph.to(device)
             predicted, target = model(graph)
             errors = ((predicted - target) ** 2)
-            loss = torch.mean(errors)  # MSE Loss
-            
+            loss = _weighted_mse(errors, loss_weights)
+
             # Accumulate per-feature losses
             per_feature_loss = torch.mean(errors, dim=0)  # Average across nodes
             if accumulated_per_feature_loss is None:

@@ -4,20 +4,21 @@ gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train2.log
 modelpath   ./outputs/warpage2.pth
 %   Datasets
-dataset_dir ./dataset/warpage_all.h5
+dataset_dir ./dataset/warpage100.h5
 infer_dataset   ./dataset/warpage_infer.h5
 infer_timesteps 34
 %   Common params
 input_var   3   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  3   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
+feature_loss_weights  0.0001, 0.00001, 1.0  # Per-feature loss weights for [x_disp, y_disp, z_disp]
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-message_passing_num 10
-Training_epochs	50
-Batch_size	16
+message_passing_num 20
+Training_epochs	500
+Batch_size	4
 LearningR	0.0001
-Latent_dim	64	# MeshGraphNets latent dimension
+Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.02
 residual_scale  1.0  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
@@ -38,6 +39,7 @@ use_world_edges         False
 world_radius_multiplier 1.5     # r_world = multiplier * min_mesh_edge_length (auto-computed)
 world_max_num_neighbors 64      # Max neighbors per node in world edge radius query (prevents edge explosion)
 world_edge_backend      scipy_kdtree   # Backend: torch_cluster (GPU, fast) or scipy_kdtree (CPU, fallback)
+'
 % Test set control
 display_testset True
 test_batch_idx  0, 1, 2, 3
