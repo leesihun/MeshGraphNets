@@ -3,7 +3,8 @@
     "allow": [
       "WebFetch(domain:openreview.net)",
       "WebFetch(domain:medium.com)",
-      "WebFetch(domain:ml4eng.github.io)"
+      "WebFetch(domain:ml4eng.github.io)",
+      "WebFetch(domain:docs.nvidia.com)"
     ]
   }
 }
