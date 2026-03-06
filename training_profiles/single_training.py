@@ -204,7 +204,7 @@ def single_worker(config, config_filename='config.txt'):
                 f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
 
         # For each 10 epochs, test the model on the test set and save the results with the ground truth in a file
-        if epoch % 10 == 0:
+        if epoch % 1 == 0:
             test_loss = test_model(model, test_loader, device, config, epoch, dataset)
 
     print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")

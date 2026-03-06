@@ -269,7 +269,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         # Use unwrapped model to avoid DDP deadlock (only rank 0 runs this)
         # Barrier ensures all ranks wait so rank 1+ don't race into next epoch's
         # DDP forward/backward while rank 0 is still running test_model
-        if epoch % 10 == 0:
+        if epoch % 1 == 0:
             if rank == 0:
                 test_loss = test_model(model, test_loader, device, config, epoch, dataset)
             dist.barrier(device_ids=[gpu_id])
