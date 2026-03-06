@@ -4,7 +4,7 @@ gpu_ids 1      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train2.log
 modelpath   ./outputs/warpage2.pth
 %   Datasets
-dataset_dir ./dataset/warpage100.h5
+dataset_dir ./dataset/warpage10.h5
 infer_dataset   ./dataset/warpage_infer.h5
 infer_timesteps 34
 %   Common params
@@ -14,7 +14,7 @@ feature_loss_weights  0.0001, 0.00001, 1.0  # Per-feature loss weights for [x_di
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-message_passing_num 20
+message_passing_num 15
 Training_epochs	500
 Batch_size	4
 LearningR	0.0001

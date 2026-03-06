@@ -4,7 +4,7 @@ gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
 log_file_dir    train1.log
 modelpath   ./outputs/warpage1.pth
 %   Datasets
-dataset_dir ./dataset/warpage_all.h5
+dataset_dir ./dataset/warpage10.h5
 infer_dataset   ./dataset/warpage_infer.h5
 infer_timesteps 34
 %   Common params
@@ -16,9 +16,9 @@ edge_var    4   # dx, dy, dz, disp
 %   Network parameters
 message_passing_num 15
 Training_epochs	50
-Batch_size	8
+Batch_size	4
 LearningR	0.0001
-Latent_dim	64	# MeshGraphNets latent dimension
+Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.02
 residual_scale  1.0  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
