@@ -138,7 +138,7 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
 
     # Initialize learning rate scheduler (ReduceLROnPlateau for DDP training)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-8, verbose=True
+        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-8
     )
     if rank == 0:
         print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=2)")
