@@ -20,7 +20,7 @@ Batch_size	1
 LearningR	0.0001
 Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 10
-std_noise   0.002
+std_noise   0.01
 residual_scale  0.5  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 verbose     False
 monitor_gradients  False
