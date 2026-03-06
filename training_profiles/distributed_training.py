@@ -155,8 +155,10 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
                 loss_weights_cfg = [loss_weights_cfg]
             w = torch.tensor(loss_weights_cfg, dtype=torch.float32)
             w_normalized = (w * len(w) / w.sum()).tolist()
-            print(f"Per-feature loss weights (raw): {loss_weights_cfg}")
-            print(f"Per-feature loss weights (normalized): {[f'{v:.3f}' for v in w_normalized]}")
+            w_proportional = (w / w.sum()).tolist()
+            print(f"Per-feature loss weights (raw):         {loss_weights_cfg}")
+            print(f"Per-feature loss weights (normalized):  {[f'{v:.3f}' for v in w_normalized]}")
+            print(f"Per-feature loss weights (proportional):{[f'{v:.4f}' for v in w_proportional]}")
         else:
             print("Per-feature loss weights: equal (default)")
 

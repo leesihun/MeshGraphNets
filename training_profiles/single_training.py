@@ -108,8 +108,10 @@ def single_worker(config, config_filename='config.txt'):
         import torch as _torch
         w = _torch.tensor(loss_weights_cfg, dtype=_torch.float32)
         w_normalized = (w * len(w) / w.sum()).tolist()
-        print(f"Per-feature loss weights (raw): {loss_weights_cfg}")
-        print(f"Per-feature loss weights (normalized): {[f'{v:.3f}' for v in w_normalized]}")
+        w_proportional = (w / w.sum()).tolist()
+        print(f"Per-feature loss weights (raw):         {loss_weights_cfg}")
+        print(f"Per-feature loss weights (normalized):  {[f'{v:.3f}' for v in w_normalized]}")
+        print(f"Per-feature loss weights (proportional):{[f'{v:.4f}' for v in w_proportional]}")
     else:
         print("Per-feature loss weights: equal (default)")
 
