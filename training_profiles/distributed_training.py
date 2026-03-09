@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import datetime
 import traceback
@@ -24,14 +23,6 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         gpu_ids: List of GPU IDs to use
         config_filename: Path to the config file (default: config.txt)
     """
-    # Redirect each rank's output to a separate log file so crash tracebacks
-    # are never lost under the other rank's spam.
-    os.makedirs('outputs', exist_ok=True)
-    rank_log_path = f'outputs/rank{rank}.log'
-    rank_log = open(rank_log_path, 'w')
-    sys.stdout = _TeeWriter(sys.__stdout__, rank_log, prefix=f'[rank{rank}] ')
-    sys.stderr = _TeeWriter(sys.__stderr__, rank_log, prefix=f'[rank{rank}] ')
-
     try:
         _train_worker_inner(rank, world_size, config, gpu_ids, config_filename)
     except Exception:
@@ -40,31 +31,6 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     finally:
         if dist.is_initialized():
             dist.destroy_process_group()
-        rank_log.close()
-        sys.stdout = sys.__stdout__
-        sys.stderr = sys.__stderr__
-
-
-class _TeeWriter:
-    """Write to both the original stream and a log file.
-
-    Skips tqdm's \\r-only progress bar updates entirely (never written to disk).
-    Only writes and flushes log file for messages containing \\n (real lines).
-    """
-    def __init__(self, stream, log_file, prefix=''):
-        self.stream = stream
-        self.log_file = log_file
-        self.prefix = prefix
-
-    def write(self, msg):
-        self.stream.write(msg)
-        if '\n' in msg:
-            self.log_file.write(msg)
-            self.log_file.flush()
-
-    def flush(self):
-        self.stream.flush()
-        self.log_file.flush()
 
 
 def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
