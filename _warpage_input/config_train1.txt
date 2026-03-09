@@ -4,7 +4,7 @@ gpu_ids 0,1    # -1 for CPU, GPU ids for multi-GPU training (DDP with both H200s
 log_file_dir    train1.log
 modelpath   ./outputs/warpage1.pth
 %   Datasets
-dataset_dir ./dataset/warpage_all.h5
+dataset_dir ./dataset/warpage_half.h5
 infer_dataset   ./dataset/warpage_infer.h5
 infer_timesteps 34
 %   Common params
@@ -16,9 +16,9 @@ edge_var    4   # dx, dy, dz, disp
 %   Network parameters
 message_passing_num 20
 Training_epochs	50
-Batch_size	8
-LearningR	0.000283  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
-Latent_dim	256	# MeshGraphNets latent dimension
+Batch_size	1
+LearningR	0.0001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
+Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.01
 residual_scale  0.5  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
@@ -31,8 +31,8 @@ use_checkpointing   False
 % Performance Optimization
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
 use_amp             True    # Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs)
-use_compile         False   # torch.compile with dynamic shapes (enable after verifying AMP works)
-test_interval       10      # Run test/visualization every N epochs (1 = every epoch, 10 = every 10th)
+use_compile         True   # torch.compile with dynamic shapes (enable after verifying AMP works)
+test_interval       1      # Run test/visualization every N epochs (1 = every epoch, 10 = every 10th)
 '
 % Node Type Parameters
 use_node_types  False    # Add one-hot encoded node types to node features
