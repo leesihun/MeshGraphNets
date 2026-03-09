@@ -590,6 +590,26 @@ class MeshGraphDataset(Dataset):
             # Single timestep: static data
             return len(self.sample_ids)
 
+    def _get_h5_handle(self):
+        """Get or create persistent HDF5 file handle (one per DataLoader worker process).
+
+        Avoids opening/closing the HDF5 file on every __getitem__ call, which is
+        a major I/O bottleneck with thousands of samples and multiple workers.
+        Uses SWMR (Single Writer Multiple Reader) mode for safe multi-worker access.
+        """
+        if not hasattr(self, '_h5_handle') or self._h5_handle is None:
+            self._h5_handle = h5py.File(self.h5_file, 'r', swmr=True)
+        return self._h5_handle
+
+    def __del__(self):
+        """Close persistent HDF5 handle on cleanup."""
+        if hasattr(self, '_h5_handle') and self._h5_handle is not None:
+            try:
+                self._h5_handle.close()
+            except Exception:
+                pass
+            self._h5_handle = None
+
     def __getitem__(self, idx: int) -> Data:
         """
         Load a single graph sample with optional temporal prediction.
@@ -629,10 +649,10 @@ class MeshGraphDataset(Dataset):
 
         sample_id = self.sample_ids[sample_idx]
 
-        # Load data from HDF5
-        with h5py.File(self.h5_file, 'r') as f:
-            data = f[f'data/{sample_id}/nodal_data'][:]  # [7 or 8, time, nodes]
-            edge_index = f[f'data/{sample_id}/mesh_edge'][:]  # [2, M]
+        # Load data from HDF5 (persistent handle for performance — avoids open/close per sample)
+        f = self._get_h5_handle()
+        data = f[f'data/{sample_id}/nodal_data'][:]  # [7 or 8, time, nodes]
+        edge_index = f[f'data/{sample_id}/mesh_edge'][:]  # [2, M]
 
         if self.config['use_node_types']:
             has_part_info = True

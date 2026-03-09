@@ -66,20 +66,25 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False)
 
     # Create dataloaders
+    num_workers = config['num_workers']
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
         sampler=train_sampler,
-        num_workers=config['num_workers'],
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
         sampler=val_sampler,
-        num_workers=config['num_workers'],
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     # Test loader only needed on rank 0 (no DDP forward, uses unwrapped model)
@@ -96,6 +101,12 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     if rank == 0:
         print("\nInitializing model...")
     model = MeshGraphNets(config, str(device)).to(device)
+
+    # Optional torch.compile for kernel fusion (10-30% speedup, requires PyTorch 2.0+)
+    if config.get('use_compile', False):
+        if rank == 0:
+            print("Compiling model with torch.compile(dynamic=True)...")
+        model = torch.compile(model, dynamic=True)
 
     # Wrap with DistributedDataParallel
     if torch.cuda.is_available():
@@ -122,6 +133,10 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         print("Model initialized successfully")
         if config.get('use_checkpointing', False):
             print("Gradient checkpointing: ENABLED")
+        if config.get('use_amp', False):
+            print("Mixed precision (AMP): ENABLED (bfloat16)")
+        if config.get('use_compile', False):
+            print("torch.compile: ENABLED (dynamic=True)")
         total_params = sum(p.numel() for p in ddp_model.parameters())
         trainable_params = sum(p.numel() for p in ddp_model.parameters() if p.requires_grad)
         print(f"Total parameters: {total_params:,}")
@@ -135,9 +150,10 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
     weight_decay = float(config.get('weight_decay', 1e-4))
-    optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    use_fused = torch.cuda.is_available()
+    optimizer = torch.optim.AdamW(ddp_model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=use_fused)
     if rank == 0:
-        print(f"Optimizer: AdamW (weight_decay={weight_decay})")
+        print(f"Optimizer: AdamW (weight_decay={weight_decay}, fused={use_fused})")
 
     # Initialize learning rate scheduler (ReduceLROnPlateau for DDP training)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -265,11 +281,13 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
             with open(log_file, 'a') as f:
                 f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
 
-        # For each 10 epochs, test the model on the test set
+        # Periodically test the model on the test set
         # Use unwrapped model to avoid DDP deadlock (only rank 0 runs this)
         # Barrier ensures all ranks wait so rank 1+ don't race into next epoch's
         # DDP forward/backward while rank 0 is still running test_model
-        if epoch % 1 == 0:
+        test_interval = int(config.get('test_interval', 10))
+        last_epoch = epoch == config.get('training_epochs') - 1
+        if epoch % test_interval == 0 or last_epoch:
             if rank == 0:
                 test_loss = test_model(model, test_loader, device, config, epoch, dataset)
             dist.barrier(device_ids=[gpu_id])

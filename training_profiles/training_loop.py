@@ -63,6 +63,11 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
     monitor_gradients = config.get('monitor_gradients', True)
     loss_weights = _build_loss_weights(config, device)
 
+    # AMP (Automatic Mixed Precision) with bfloat16 for Ampere+ GPUs
+    # bfloat16 is preferred over float16 for GNNs: scatter_add has known float16 overflow issues (PyTorch #51730)
+    use_amp = config.get('use_amp', False)
+    amp_dtype = torch.bfloat16
+
     pbar = tqdm.tqdm(dataloader)
     for batch_idx, graph in enumerate(pbar):
 
@@ -70,23 +75,25 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
 
         # DEBUG: Check internal statistics for first batch of epochs 0, 5, 10, 20...
         debug_internal = (batch_idx == 0 and (epoch < 5 or epoch % 10 == 0))
-        predicted_acc, target_acc = model(graph, debug=debug_internal)
 
-        # DEBUG: Check model output statistics (first batch of first 5 epochs, then periodic)
-        if batch_idx == 0 and verbose:
-            tqdm.tqdm.write(f"\n=== DEBUG Epoch {epoch} Batch 0 ===")
-            tqdm.tqdm.write(f"  Pred:   mean={predicted_acc.mean().item():.6f}, std={predicted_acc.std().item():.6f}, min={predicted_acc.min().item():.4f}, max={predicted_acc.max().item():.4f}")
-            tqdm.tqdm.write(f"  Target: mean={target_acc.mean().item():.6f}, std={target_acc.std().item():.6f}, min={target_acc.min().item():.4f}, max={target_acc.max().item():.4f}")
-            if predicted_acc.std().item() < 0.01:
-                tqdm.tqdm.write(f"  *** WARNING: Pred std < 0.01 - model outputting near-constant values! ***")
+        with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
+            predicted_acc, target_acc = model(graph, debug=debug_internal)
 
-            # After epoch 5, save actual data to file for inspection
-            if epoch >= 5:
-                log_dir = config.get('log_dir', '.')
-                save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
+            # DEBUG: Check model output statistics (first batch of first 5 epochs, then periodic)
+            if batch_idx == 0 and verbose:
+                tqdm.tqdm.write(f"\n=== DEBUG Epoch {epoch} Batch 0 ===")
+                tqdm.tqdm.write(f"  Pred:   mean={predicted_acc.mean().item():.6f}, std={predicted_acc.std().item():.6f}, min={predicted_acc.min().item():.4f}, max={predicted_acc.max().item():.4f}")
+                tqdm.tqdm.write(f"  Target: mean={target_acc.mean().item():.6f}, std={target_acc.std().item():.6f}, min={target_acc.min().item():.4f}, max={target_acc.max().item():.4f}")
+                if predicted_acc.std().item() < 0.01:
+                    tqdm.tqdm.write(f"  *** WARNING: Pred std < 0.01 - model outputting near-constant values! ***")
 
-        errors = ((predicted_acc - target_acc) ** 2)
-        loss = _weighted_mse(errors, loss_weights)
+                # After epoch 5, save actual data to file for inspection
+                if epoch >= 5:
+                    log_dir = config.get('log_dir', '.')
+                    save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
+
+            errors = ((predicted_acc - target_acc) ** 2)
+            loss = _weighted_mse(errors, loss_weights)
 
         optimizer.zero_grad()
         loss.backward()
@@ -169,6 +176,9 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
     output_var = config.get('output_var', 4)
     loss_weights = _build_loss_weights(config, device)
 
+    use_amp = config.get('use_amp', False)
+    amp_dtype = torch.bfloat16
+
     with torch.no_grad():
         total_loss = 0.0
         num_batches = 0
@@ -185,9 +195,10 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
                 tqdm.tqdm.write(f"Before: {mem_before:.2f}GB")
 
             graph = graph.to(device)
-            predicted, target = model(graph)
-            errors = ((predicted - target) ** 2)
-            loss = _weighted_mse(errors, loss_weights)
+            with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
+                predicted, target = model(graph)
+                errors = ((predicted - target) ** 2)
+                loss = _weighted_mse(errors, loss_weights)
 
             # Accumulate per-feature losses
             per_feature_loss = torch.mean(errors, dim=0)  # Average across nodes
@@ -234,6 +245,9 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
     # Cache reconstructed faces by sample_id (topology is constant across timesteps)
     faces_cache = {}
 
+    use_amp = config.get('use_amp', False)
+    amp_dtype = torch.bfloat16
+
     # Get denormalization parameters from dataset
     delta_mean = None
     delta_std = None
@@ -246,7 +260,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
     with torch.no_grad():
         total_loss = 0.0
         num_batches = 0
-        
+
         # Accumulate per-feature losses across all test batches
         accumulated_per_feature_loss = None
 
@@ -257,9 +271,10 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
         for batch_idx, graph in enumerate(pbar):
 
             graph = graph.to(device)
-            predicted, target = model(graph)
-            errors = ((predicted - target) ** 2)
-            loss = _weighted_mse(errors, loss_weights)
+            with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
+                predicted, target = model(graph)
+                errors = ((predicted - target) ** 2)
+                loss = _weighted_mse(errors, loss_weights)
 
             # Accumulate per-feature losses
             per_feature_loss = torch.mean(errors, dim=0)  # Average across nodes

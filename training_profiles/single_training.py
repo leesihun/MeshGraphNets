@@ -11,6 +11,9 @@ from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, test_model
 
+# Disable HDF5 file locking for persistent SWMR handles with multiple DataLoader workers
+os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
+
 def single_worker(config, config_filename='config.txt'):
     # Single GPU/CPU training
     gpu_ids = config.get('gpu_ids')
@@ -44,20 +47,25 @@ def single_worker(config, config_filename='config.txt'):
 
     # Create dataloaders (no distributed samplers for single process)
     print("\nCreating dataloaders...")
+    num_workers = config['num_workers']
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
-        num_workers=config['num_workers'],
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
         shuffle=False,
-        num_workers=config['num_workers'],
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     test_loader = DataLoader(
@@ -75,10 +83,19 @@ def single_worker(config, config_filename='config.txt'):
     if torch.cuda.is_available():
         print(f'After model initialization: {torch.cuda.memory_allocated()/1e9:.2f}GB')
 
+    # Optional torch.compile for kernel fusion (10-30% speedup, requires PyTorch 2.0+)
+    if config.get('use_compile', False):
+        print("Compiling model with torch.compile(dynamic=True)...")
+        model = torch.compile(model, dynamic=True)
+
     print('\n'*2)
     print("Model initialized successfully")
     if config.get('use_checkpointing', False):
         print("Gradient checkpointing: ENABLED")
+    if config.get('use_amp', False):
+        print("Mixed precision (AMP): ENABLED (bfloat16)")
+    if config.get('use_compile', False):
+        print("torch.compile: ENABLED (dynamic=True)")
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total_params:,}")
@@ -91,8 +108,9 @@ def single_worker(config, config_filename='config.txt'):
     print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
     weight_decay = float(config.get('weight_decay', 1e-4))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    print(f"Optimizer: AdamW (weight_decay={weight_decay})")
+    use_fused = torch.cuda.is_available()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=use_fused)
+    print(f"Optimizer: AdamW (weight_decay={weight_decay}, fused={use_fused})")
 
     # Initialize learning rate scheduler (ReduceLROnPlateau)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -203,8 +221,10 @@ def single_worker(config, config_filename='config.txt'):
             with open(log_file, 'a') as f:
                 f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
 
-        # For each 10 epochs, test the model on the test set and save the results with the ground truth in a file
-        if epoch % 1 == 0:
+        # Periodically test the model on the test set and save results with ground truth
+        test_interval = int(config.get('test_interval', 10))
+        last_epoch = epoch == config.get('training_epochs') - 1
+        if epoch % test_interval == 0 or last_epoch:
             test_loss = test_model(model, test_loader, device, config, epoch, dataset)
 
     print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")

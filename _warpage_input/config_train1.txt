@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 0      # -1 for CPU, GPU ids for multi-GPU training
+gpu_ids 0,1    # -1 for CPU, GPU ids for multi-GPU training (DDP with both H200s)
 log_file_dir    train1.log
 modelpath   ./outputs/warpage1.pth
 %   Datasets
@@ -16,8 +16,8 @@ edge_var    4   # dx, dy, dz, disp
 %   Network parameters
 message_passing_num 20
 Training_epochs	50
-Batch_size	1
-LearningR	0.0001
+Batch_size	8
+LearningR	0.000283  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
 Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 10
 std_noise   0.01
@@ -26,10 +26,13 @@ verbose     False
 monitor_gradients  False
 '
 % Memory Optimization
-use_checkpointing   True
+use_checkpointing   False
 '
 % Performance Optimization
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
+use_amp             True    # Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs)
+use_compile         False   # torch.compile with dynamic shapes (enable after verifying AMP works)
+test_interval       10      # Run test/visualization every N epochs (1 = every epoch, 10 = every 10th)
 '
 % Node Type Parameters
 use_node_types  False    # Add one-hot encoded node types to node features

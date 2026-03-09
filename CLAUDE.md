@@ -64,6 +64,9 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | std_noise | 0.001 | Gaussian noise augmentation (training only) |
 | feature_loss_weights | None | Per-feature loss weights (comma-separated). Example: `1.0, 1.0, 5.0` emphasizes z_disp. Auto-normalized. |
 | use_checkpointing | False | Gradient checkpointing (saves ~60-70% VRAM) |
+| use_amp | False | Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs). Uses bfloat16 not float16 due to scatter_add overflow issues in GNNs |
+| use_compile | False | `torch.compile(dynamic=True)` for kernel fusion (10-30% speedup). First epoch slower due to JIT warmup |
+| test_interval | 10 | Run test/visualization every N epochs. Previous default was 1 (every epoch) |
 | use_node_types | False | One-hot encode node types from HDF5 metadata |
 | use_world_edges | False | Radius-based collision detection edges |
 | use_parallel_stats | True | Parallel normalization stat computation |
@@ -107,8 +110,10 @@ Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
 
 ### Training
 
-- **Optimizer**: Adam
-- **LR Scheduler**: ExponentialLR(gamma=0.995) for single-GPU; ReduceLROnPlateau(factor=0.5, patience=10, min_lr=1e-8) for DDP
+- **Optimizer**: AdamW with `fused=True` on CUDA (fuses parameter update kernels for 10-15% speedup)
+- **LR Scheduler**: ReduceLROnPlateau(factor=0.5, patience=2, min_lr=1e-8) for both single-GPU and DDP
+- **AMP**: Optional bfloat16 mixed precision via `use_amp` config (bfloat16 preferred over float16 for GNN scatter_add safety)
+- **DataLoader**: Uses `persistent_workers=True` and `prefetch_factor=2` to avoid worker respawn overhead
 - **Loss**: MSE on normalized deltas, with optional per-feature weighting (via `feature_loss_weights` config)
 - **Gradient clipping**: max_norm=5.0
 - **Checkpoint path**: single-GPU uses `modelpath` from config; DDP always saves to `outputs/best_model.pth` regardless of `modelpath`
