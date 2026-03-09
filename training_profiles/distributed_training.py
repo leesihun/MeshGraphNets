@@ -1,4 +1,6 @@
 import os
+import signal
+import threading
 import time
 import datetime
 import traceback
@@ -13,6 +15,24 @@ from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, test_model
 
+# Per-process shutdown flag, set by signal handler
+_stop_event = threading.Event()
+
+_FORCED_EXIT_DELAY_SECONDS = 10
+
+
+def _signal_handler(signum, frame):
+    """Handle SIGINT/SIGTERM by setting the stop flag and scheduling a forced exit."""
+    _stop_event.set()
+    # Start a daemon thread that force-kills the process after a grace period.
+    # This covers the case where the main thread is stuck inside a blocking C++
+    # NCCL call and cannot check _stop_event.
+    def _force_exit():
+        time.sleep(_FORCED_EXIT_DELAY_SECONDS)
+        os._exit(1)
+    t = threading.Thread(target=_force_exit, daemon=True)
+    t.start()
+
 def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'):
     """Training worker for distributed training.
 
@@ -25,16 +45,22 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     """
     try:
         _train_worker_inner(rank, world_size, config, gpu_ids, config_filename)
-    except Exception:
+    except BaseException:
         traceback.print_exc()
         raise
     finally:
         if dist.is_initialized():
             dist.destroy_process_group()
+        os._exit(0)
 
 
 def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
     """Actual training logic, called inside the error-handling wrapper."""
+    # Register signal handlers so Ctrl+C (SIGINT on main → SIGTERM on workers)
+    # sets the stop flag instead of killing the process mid-collective.
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
     # Disable HDF5 file locking — multiple ranks + workers open the same file read-only
     os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
 
@@ -230,12 +256,26 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
 
     modelname = config.get('modelpath')
 
+    interrupted = False
     for epoch in range(config.get('training_epochs')):
         # Set epoch for distributed sampler (important for shuffling)
         train_sampler.set_epoch(epoch)
 
-        train_loss = train_epoch(ddp_model, train_loader, optimizer, device, config, epoch, scheduler=scheduler)
-        valid_loss = validate_epoch(ddp_model, val_loader, device, config, epoch)
+        train_loss = train_epoch(ddp_model, train_loader, optimizer, device, config, epoch, scheduler=scheduler, stop_event=_stop_event)
+
+        if _stop_event.is_set():
+            interrupted = True
+            if rank == 0:
+                print("\nTraining interrupted by user (after train_epoch).")
+            break
+
+        valid_loss = validate_epoch(ddp_model, val_loader, device, config, epoch, stop_event=_stop_event)
+
+        if _stop_event.is_set():
+            interrupted = True
+            if rank == 0:
+                print("\nTraining interrupted by user (after validate_epoch).")
+            break
 
         # All-reduce losses across ranks for accurate logging and checkpoint decisions
         train_loss_tensor = torch.tensor([train_loss], device=device)
@@ -307,7 +347,10 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
             dist.barrier(device_ids=[gpu_id])
 
     if rank == 0:
-        print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+        if interrupted:
+            print(f"\nTraining interrupted. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+        else:
+            print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
 
     # Analyze debug files if they exist
     if rank == 0 and log_dir:
@@ -356,7 +399,7 @@ def setup_distributed(rank, world_size, gpu_id, port):
         backend='nccl' if torch.cuda.is_available() else 'gloo',
         rank=rank,
         world_size=world_size,
-        timeout=datetime.timedelta(minutes=30)
+        timeout=datetime.timedelta(minutes=5)
     )
 
     if torch.cuda.is_available():

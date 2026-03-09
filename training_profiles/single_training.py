@@ -168,66 +168,69 @@ def single_worker(config, config_filename='config.txt'):
 
     modelname = config.get('modelpath')
 
-    for epoch in range(config.get('training_epochs')):
-    
-        train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch, scheduler=scheduler)
-        valid_loss = validate_epoch(model, val_loader, device, config, epoch)
+    try:
+        for epoch in range(config.get('training_epochs')):
 
-        # Per epoch, batch-averaged train, validation losses.
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} LR: {current_lr:.2e}")
+            train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch, scheduler=scheduler)
+            valid_loss = validate_epoch(model, val_loader, device, config, epoch)
 
-        if valid_loss < best_valid_loss:
-            best_valid_loss = valid_loss
-            best_epoch = epoch
-            checkpoint_path = modelname
-            normalization = {
-                'node_mean': dataset.node_mean,
-                'node_std': dataset.node_std,
-                'edge_mean': dataset.edge_mean,
-                'edge_std': dataset.edge_std,
-                'delta_mean': dataset.delta_mean,
-                'delta_std': dataset.delta_std,
-            }
-            if dataset.use_node_types and dataset.node_type_to_idx is not None:
-                normalization['node_type_to_idx'] = dataset.node_type_to_idx
-                normalization['num_node_types'] = dataset.num_node_types
-            if dataset.use_world_edges and dataset.world_edge_radius is not None:
-                normalization['world_edge_radius'] = dataset.world_edge_radius
-            model_config = {
-                'input_var': config.get('input_var'),
-                'output_var': config.get('output_var'),
-                'edge_var': config.get('edge_var'),
-                'latent_dim': config.get('latent_dim'),
-                'message_passing_num': config.get('message_passing_num'),
-                'use_node_types': config.get('use_node_types', False),
-                'num_node_types': config.get('num_node_types', 0),
-                'use_world_edges': config.get('use_world_edges', False),
-                'use_checkpointing': config.get('use_checkpointing', False),
-            }
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'train_loss': train_loss,
-                'valid_loss': valid_loss,
-                'normalization': normalization,
-                'model_config': model_config,
-            }, checkpoint_path)
-            print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
+            # Per epoch, batch-averaged train, validation losses.
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} LR: {current_lr:.2e}")
 
-        if log_file_dir:
-            with open(log_file, 'a') as f:
-                f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                best_epoch = epoch
+                checkpoint_path = modelname
+                normalization = {
+                    'node_mean': dataset.node_mean,
+                    'node_std': dataset.node_std,
+                    'edge_mean': dataset.edge_mean,
+                    'edge_std': dataset.edge_std,
+                    'delta_mean': dataset.delta_mean,
+                    'delta_std': dataset.delta_std,
+                }
+                if dataset.use_node_types and dataset.node_type_to_idx is not None:
+                    normalization['node_type_to_idx'] = dataset.node_type_to_idx
+                    normalization['num_node_types'] = dataset.num_node_types
+                if dataset.use_world_edges and dataset.world_edge_radius is not None:
+                    normalization['world_edge_radius'] = dataset.world_edge_radius
+                model_config = {
+                    'input_var': config.get('input_var'),
+                    'output_var': config.get('output_var'),
+                    'edge_var': config.get('edge_var'),
+                    'latent_dim': config.get('latent_dim'),
+                    'message_passing_num': config.get('message_passing_num'),
+                    'use_node_types': config.get('use_node_types', False),
+                    'num_node_types': config.get('num_node_types', 0),
+                    'use_world_edges': config.get('use_world_edges', False),
+                    'use_checkpointing': config.get('use_checkpointing', False),
+                }
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'train_loss': train_loss,
+                    'valid_loss': valid_loss,
+                    'normalization': normalization,
+                    'model_config': model_config,
+                }, checkpoint_path)
+                print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
 
-        # Periodically test the model on the test set and save results with ground truth
-        test_interval = int(config.get('test_interval', 10))
-        last_epoch = epoch == config.get('training_epochs') - 1
-        if epoch % test_interval == 0 or last_epoch:
-            test_loss = test_model(model, test_loader, device, config, epoch, dataset)
+            if log_file_dir:
+                with open(log_file, 'a') as f:
+                    f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
 
-    print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+            # Periodically test the model on the test set and save results with ground truth
+            test_interval = int(config.get('test_interval', 10))
+            last_epoch = epoch == config.get('training_epochs') - 1
+            if epoch % test_interval == 0 or last_epoch:
+                test_loss = test_model(model, test_loader, device, config, epoch, dataset)
+
+        print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+    except KeyboardInterrupt:
+        print(f"\nTraining interrupted by user. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
 
     # Analyze debug files if they exist
     if log_dir:

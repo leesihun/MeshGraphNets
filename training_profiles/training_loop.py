@@ -53,7 +53,7 @@ def _weighted_mse(errors, loss_weights):
     return torch.mean(errors)
 
 
-def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None):
+def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None, stop_event=None):
     model.train()
     total_loss = 0.0
     total_grad_norm = 0.0
@@ -68,6 +68,8 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
 
     pbar = tqdm.tqdm(dataloader)
     for batch_idx, graph in enumerate(pbar):
+        if stop_event is not None and stop_event.is_set():
+            break
 
         # DEBUG: disabled when use_compile=True (.item() causes graph breaks)
         debug_internal = (not use_compile) and (batch_idx == 0 and (epoch < 5 or epoch % 10 == 0))
@@ -153,7 +155,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
 
     return total_loss / num_batches
 
-def validate_epoch(model, dataloader, device, config, epoch=0):
+def validate_epoch(model, dataloader, device, config, epoch=0, stop_event=None):
     model.eval()
 
     verbose = config.get('verbose')
@@ -172,6 +174,8 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
 
         pbar = tqdm.tqdm(dataloader)
         for batch_idx, graph in enumerate(pbar):
+            if stop_event is not None and stop_event.is_set():
+                break
             # Memory tracking for first 3 validation batches
             if batch_idx < 3 and verbose:
                 mem_before = torch.cuda.memory_allocated() / 1e9

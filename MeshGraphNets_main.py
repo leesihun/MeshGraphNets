@@ -88,16 +88,18 @@ def main():
             s.bind(('', 0))
             config['_ddp_port'] = str(s.getsockname()[1])
         print(f"Starting distributed training with {world_size} processes on GPUs {gpu_ids} (port {config['_ddp_port']})...")
-        mp.spawn(
-            train_worker,
-            args=(world_size, config, gpu_ids, args.config),
-            nprocs=world_size,
-            join=True
-        )
-        # Actual distributed training done in distributed_training.py,
-        # with function train_worker being called for each process.
-
-        print("Distributed training completed.")
+        try:
+            mp.spawn(
+                train_worker,
+                args=(world_size, config, gpu_ids, args.config),
+                nprocs=world_size,
+                join=True
+            )
+            print("Distributed training completed.")
+        except (KeyboardInterrupt, mp.spawn.ProcessExitedException):
+            print("\nTraining interrupted by user. All worker processes terminated.")
+        except Exception as e:
+            print(f"\nDistributed training failed: {e}")
 
 
 if __name__ == "__main__":
