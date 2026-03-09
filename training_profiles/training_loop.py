@@ -62,34 +62,28 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
     verbose = config.get('verbose')
     monitor_gradients = config.get('monitor_gradients', True)
     loss_weights = _build_loss_weights(config, device)
-
-    # AMP (Automatic Mixed Precision) with bfloat16 for Ampere+ GPUs
-    # bfloat16 is preferred over float16 for GNNs: scatter_add has known float16 overflow issues (PyTorch #51730)
     use_amp = config.get('use_amp', False)
+    use_compile = config.get('use_compile', False)
     amp_dtype = torch.bfloat16
 
     pbar = tqdm.tqdm(dataloader)
     for batch_idx, graph in enumerate(pbar):
 
-        graph = graph.to(device)
-
-        # DEBUG: Check internal statistics for first batch of epochs 0, 5, 10, 20...
-        # Disabled when torch.compile is active: .item() calls in debug prints cause graph breaks
-        use_compile = config.get('use_compile', False)
+        # DEBUG: disabled when use_compile=True (.item() causes graph breaks)
         debug_internal = (not use_compile) and (batch_idx == 0 and (epoch < 5 or epoch % 10 == 0))
+
+        optimizer.zero_grad(set_to_none=True)
+        graph = graph.to(device)
 
         with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
             predicted_acc, target_acc = model(graph, debug=debug_internal)
 
-            # DEBUG: Check model output statistics (first batch of first 5 epochs, then periodic)
             if batch_idx == 0 and verbose:
                 tqdm.tqdm.write(f"\n=== DEBUG Epoch {epoch} Batch 0 ===")
                 tqdm.tqdm.write(f"  Pred:   mean={predicted_acc.mean().item():.6f}, std={predicted_acc.std().item():.6f}, min={predicted_acc.min().item():.4f}, max={predicted_acc.max().item():.4f}")
                 tqdm.tqdm.write(f"  Target: mean={target_acc.mean().item():.6f}, std={target_acc.std().item():.6f}, min={target_acc.min().item():.4f}, max={target_acc.max().item():.4f}")
                 if predicted_acc.std().item() < 0.01:
                     tqdm.tqdm.write(f"  *** WARNING: Pred std < 0.01 - model outputting near-constant values! ***")
-
-                # After epoch 5, save actual data to file for inspection
                 if epoch >= 5:
                     log_dir = config.get('log_dir', '.')
                     save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
@@ -97,40 +91,32 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
             errors = ((predicted_acc - target_acc) ** 2)
             loss = _weighted_mse(errors, loss_weights)
 
-        optimizer.zero_grad()
         loss.backward()
 
         # Per-feature loss breakdown for diagnostics
         if batch_idx == 0 and epoch % 10 == 0 and verbose:
-            per_feature_loss_mean = torch.mean(errors, dim=0)  # Average across nodes
-            per_feature_loss_max = torch.max(errors, dim=0)[0]  # Max across nodes
-            per_feature_loss_min = torch.min(errors, dim=0)[0]  # Min across nodes
-            per_feature_loss_std = torch.std(errors, dim=0)  # Std across nodes
-            
+            per_feature_loss_mean = torch.mean(errors, dim=0)
+            per_feature_loss_max = torch.max(errors, dim=0)[0]
+            per_feature_loss_min = torch.min(errors, dim=0)[0]
+            per_feature_loss_std = torch.std(errors, dim=0)
             feature_names = ['x_disp', 'y_disp', 'z_disp', 'stress']
             tqdm.tqdm.write(f"\n=== Per-Feature MSE Loss (Epoch {epoch}, Batch {batch_idx}) ===")
             for feat_idx, feat_name in enumerate(feature_names[:len(per_feature_loss_mean)]):
-                mean_val = per_feature_loss_mean[feat_idx].item()
-                max_val = per_feature_loss_max[feat_idx].item()
-                min_val = per_feature_loss_min[feat_idx].item()
-                std_val = per_feature_loss_std[feat_idx].item()
-                tqdm.tqdm.write(f"  {feat_name}: mean={mean_val:.2e}, max={max_val:.2e}, min={min_val:.2e}, std={std_val:.2e}")
+                tqdm.tqdm.write(f"  {feat_name}: mean={per_feature_loss_mean[feat_idx].item():.2e}, max={per_feature_loss_max[feat_idx].item():.2e}, min={per_feature_loss_min[feat_idx].item():.2e}, std={per_feature_loss_std[feat_idx].item():.2e}")
 
-        # Compute gradient norm BEFORE clipping for diagnostics
+        # Single clip_grad_norm_ call: clips and returns the pre-clip norm
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         if monitor_gradients:
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float('inf'))
             total_grad_norm += grad_norm.item()
 
-            # Detailed gradient stats for first batch and periodically
             if (batch_idx == 0 or batch_idx % 50 == 0) and verbose:
                 layer_grad_stats = []
                 for name, param in model.named_parameters():
                     if param.grad is not None:
                         grad_mean = param.grad.abs().mean().item()
                         grad_max = param.grad.abs().max().item()
-                        if grad_mean > 1e-10:  # Only show non-zero gradients
+                        if grad_mean > 1e-10:
                             layer_grad_stats.append(f"{name}: mean={grad_mean:.2e}, max={grad_max:.2e}")
-
                 if layer_grad_stats:
                     tqdm.tqdm.write(f"\n=== Gradient Stats (Batch {batch_idx}) ===")
                     tqdm.tqdm.write(f"Total grad norm: {grad_norm.item():.2e}")
@@ -139,25 +125,19 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
                         tqdm.tqdm.write(f"  {stat}")
                     tqdm.tqdm.write("")
 
-        # Gradient clipping to stabilize training with deep message passing
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-
         optimizer.step()
 
-        # Update progress bar with current memory and gradient norm
-        mem_gb = torch.cuda.memory_allocated() / 1e9
-        peak_gb = torch.cuda.max_memory_allocated() / 1e9
-        postfix = {
-            'loss': f'{loss.item():.2e}',
-            'mem': f'{mem_gb:.1f}GB',
-            'peak': f'{peak_gb:.1f}GB'
-        }
-        if monitor_gradients:
-            postfix['grad'] = f'{grad_norm.item():.2e}'
-        pbar.set_postfix(postfix)
-
-        total_loss += loss.item()
+        loss_val = loss.item()  # single GPU sync per batch
+        total_loss += loss_val
         num_batches += 1
+
+        # Update progress bar every 10 batches to reduce memory query overhead
+        if batch_idx % 10 == 0:
+            mem_gb = torch.cuda.memory_allocated() / 1e9
+            postfix = {'loss': f'{loss_val:.2e}', 'mem': f'{mem_gb:.1f}GB'}
+            if monitor_gradients:
+                postfix['grad'] = f'{grad_norm.item():.2e}'
+            pbar.set_postfix(postfix)
 
     avg_grad_norm = total_grad_norm / num_batches if num_batches > 0 else 0.0
 
