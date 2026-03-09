@@ -1,6 +1,8 @@
 import os
+import sys
 import time
 import datetime
+import traceback
 
 import torch
 import torch.distributed as dist
@@ -22,6 +24,46 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
         gpu_ids: List of GPU IDs to use
         config_filename: Path to the config file (default: config.txt)
     """
+    # Redirect each rank's output to a separate log file so crash tracebacks
+    # are never lost under the other rank's spam.
+    os.makedirs('outputs', exist_ok=True)
+    rank_log_path = f'outputs/rank{rank}.log'
+    rank_log = open(rank_log_path, 'w')
+    sys.stdout = _TeeWriter(sys.__stdout__, rank_log, prefix=f'[rank{rank}] ')
+    sys.stderr = _TeeWriter(sys.__stderr__, rank_log, prefix=f'[rank{rank}] ')
+
+    try:
+        _train_worker_inner(rank, world_size, config, gpu_ids, config_filename)
+    except Exception:
+        traceback.print_exc()
+        raise
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+        rank_log.close()
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
+
+
+class _TeeWriter:
+    """Write to both the original stream and a log file."""
+    def __init__(self, stream, log_file, prefix=''):
+        self.stream = stream
+        self.log_file = log_file
+        self.prefix = prefix
+
+    def write(self, msg):
+        self.stream.write(msg)
+        self.log_file.write(msg)
+        self.log_file.flush()
+
+    def flush(self):
+        self.stream.flush()
+        self.log_file.flush()
+
+
+def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
+    """Actual training logic, called inside the error-handling wrapper."""
     # Disable HDF5 file locking — multiple ranks + workers open the same file read-only
     os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
 
@@ -326,9 +368,6 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
                 except Exception as e:
                     print(f"  Error reading {f}: {e}")
 
-    # Cleanup
-    cleanup_distributed()
-
 def setup_distributed(rank, world_size, gpu_id):
     """Initialize distributed training process group.
 
@@ -340,8 +379,6 @@ def setup_distributed(rank, world_size, gpu_id):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
 
-    # Initialize the process group
-    # Longer timeout (30 min) to accommodate test_model runs between epochs
     dist.init_process_group(
         backend='nccl' if torch.cuda.is_available() else 'gloo',
         rank=rank,
@@ -349,10 +386,5 @@ def setup_distributed(rank, world_size, gpu_id):
         timeout=datetime.timedelta(minutes=30)
     )
 
-    # Set device for this process using the specified GPU ID
     if torch.cuda.is_available():
         torch.cuda.set_device(gpu_id)
-
-def cleanup_distributed():
-    """Clean up distributed training."""
-    dist.destroy_process_group()
