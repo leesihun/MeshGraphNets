@@ -69,7 +69,8 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
 
     # Get the physical GPU ID for this rank
     gpu_id = gpu_ids[rank]
-    setup_distributed(rank, world_size, gpu_id)
+    port = config['_ddp_port']
+    setup_distributed(rank, world_size, gpu_id, port)
 
     # Set device
     if torch.cuda.is_available():
@@ -368,16 +369,17 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 except Exception as e:
                     print(f"  Error reading {f}: {e}")
 
-def setup_distributed(rank, world_size, gpu_id):
+def setup_distributed(rank, world_size, gpu_id, port):
     """Initialize distributed training process group.
 
     Args:
         rank: Process rank (0 to world_size-1)
         world_size: Total number of processes
         gpu_id: Physical GPU ID to use for this rank
+        port: TCP port for the rendezvous store
     """
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ['MASTER_PORT'] = port
 
     dist.init_process_group(
         backend='nccl' if torch.cuda.is_available() else 'gloo',

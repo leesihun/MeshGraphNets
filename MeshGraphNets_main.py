@@ -81,7 +81,13 @@ def main():
         single_worker(config, args.config)
 
     else:
-        print(f"Starting distributed training with {world_size} processes on GPUs {gpu_ids}...")
+        # Find a free port once, before spawning, so workers never collide
+        # with zombie processes from prior runs.
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            config['_ddp_port'] = str(s.getsockname()[1])
+        print(f"Starting distributed training with {world_size} processes on GPUs {gpu_ids} (port {config['_ddp_port']})...")
         mp.spawn(
             train_worker,
             args=(world_size, config, gpu_ids, args.config),
