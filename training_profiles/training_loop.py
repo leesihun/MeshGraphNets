@@ -53,7 +53,7 @@ def _weighted_mse(errors, loss_weights):
     return torch.mean(errors)
 
 
-def train_epoch(model, dataloader, optimizer, device, config, epoch):
+def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None):
     model.train()
     total_loss = 0.0
     total_grad_norm = 0.0
@@ -126,6 +126,8 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
                     tqdm.tqdm.write("")
 
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
 
         loss_val = loss.item()  # single GPU sync per batch
         total_loss += loss_val
