@@ -333,8 +333,8 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
                 output_path = f'outputs/test/{gpu_ids}/{str(epoch)}/{filename}.h5'
                 
                 # Convert to numpy
-                predicted_np = predicted.cpu().numpy() if hasattr(predicted, 'cpu') else predicted
-                target_np = target.cpu().numpy() if hasattr(target, 'cpu') else target
+                predicted_np = predicted.float().cpu().numpy() if hasattr(predicted, 'cpu') else predicted
+                target_np = target.float().cpu().numpy() if hasattr(target, 'cpu') else target
 
                 # DENORMALIZE: Convert normalized deltas to actual physical deltas
                 if delta_mean is not None and delta_std is not None:
