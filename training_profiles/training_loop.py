@@ -74,7 +74,9 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch):
         graph = graph.to(device)
 
         # DEBUG: Check internal statistics for first batch of epochs 0, 5, 10, 20...
-        debug_internal = (batch_idx == 0 and (epoch < 5 or epoch % 10 == 0))
+        # Disabled when torch.compile is active: .item() calls in debug prints cause graph breaks
+        use_compile = config.get('use_compile', False)
+        debug_internal = (not use_compile) and (batch_idx == 0 and (epoch < 5 or epoch % 10 == 0))
 
         with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
             predicted_acc, target_acc = model(graph, debug=debug_internal)
