@@ -48,8 +48,8 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
 class _TeeWriter:
     """Write to both the original stream and a log file.
 
-    Only flushes the log file on newlines or explicit flush() calls,
-    so tqdm's rapid \\r updates don't cause per-character disk I/O.
+    Skips tqdm's \\r-only progress bar updates entirely (never written to disk).
+    Only writes and flushes log file for messages containing \\n (real lines).
     """
     def __init__(self, stream, log_file, prefix=''):
         self.stream = stream
@@ -58,8 +58,8 @@ class _TeeWriter:
 
     def write(self, msg):
         self.stream.write(msg)
-        self.log_file.write(msg)
         if '\n' in msg:
+            self.log_file.write(msg)
             self.log_file.flush()
 
     def flush(self):
