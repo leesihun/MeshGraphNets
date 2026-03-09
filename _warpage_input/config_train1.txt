@@ -31,7 +31,7 @@ use_checkpointing   False
 % Performance Optimization
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
 use_amp             True    # Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs)
-use_compile         True   # torch.compile with dynamic shapes (enable after verifying AMP works)
+use_compile         False   # torch.compile with dynamic shapes (enable after verifying AMP works)
 test_interval       1      # Run test/visualization every N epochs (1 = every epoch, 10 = every 10th)
 '
 % Node Type Parameters
