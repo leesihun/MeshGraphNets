@@ -51,7 +51,6 @@ def train_worker(rank, world_size, config, gpu_ids, config_filename='config.txt'
     finally:
         if dist.is_initialized():
             dist.destroy_process_group()
-        os._exit(0)
 
 
 def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
@@ -63,6 +62,9 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
 
     # Disable HDF5 file locking — multiple ranks + workers open the same file read-only
     os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
+
+    # Enable NCCL flight recorder for debugging collective mismatches
+    os.environ.setdefault('TORCH_NCCL_TRACE_BUFFER_SIZE', '1000')
 
     # Get the physical GPU ID for this rank
     gpu_id = gpu_ids[rank]
@@ -261,17 +263,23 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         # Set epoch for distributed sampler (important for shuffling)
         train_sampler.set_epoch(epoch)
 
-        train_loss = train_epoch(ddp_model, train_loader, optimizer, device, config, epoch, scheduler=scheduler, stop_event=_stop_event)
+        train_loss = train_epoch(ddp_model, train_loader, optimizer, device, config, epoch, scheduler=scheduler)
 
-        if _stop_event.is_set():
+        # Synchronize stop decision across all ranks — if ANY rank wants to stop,
+        # ALL ranks must stop together to avoid NCCL collective mismatches.
+        stop_flag = torch.tensor([1.0 if _stop_event.is_set() else 0.0], device=device)
+        dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
+        if stop_flag.item() > 0:
             interrupted = True
             if rank == 0:
                 print("\nTraining interrupted by user (after train_epoch).")
             break
 
-        valid_loss = validate_epoch(ddp_model, val_loader, device, config, epoch, stop_event=_stop_event)
+        valid_loss = validate_epoch(ddp_model, val_loader, device, config, epoch)
 
-        if _stop_event.is_set():
+        stop_flag = torch.tensor([1.0 if _stop_event.is_set() else 0.0], device=device)
+        dist.all_reduce(stop_flag, op=dist.ReduceOp.MAX)
+        if stop_flag.item() > 0:
             interrupted = True
             if rank == 0:
                 print("\nTraining interrupted by user (after validate_epoch).")

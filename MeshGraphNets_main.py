@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from torch_geometric.loader import DataLoader
 import torch.multiprocessing as mp
+from torch.multiprocessing.spawn import ProcessExitedException
 from general_modules.load_config import load_config
 from general_modules.data_loader import load_data
 from model.MeshGraphNets import MeshGraphNets
@@ -96,7 +97,7 @@ def main():
                 join=True
             )
             print("Distributed training completed.")
-        except (KeyboardInterrupt, mp.spawn.ProcessExitedException):
+        except (KeyboardInterrupt, ProcessExitedException):
             print("\nTraining interrupted by user. All worker processes terminated.")
         except Exception as e:
             print(f"\nDistributed training failed: {e}")
