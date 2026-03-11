@@ -231,6 +231,15 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
     use_amp = config.get('use_amp', False)
     amp_dtype = torch.bfloat16
 
+    # Cap test batches to avoid NCCL timeout in DDP (test runs only on rank 0;
+    # other ranks wait at a barrier whose timeout is the process-group timeout).
+    total_test = len(dataloader)
+    max_test_batches = int(config.get('test_max_batches', 200))
+    effective_total = min(max_test_batches, total_test)
+    if effective_total < total_test:
+        print(f"  Test: evaluating {effective_total}/{total_test} samples "
+              f"(set test_max_batches in config to change)")
+
     # Get denormalization parameters from dataset
     delta_mean = None
     delta_std = None
@@ -250,8 +259,10 @@ def test_model(model, dataloader, device, config, epoch, dataset=None):
         # Collect plot data for parallel processing
         plot_data_queue = []
 
-        pbar = tqdm.tqdm(dataloader)
+        pbar = tqdm.tqdm(dataloader, total=effective_total)
         for batch_idx, graph in enumerate(pbar):
+            if batch_idx >= max_test_batches:
+                break
 
             graph = graph.to(device)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):

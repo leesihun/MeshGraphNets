@@ -351,7 +351,21 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         last_epoch = epoch == config.get('training_epochs') - 1
         if epoch % test_interval == 0 or last_epoch:
             if rank == 0:
+                # #region agent log
+                import json as _json, os as _os
+                _test_start = time.time()
+                _dbg_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', '.cursor', 'debug.log')
+                _os.makedirs(_os.path.dirname(_dbg_path), exist_ok=True)
+                with open(_dbg_path, 'a') as _f:
+                    _f.write(_json.dumps({'location': 'distributed_training.py:test_start', 'message': 'test_model starting', 'data': {'epoch': epoch, 'test_loader_len': len(test_loader)}, 'timestamp': int(time.time()*1000), 'hypothesisId': 'H1'}) + '\n')
+                # #endregion
                 test_loss = test_model(model, test_loader, device, config, epoch, dataset)
+                # #region agent log
+                _test_elapsed = time.time() - _test_start
+                print(f"  Test completed in {_test_elapsed:.1f}s")
+                with open(_dbg_path, 'a') as _f:
+                    _f.write(_json.dumps({'location': 'distributed_training.py:test_end', 'message': 'test_model completed', 'data': {'epoch': epoch, 'elapsed_s': round(_test_elapsed, 1)}, 'timestamp': int(time.time()*1000), 'hypothesisId': 'H1'}) + '\n')
+                # #endregion
             dist.barrier(device_ids=[gpu_id])
 
     if rank == 0:

@@ -266,6 +266,7 @@ When enabled:
 | `monitor_gradients` | bool | True | Gradient norm tracking. Warns about vanishing (<1e-6) or exploding (>100) gradients. |
 | `display_testset` | bool | True | Generate PyVista visualizations during test eval (every 10 epochs). |
 | `test_batch_idx` | list | [0] | Which test batch indices to visualize and save. All existing configs use `0, 1, 2, 3`. |
+| `test_max_batches` | int | 200 | Max test samples evaluated per test_model call. Prevents NCCL barrier timeout in DDP when the test set is large. |
 | `plot_feature_idx` | int | -1 | Feature index to plot. `-1` = stress, `-2` = z_disp. All existing configs use `-2`. |
 
 ---

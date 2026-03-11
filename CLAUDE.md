@@ -67,6 +67,7 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | use_amp | False | Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs). Uses bfloat16 not float16 due to scatter_add overflow issues in GNNs |
 | use_compile | False | `torch.compile(dynamic=True)` for kernel fusion (10-30% speedup). First epoch slower due to JIT warmup |
 | test_interval | 10 | Run test/visualization every N epochs. Previous default was 1 (every epoch) |
+| test_max_batches | 200 | Max test samples per evaluation. Caps test_model runtime to avoid NCCL timeout in DDP |
 | use_node_types | False | One-hot encode node types from HDF5 metadata |
 | use_world_edges | False | Radius-based collision detection edges |
 | use_parallel_stats | True | Parallel normalization stat computation |
