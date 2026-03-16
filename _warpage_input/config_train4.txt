@@ -17,7 +17,7 @@ edge_var    4   # dx, dy, dz, disp
 message_passing_num 10
 Training_epochs	1000
 Batch_size	1
-LearningR	0.0001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
+LearningR	0.0005  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0
@@ -32,7 +32,7 @@ use_checkpointing   False
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
 use_amp             True    # Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs)
 use_compile         False   # torch.compile with dynamic shapes (enable after verifying AMP works)
-test_interval       1      # Run test/visualization every N epochs (1 = every epoch, 10 = every 10th)
+test_interval       10      # Run test/visualization every N epochs (1 = every epoch, 10 = every 10th)
 '
 % Node Type Parameters
 use_node_types  False    # Add one-hot encoded node types to node features
