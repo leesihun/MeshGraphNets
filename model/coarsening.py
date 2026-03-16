@@ -82,44 +82,36 @@ def bfs_bistride_coarsen(edge_index_np: np.ndarray, num_nodes: int):
                     bfs_parent[nbr] = node
                     queue.append(nbr)
 
-    # 3. Even-depth → coarse; odd-depth → fine-only
+    # 3. Even-depth → coarse; odd-depth → fine-only (vectorized)
     coarse_mask = (depth % 2 == 0)
     coarse_nodes = np.where(coarse_mask)[0]  # original fine node IDs of coarse nodes
     num_coarse = int(len(coarse_nodes))
 
-    # Map original fine node ID → contiguous coarse index [0 … M-1]
+    # Map original fine node ID → contiguous coarse index [0 … M-1] (vectorized)
     coarse_idx_of = np.full(num_nodes, -1, dtype=np.int32)
-    for ci, fn in enumerate(coarse_nodes):
-        coarse_idx_of[fn] = ci
+    coarse_idx_of[coarse_nodes] = np.arange(num_coarse, dtype=np.int32)
 
-    # 4. Build fine_to_coarse [N]: even-depth maps to itself; odd-depth to its BFS parent
-    fine_to_coarse = np.empty(num_nodes, dtype=np.int32)
-    for i in range(num_nodes):
-        if coarse_mask[i]:
-            fine_to_coarse[i] = coarse_idx_of[i]
-        else:
-            # BFS parent of an odd-depth node is always even-depth
-            fine_to_coarse[i] = coarse_idx_of[bfs_parent[i]]
+    # 4. Build fine_to_coarse [N] (vectorized):
+    #    Even-depth nodes → their own coarse index; odd-depth → their BFS parent's coarse index
+    parent_or_self = np.where(coarse_mask, np.arange(num_nodes, dtype=np.int32), bfs_parent)
+    fine_to_coarse = coarse_idx_of[parent_or_self]  # [N] int32, values in [0, M-1]
 
-    # 5. Build coarse edges via 2nd-order adjacency
+    # 5. Build coarse edges via 2nd-order adjacency (vectorized over all fine edges)
     #    For every fine edge (u, v): if fine_to_coarse[u] != fine_to_coarse[v],
     #    add a coarse edge between the two clusters.
-    coarse_edge_set = set()
-    for i in range(edge_index_np.shape[1]):
-        cu = int(fine_to_coarse[edge_index_np[0, i]])
-        cv = int(fine_to_coarse[edge_index_np[1, i]])
-        if cu != cv:
-            # Store as canonical (min, max) to avoid duplicates
-            if cu < cv:
-                coarse_edge_set.add((cu, cv))
-            else:
-                coarse_edge_set.add((cv, cu))
-
-    if coarse_edge_set:
-        pairs = np.array(sorted(coarse_edge_set), dtype=np.int64)  # [E_c/2, 2]
-        # Make bidirectional
-        src = np.concatenate([pairs[:, 0], pairs[:, 1]])
-        dst = np.concatenate([pairs[:, 1], pairs[:, 0]])
+    cu = fine_to_coarse[edge_index_np[0]].astype(np.int64)  # [E]
+    cv = fine_to_coarse[edge_index_np[1]].astype(np.int64)  # [E]
+    cross_mask = cu != cv
+    if cross_mask.any():
+        # Canonicalize (min, max) to deduplicate, then make bidirectional
+        a = np.minimum(cu[cross_mask], cv[cross_mask])
+        b = np.maximum(cu[cross_mask], cv[cross_mask])
+        pairs_encoded = a * (num_coarse + 1) + b  # unique int per pair
+        unique_encoded = np.unique(pairs_encoded)
+        a_uniq = unique_encoded // (num_coarse + 1)
+        b_uniq = unique_encoded %  (num_coarse + 1)
+        src = np.concatenate([a_uniq, b_uniq])
+        dst = np.concatenate([b_uniq, a_uniq])
         coarse_edge_index = np.stack([src, dst], axis=0)  # [2, E_c]
     else:
         coarse_edge_index = np.zeros((2, 0), dtype=np.int64)
@@ -158,13 +150,11 @@ def compute_coarse_edge_attr(
         return np.zeros((0, 4), dtype=np.float32)
 
     # Compute coarse centroid positions (mean of fine nodes per cluster)
+    # Vectorized: use np.add.at for O(N) scatter-add without a Python loop
     coarse_pos = np.zeros((num_coarse, 3), dtype=np.float64)
-    counts = np.zeros(num_coarse, dtype=np.int32)
-    for i in range(len(fine_to_coarse)):
-        ci = int(fine_to_coarse[i])
-        coarse_pos[ci] += deformed_pos[i]
-        counts[ci] += 1
-    coarse_pos /= np.maximum(counts[:, None], 1)  # avoid div-by-zero
+    np.add.at(coarse_pos, fine_to_coarse, deformed_pos.astype(np.float64))
+    counts = np.bincount(fine_to_coarse, minlength=num_coarse).reshape(-1, 1)
+    coarse_pos /= np.maximum(counts, 1)  # avoid div-by-zero
 
     src = coarse_edge_index[0]
     dst = coarse_edge_index[1]
