@@ -977,7 +977,9 @@ class MeshGraphDataset(Dataset):
         train_dataset.multiscale_levels = self.multiscale_levels
         train_dataset.coarse_edge_mean = self.coarse_edge_mean
         train_dataset.coarse_edge_std = self.coarse_edge_std
-        train_dataset._coarse_cache = {}  # will be populated lazily in __getitem__
+        # Share pre-computed coarsening topology — avoids re-running BFS on first access
+        train_id_set = set(train_ids)
+        train_dataset._coarse_cache = {k: v for k, v in self._coarse_cache.items() if k in train_id_set}
 
         val_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         val_dataset.h5_file = self.h5_file
