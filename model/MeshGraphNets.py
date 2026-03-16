@@ -237,11 +237,12 @@ class GnBlock(nn.Module):
         world_edge_index = graph.world_edge_index if self.use_world_edges and hasattr(graph, 'world_edge_index') else None
         world_edge_attr = graph.world_edge_attr if self.use_world_edges and hasattr(graph, 'world_edge_attr') and graph.world_edge_attr is not None and graph.world_edge_attr.shape[0] > 0 else None
 
-        # Update mesh edge features with residual connection (matches DeepMind original)
+        # Update mesh edge features (raw MLP output, residual applied after node update)
         mesh_graph = self.eb_module(graph)
-        edge_attr = graph.edge_attr + mesh_graph.edge_attr  # Edge residual
+        edge_mlp_out = mesh_graph.edge_attr  # Raw MLP output (no residual yet)
 
-        # Update world edge features if present (with residual)
+        # Update world edge features if present (raw MLP output)
+        world_edge_mlp_out = None
         if self.use_world_edges and world_edge_attr is not None and world_edge_attr.shape[0] > 0:
             world_graph = Data(
                 x=x_input,
@@ -249,25 +250,24 @@ class GnBlock(nn.Module):
                 edge_index=world_edge_index
             )
             world_graph = self.world_eb_module(world_graph)
-            updated_world_edge_attr = world_edge_attr + world_graph.edge_attr  # Edge residual
-        else:
-            updated_world_edge_attr = world_edge_attr
+            world_edge_mlp_out = world_graph.edge_attr  # Raw MLP output (no residual yet)
 
-        # Prepare graph for node block with updated edge features
+        # Node update uses RAW edge MLP output (matches DeepMind: residuals applied after)
         node_graph = Data(
             x=x_input,
-            edge_attr=edge_attr,
+            edge_attr=edge_mlp_out,
             edge_index=mesh_graph.edge_index
         )
         if self.use_world_edges:
-            node_graph.world_edge_attr = updated_world_edge_attr if updated_world_edge_attr is not None else torch.zeros(0, edge_attr.shape[1], device=x_input.device)
+            node_graph.world_edge_attr = world_edge_mlp_out if world_edge_mlp_out is not None else torch.zeros(0, edge_mlp_out.shape[1], device=x_input.device)
             node_graph.world_edge_index = world_edge_index if world_edge_index is not None else torch.zeros(2, 0, dtype=torch.long, device=x_input.device)
 
-        # Update node features (aggregates from both edge types)
         node_graph = self.nb_module(node_graph)
 
-        # Residual connection for nodes
+        # Apply all residuals AFTER node update (matches DeepMind original)
         x = x_input + self.residual_scale * node_graph.x
+        edge_attr = graph.edge_attr + edge_mlp_out  # Edge residual
+        updated_world_edge_attr = (world_edge_attr + world_edge_mlp_out) if world_edge_mlp_out is not None else world_edge_attr
 
         out = Data(x=x, edge_attr=edge_attr, edge_index=node_graph.edge_index)
         if self.use_world_edges:

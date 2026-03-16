@@ -15,7 +15,19 @@
       "Bash(curl -s https://raw.githubusercontent.com/NVIDIA/physicsnemo/main/physicsnemo/models/gnn_layers/mesh_edge_block.py)",
       "Bash(curl -s \"https://api.github.com/search/code?q=MeshEdgeBlock+repo:NVIDIA/physicsnemo+extension:py\")",
       "Bash(gh api \"repos/NVIDIA/physicsnemo/git/trees/main?recursive=1\" --jq '.tree[].path')",
-      "Bash(curl -s https://raw.githubusercontent.com/NVIDIA/physicsnemo/main/physicsnemo/models/meshgraphnet/meshgraphnet.py)"
+      "Bash(curl -s https://raw.githubusercontent.com/NVIDIA/physicsnemo/main/physicsnemo/models/meshgraphnet/meshgraphnet.py)",
+      "Bash(gh api repos/google-deepmind/deepmind-research/contents/meshgraphnets/core_model.py --jq '.download_url')",
+      "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/models --jq '.[].name')",
+      "Bash(gh api repos/google-deepmind/deepmind-research/contents/meshgraphnets/core_model.py --jq '.content')",
+      "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/models/meshgraphnet --jq '.[].name')",
+      "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/models/meshgraphnet/meshgraphnet.py --jq '.content')",
+      "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/nn --jq '.[].name')",
+      "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/nn/module/gnn_layers --jq '.[].name')",
+      "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/nn/module/gnn_layers/mesh_edge_block.py --jq '.content')",
+      "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/nn/module/gnn_layers/mesh_node_block.py --jq '.content')",
+      "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/nn/module/gnn_layers/mesh_graph_mlp.py --jq '.content')",
+      "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/nn/module/gnn_layers/utils.py --jq '.content')",
+      "Bash(gh api repos/google-deepmind/deepmind-research/contents/meshgraphnets/common.py --jq '.content')"
     ]
   }
 }
