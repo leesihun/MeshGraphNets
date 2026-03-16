@@ -22,6 +22,7 @@ class MeshGraphNets(nn.Module):
 
         self.model = EncoderProcessorDecoder(config).to(device)
         self.model.apply(init_weights)
+
         print('MeshGraphNets model created successfully')
 
     def set_checkpointing(self, enabled: bool):
@@ -41,12 +42,25 @@ class MeshGraphNets(nn.Module):
             predicted: predicted normalized delta [N, output_var]
             target: normalized target delta [N, output_var]
         """
-        # Optional noise injection during training
+        # Noise injection during training (matches DeepMind: noise on input + target correction)
         if self.training:
             noise_std = self.config.get('std_noise', 0.0)
             if noise_std > 0:
-                noise = torch.randn_like(graph.x) * noise_std
-                graph.x = graph.x + noise
+                output_var = self.config['output_var']
+                # Generate noise only for physical features (not node type one-hot)
+                noise = torch.randn(graph.x.shape[0], output_var,
+                                    device=graph.x.device, dtype=graph.x.dtype) * noise_std
+                # Add noise to physical features only
+                noise_padded = torch.zeros_like(graph.x)
+                noise_padded[:, :output_var] = noise
+                graph.x = graph.x + noise_padded
+                # Adjust target to account for noisy input (DeepMind: delta -= gamma * noise)
+                noise_gamma = self.config.get('noise_gamma', 1.0)
+                noise_std_ratio = self.config.get('noise_std_ratio', None)
+                if noise_std_ratio is not None:
+                    ratio = torch.tensor(noise_std_ratio, device=graph.x.device,
+                                         dtype=graph.x.dtype)
+                    graph.y = graph.y - noise_gamma * noise * ratio
         # Forward through encoder-processor-decoder
         predicted = self.model(graph, debug=debug)
 
@@ -197,7 +211,7 @@ class GnBlock(nn.Module):
 
         self.use_world_edges = use_world_edges
         self.residual_scale = config.get('residual_scale', 1.0)
-        # Note: NVIDIA implementation uses full residual (scale=1.0) only for nodes, not edges
+        # Residual connections applied to both nodes and edges (matches DeepMind original)
 
         eb_input_dim = 3 * latent_dim  # Sender, Receiver, edge latent dim
         eb_custom_func = build_mlp(eb_input_dim, latent_dim, latent_dim)
@@ -223,11 +237,11 @@ class GnBlock(nn.Module):
         world_edge_index = graph.world_edge_index if self.use_world_edges and hasattr(graph, 'world_edge_index') else None
         world_edge_attr = graph.world_edge_attr if self.use_world_edges and hasattr(graph, 'world_edge_attr') and graph.world_edge_attr is not None and graph.world_edge_attr.shape[0] > 0 else None
 
-        # Update mesh edge features (NO residual for edges - matches NVIDIA implementation)
+        # Update mesh edge features with residual connection (matches DeepMind original)
         mesh_graph = self.eb_module(graph)
-        edge_attr = mesh_graph.edge_attr  # Direct assignment, no residual
+        edge_attr = graph.edge_attr + mesh_graph.edge_attr  # Edge residual
 
-        # Update world edge features if present (NO residual)
+        # Update world edge features if present (with residual)
         if self.use_world_edges and world_edge_attr is not None and world_edge_attr.shape[0] > 0:
             world_graph = Data(
                 x=x_input,
@@ -235,7 +249,7 @@ class GnBlock(nn.Module):
                 edge_index=world_edge_index
             )
             world_graph = self.world_eb_module(world_graph)
-            updated_world_edge_attr = world_graph.edge_attr  # Direct assignment, no residual
+            updated_world_edge_attr = world_edge_attr + world_graph.edge_attr  # Edge residual
         else:
             updated_world_edge_attr = world_edge_attr
 
@@ -252,7 +266,7 @@ class GnBlock(nn.Module):
         # Update node features (aggregates from both edge types)
         node_graph = self.nb_module(node_graph)
 
-        # Residual connection ONLY for nodes (matches NVIDIA implementation)
+        # Residual connection for nodes
         x = x_input + self.residual_scale * node_graph.x
 
         out = Data(x=x, edge_attr=edge_attr, edge_index=node_graph.edge_index)

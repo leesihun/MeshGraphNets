@@ -41,6 +41,12 @@ def single_worker(config, config_filename='config.txt'):
         config['num_node_types'] = dataset.num_node_types
         print(f"  Node types enabled: {dataset.num_node_types} types will be added to input")
 
+    # Compute noise target correction ratio (node_std / delta_std)
+    if dataset.node_std is not None and dataset.delta_std is not None:
+        import numpy as np
+        output_var = config['output_var']
+        config['noise_std_ratio'] = (dataset.node_std[:output_var] / np.maximum(dataset.delta_std, 1e-8)).tolist()
+
     # Divide the dataset into training, validation, and test sets
     print("\nSplitting dataset...")
     train_dataset, val_dataset, test_dataset = dataset.split(0.8, 0.1, 0.1)
@@ -107,10 +113,9 @@ def single_worker(config, config_filename='config.txt'):
     # Initialize optimizer
     print("\nInitializing optimizer...")
     learning_rate = config.get('learningr')
-    weight_decay = float(config.get('weight_decay', 1e-4))
     use_fused = torch.cuda.is_available()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=use_fused)
-    print(f"Optimizer: AdamW (weight_decay={weight_decay}, fused={use_fused})")
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, fused=use_fused)
+    print(f"Optimizer: Adam (fused={use_fused})")
 
     # Initialize learning rate scheduler (ReduceLROnPlateau: halves LR when val loss stalls)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(

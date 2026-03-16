@@ -9,7 +9,13 @@
       "Bash(xargs grep -l \"profile\\\\|time\\\\|memory\\\\|optimization\\\\|bottleneck\")",
       "WebFetch(domain:packages.ubuntu.com)",
       "WebFetch(domain:cs.stanford.edu)",
-      "WebFetch(domain:iclr-blogposts.github.io)"
+      "WebFetch(domain:iclr-blogposts.github.io)",
+      "WebFetch(domain:www.nature.com)",
+      "Bash(curl -s https://raw.githubusercontent.com/google-deepmind/deepmind-research/master/meshgraphnets/core_model.py)",
+      "Bash(curl -s https://raw.githubusercontent.com/NVIDIA/physicsnemo/main/physicsnemo/models/gnn_layers/mesh_edge_block.py)",
+      "Bash(curl -s \"https://api.github.com/search/code?q=MeshEdgeBlock+repo:NVIDIA/physicsnemo+extension:py\")",
+      "Bash(gh api \"repos/NVIDIA/physicsnemo/git/trees/main?recursive=1\" --jq '.tree[].path')",
+      "Bash(curl -s https://raw.githubusercontent.com/NVIDIA/physicsnemo/main/physicsnemo/models/meshgraphnet/meshgraphnet.py)"
     ]
   }
 }

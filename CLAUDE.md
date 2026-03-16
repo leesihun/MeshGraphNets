@@ -61,7 +61,8 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | Batch_size | 50 | Per-GPU batch size |
 | LearningR | 0.0001 | Adam learning rate |
 | Training_epochs | 500 | |
-| std_noise | 0.001 | Gaussian noise augmentation (training only) |
+| std_noise | 0.001 | Gaussian noise augmentation (training only). Applied to physical features only, with target correction |
+| noise_gamma | 1.0 | Noise target correction factor. 1.0=full correction, 0.0=no correction, 0.1=DeepMind cloth default |
 | feature_loss_weights | None | Per-feature loss weights (comma-separated). Example: `1.0, 1.0, 5.0` emphasizes z_disp. Auto-normalized. |
 | use_checkpointing | False | Gradient checkpointing (saves ~60-70% VRAM) |
 | use_amp | False | Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs). Uses bfloat16 not float16 due to scatter_add overflow issues in GNNs |
@@ -96,7 +97,7 @@ Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
 
 - **Encoder**: Projects node features and edge features to `latent_dim` via MLPs
 - **GnBlock** ([model/blocks.py](model/blocks.py)): EdgeBlock updates edges, NodeBlock aggregates edges to nodes
-  - **Residual connections on nodes only** (not edges), matching NVIDIA implementation
+  - **Residual connections on both nodes and edges** (matches DeepMind original)
   - With `use_world_edges`: HybridNodeBlock aggregates mesh + world edges separately then concatenates
 - **Decoder**: Projects `latent_dim` to `output_var` (no LayerNorm on output)
 - **MLP**: 2 hidden layers, ReLU, LayerNorm on output (except decoder)
@@ -111,11 +112,11 @@ Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
 
 ### Training
 
-- **Optimizer**: AdamW with `fused=True` on CUDA (fuses parameter update kernels for 10-15% speedup)
+- **Optimizer**: Adam with `fused=True` on CUDA (no weight decay, matches DeepMind original)
 - **LR Scheduler**: ReduceLROnPlateau(factor=0.5, patience=2, min_lr=1e-8) for both single-GPU and DDP
 - **AMP**: Optional bfloat16 mixed precision via `use_amp` config (bfloat16 preferred over float16 for GNN scatter_add safety)
 - **DataLoader**: Uses `persistent_workers=True` and `prefetch_factor=2` to avoid worker respawn overhead
-- **Loss**: MSE on normalized deltas, with optional per-feature weighting (via `feature_loss_weights` config)
+- **Loss**: Sum-over-features then mean-over-nodes on normalized deltas (matches DeepMind), with optional per-feature weighting (via `feature_loss_weights` config)
 - **Gradient clipping**: max_norm=5.0
 - **Checkpoint path**: single-GPU uses `modelpath` from config; DDP always saves to `outputs/best_model.pth` regardless of `modelpath`
 - **Checkpoint contents**: model_state_dict, optimizer, scheduler, normalization stats, model_config
@@ -132,7 +133,7 @@ These are easy to break if you don't know them:
 2. **Node types are one-hot encoded AFTER normalization** and concatenated to normalized features
 3. **Edge features are computed from deformed positions** (reference + displacement), not reference positions
 4. **Decoder has NO LayerNorm** — this allows full output range for delta prediction
-5. **Residual connections only on nodes**, not edges (matches NVIDIA PhysicsNeMo)
+5. **Residual connections on both nodes and edges** (matches DeepMind original)
 6. **Delta normalization is separate** from node normalization (delta_mean/delta_std vs node_mean/node_std)
 7. **All samples must have equal timestep counts** (current limitation, printed at startup)
 8. **HDF5 nodal_data shape**: `[num_features, num_timesteps, num_nodes]` — features-first, not nodes-first

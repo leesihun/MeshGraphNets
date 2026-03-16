@@ -47,10 +47,13 @@ def _build_loss_weights(config, device):
 
 
 def _weighted_mse(errors, loss_weights):
-    """Compute MSE loss with optional per-feature weighting."""
+    """Compute loss: sum over features per node, then mean over nodes (matches DeepMind).
+
+    Original DeepMind: reduce_mean(reduce_sum((pred - target)^2, axis=-1))
+    """
     if loss_weights is not None:
-        return torch.mean(errors * loss_weights)
-    return torch.mean(errors)
+        return torch.mean(torch.sum(errors * loss_weights, dim=-1))
+    return torch.mean(torch.sum(errors, dim=-1))
 
 
 def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None):
