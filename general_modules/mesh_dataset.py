@@ -1007,7 +1007,8 @@ class MeshGraphDataset(Dataset):
         val_dataset.multiscale_levels = self.multiscale_levels
         val_dataset.coarse_edge_mean = self.coarse_edge_mean
         val_dataset.coarse_edge_std = self.coarse_edge_std
-        val_dataset._coarse_cache = {}
+        val_id_set = set(val_ids)
+        val_dataset._coarse_cache = {k: v for k, v in self._coarse_cache.items() if k in val_id_set}
 
         test_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
         test_dataset.h5_file = self.h5_file
@@ -1035,7 +1036,8 @@ class MeshGraphDataset(Dataset):
         test_dataset.multiscale_levels = self.multiscale_levels
         test_dataset.coarse_edge_mean = self.coarse_edge_mean
         test_dataset.coarse_edge_std = self.coarse_edge_std
-        test_dataset._coarse_cache = {}
+        test_id_set = set(test_ids)
+        test_dataset._coarse_cache = {k: v for k, v in self._coarse_cache.items() if k in test_id_set}
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
 
