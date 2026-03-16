@@ -28,7 +28,9 @@
       "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/nn/module/gnn_layers/mesh_graph_mlp.py --jq '.content')",
       "Bash(gh api repos/NVIDIA/physicsnemo/contents/physicsnemo/nn/module/gnn_layers/utils.py --jq '.content')",
       "Bash(gh api repos/google-deepmind/deepmind-research/contents/meshgraphnets/common.py --jq '.content')",
-      "Bash(grep -n \"warpage_static\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/_warpage_input/*.txt)"
+      "Bash(grep -n \"warpage_static\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/_warpage_input/*.txt)",
+      "WebFetch(domain:ar5iv.labs.arxiv.org)",
+      "WebFetch(domain:proceedings.mlr.press)"
     ]
   }
 }

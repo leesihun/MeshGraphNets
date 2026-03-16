@@ -5,6 +5,7 @@ import torch
 from torch_geometric.data import Data
 from model.blocks import EdgeBlock, NodeBlock, HybridNodeBlock
 from model.checkpointing import process_with_checkpointing
+from model.coarsening import pool_features, unpool_features
 
 def init_weights(m):
     if isinstance(m, nn.Linear):
@@ -76,6 +77,7 @@ class EncoderProcessorDecoder(nn.Module):
         self.latent_dim = config['latent_dim']
         self.use_checkpointing = config.get('use_checkpointing', False)
         self.use_world_edges = config.get('use_world_edges', False)
+        self.use_multiscale = config.get('use_multiscale', False)
 
         # Compute actual node input size (physical features + optional node types)
         base_input_size = config['input_var']
@@ -95,30 +97,124 @@ class EncoderProcessorDecoder(nn.Module):
             use_world_edges=self.use_world_edges
         )
 
-        processer_list = []
-        for _ in range(self.message_passing_num):
-            processer_list.append(GnBlock(config, self.latent_dim, use_world_edges=self.use_world_edges))
-        self.processer_list = nn.ModuleList(processer_list)
+        if not self.use_multiscale:
+            # ── Original flat processor ──────────────────────────────────────
+            processer_list = []
+            for _ in range(self.message_passing_num):
+                processer_list.append(GnBlock(config, self.latent_dim, use_world_edges=self.use_world_edges))
+            self.processer_list = nn.ModuleList(processer_list)
+        else:
+            # ── Hierarchical U-Net processor ─────────────────────────────────
+            fine_mp_pre  = int(config.get('fine_mp_pre', 5))
+            coarse_mp    = int(config.get('coarse_mp_num', 5))
+            fine_mp_post = int(config.get('fine_mp_post', 5))
+            print(f"  Multiscale: fine_pre={fine_mp_pre}, coarse={coarse_mp}, fine_post={fine_mp_post}")
+
+            # Fine GnBlocks before pooling (support world edges same as flat)
+            self.fine_pre_blocks = nn.ModuleList([
+                GnBlock(config, self.latent_dim, use_world_edges=self.use_world_edges)
+                for _ in range(fine_mp_pre)
+            ])
+            # Coarse-level edge encoder + GnBlocks (no world edges at coarse level)
+            self.coarse_eb_encoder = build_mlp(self.edge_input_size, self.latent_dim, self.latent_dim)
+            coarse_config = dict(config)
+            coarse_config['use_world_edges'] = False
+            self.coarse_blocks = nn.ModuleList([
+                GnBlock(coarse_config, self.latent_dim, use_world_edges=False)
+                for _ in range(coarse_mp)
+            ])
+            # Skip connection projection: concat(fine_skip, unpool) → latent_dim
+            self.skip_proj = nn.Linear(2 * self.latent_dim, self.latent_dim)
+            # Fine GnBlocks after unpooling (support world edges)
+            self.fine_post_blocks = nn.ModuleList([
+                GnBlock(config, self.latent_dim, use_world_edges=self.use_world_edges)
+                for _ in range(fine_mp_post)
+            ])
 
         self.decoder = Decoder(self.latent_dim, self.node_output_size)
 
     def forward(self, graph, debug=False):
+        if not self.use_multiscale:
+            # ── Original flat path (unchanged) ───────────────────────────────
+            graph = self.encoder(graph)
+            if debug:
+                print(f"  After Encoder: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
+            if self.use_checkpointing and self.training:
+                graph = process_with_checkpointing(self.processer_list, graph)
+            else:
+                for i, model in enumerate(self.processer_list):
+                    graph = model(graph)
+                    if debug and i == len(self.processer_list) - 1:
+                        print(f"  After MP block {i}: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
+            output = self.decoder(graph)
+            if debug:
+                print(f"  After Decoder: out std={output.std().item():.4f}, mean={output.mean().item():.4f}")
+            return output
+
+        # ── Hierarchical U-Net path ───────────────────────────────────────────
+        # Extract multiscale topology BEFORE encoder (encoder drops custom attrs)
+        fine_to_coarse    = graph.fine_to_coarse     # [N_total] long — already offset for batch
+        coarse_edge_index = graph.coarse_edge_index  # [2, E_c] — already offset for batch
+        coarse_edge_attr_raw = graph.coarse_edge_attr  # [E_c, 4] normalized coarse edge features
+        num_coarse = int(graph.num_coarse.sum())        # total coarse nodes in batch
+
+        # Step 1: Encode fine graph
         graph = self.encoder(graph)
+        if debug:
+            print(f"  [MS] After Encoder: x std={graph.x.std().item():.4f}")
+
+        # Step 2: Fine pre-pool GnBlocks
+        for block in self.fine_pre_blocks:
+            graph = block(graph)
+
+        # Save fine state for skip connection
+        h_fine_skip  = graph.x           # [N_total, D]
+        fine_e_attr  = graph.edge_attr   # [2E, D]
+        fine_e_idx   = graph.edge_index  # [2, 2E]
+        fine_w_attr  = graph.world_edge_attr  if self.use_world_edges and hasattr(graph, 'world_edge_attr')  else None
+        fine_w_idx   = graph.world_edge_index if self.use_world_edges and hasattr(graph, 'world_edge_index') else None
 
         if debug:
-            print(f"  After Encoder: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
+            print(f"  [MS] After fine_pre ({len(self.fine_pre_blocks)} blocks): x std={h_fine_skip.std().item():.4f}")
 
-        if self.use_checkpointing and self.training:
-            graph = process_with_checkpointing(self.processer_list, graph)
-        else:
-            for i, model in enumerate(self.processer_list):
-                graph = model(graph)
-                if debug and i == len(self.processer_list) - 1:
-                    print(f"  After MP block {i}: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
+        # Step 3: Pool fine → coarse node features (mean aggregation)
+        h_coarse = pool_features(h_fine_skip, fine_to_coarse, num_coarse)   # [M, D]
+        e_coarse = self.coarse_eb_encoder(coarse_edge_attr_raw)              # [E_c, D]
 
-        output = self.decoder(graph)
         if debug:
-            print(f"  After Decoder: out std={output.std().item():.4f}, mean={output.mean().item():.4f}")
+            print(f"  [MS] After pool: h_coarse {h_coarse.shape}, e_coarse {e_coarse.shape}")
+
+        # Step 4: Coarse GnBlocks
+        coarse_graph = Data(x=h_coarse, edge_attr=e_coarse, edge_index=coarse_edge_index)
+        for block in self.coarse_blocks:
+            coarse_graph = block(coarse_graph)
+
+        if debug:
+            print(f"  [MS] After coarse ({len(self.coarse_blocks)} blocks): x std={coarse_graph.x.std().item():.4f}")
+
+        # Step 5: Unpool coarse → fine (broadcast each coarse feature to its fine cluster)
+        h_up = unpool_features(coarse_graph.x, fine_to_coarse)  # [N_total, D]
+
+        # Step 6: Skip connection — merge pre-pool fine features with upsampled coarse
+        h_merged = self.skip_proj(torch.cat([h_fine_skip, h_up], dim=-1))  # [N_total, D]
+
+        # Step 7: Reconstruct fine graph with merged node features + original fine edges
+        fine_graph = Data(x=h_merged, edge_attr=fine_e_attr, edge_index=fine_e_idx)
+        if self.use_world_edges and fine_w_attr is not None:
+            fine_graph.world_edge_attr  = fine_w_attr
+            fine_graph.world_edge_index = fine_w_idx
+
+        # Step 8: Fine post-pool GnBlocks
+        for block in self.fine_post_blocks:
+            fine_graph = block(fine_graph)
+
+        if debug:
+            print(f"  [MS] After fine_post ({len(self.fine_post_blocks)} blocks): x std={fine_graph.x.std().item():.4f}")
+
+        # Step 9: Decode
+        output = self.decoder(fine_graph)
+        if debug:
+            print(f"  [MS] After Decoder: out std={output.std().item():.4f}")
         return output
 
     def set_checkpointing(self, enabled: bool):

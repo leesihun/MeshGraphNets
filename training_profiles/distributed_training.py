@@ -229,6 +229,17 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         else:
             print("Per-feature loss weights: equal (default)")
 
+        # Log multiscale config if enabled (rank 0 only)
+        if config.get('use_multiscale', False):
+            print(f"Multi-Scale: ENABLED (BFS bi-stride hierarchical U-Net)")
+            print(f"  multiscale_levels : {config.get('multiscale_levels', 1)}")
+            print(f"  fine_mp_pre       : {config.get('fine_mp_pre', 5)}  (GnBlocks before pool)")
+            print(f"  coarse_mp_num     : {config.get('coarse_mp_num', 5)}  (GnBlocks at coarse level)")
+            print(f"  fine_mp_post      : {config.get('fine_mp_post', 5)}  (GnBlocks after unpool)")
+            print(f"  [message_passing_num is IGNORED when use_multiscale=True]")
+        else:
+            print(f"Multi-Scale: disabled (flat GNN, message_passing_num={config.get('message_passing_num')})")
+
         print("\n" + "="*60)
         print("Starting training loop...")
         print("="*60 + "\n")
@@ -322,6 +333,9 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 normalization['num_node_types'] = dataset.num_node_types
             if dataset.use_world_edges and dataset.world_edge_radius is not None:
                 normalization['world_edge_radius'] = dataset.world_edge_radius
+            if dataset.use_multiscale and dataset.coarse_edge_mean is not None:
+                normalization['coarse_edge_mean'] = dataset.coarse_edge_mean
+                normalization['coarse_edge_std']  = dataset.coarse_edge_std
             model_config = {
                 'input_var': config.get('input_var'),
                 'output_var': config.get('output_var'),
