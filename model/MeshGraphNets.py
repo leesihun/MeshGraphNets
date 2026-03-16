@@ -266,8 +266,8 @@ class GnBlock(nn.Module):
 
         # Apply all residuals AFTER node update (matches DeepMind original)
         x = x_input + self.residual_scale * node_graph.x
-        edge_attr = graph.edge_attr + edge_mlp_out  # Edge residual
-        updated_world_edge_attr = (world_edge_attr + world_edge_mlp_out) if world_edge_mlp_out is not None else world_edge_attr
+        edge_attr = graph.edge_attr + self.residual_scale * edge_mlp_out  # Edge residual
+        updated_world_edge_attr = (world_edge_attr + self.residual_scale * world_edge_mlp_out) if world_edge_mlp_out is not None else world_edge_attr
 
         out = Data(x=x, edge_attr=edge_attr, edge_index=node_graph.edge_index)
         if self.use_world_edges:
