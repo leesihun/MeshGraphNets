@@ -21,10 +21,10 @@ Typical coarsening ratio:
 Use multiscale_levels=2 for 3D meshes to achieve ~N/4 reduction.
 """
 
-from collections import deque
-
 import numpy as np
 import torch
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components, breadth_first_order
 from torch_geometric.data import Data
 from torch_geometric.utils import scatter
 
@@ -47,6 +47,8 @@ def bfs_bistride_coarsen(edge_index_np: np.ndarray, num_nodes: int):
     Handles disconnected meshes (e.g., multi-part FEA with separate steel plate,
     PCB, chips) by restarting BFS at every unvisited seed.
 
+    Uses scipy.sparse.csgraph for C-level BFS speed (~10-50x faster than Python).
+
     Args:
         edge_index_np: [2, E] int numpy array of bidirectional mesh edges.
                        Must already be bidirectional (as produced by mesh_dataset).
@@ -58,29 +60,32 @@ def bfs_bistride_coarsen(edge_index_np: np.ndarray, num_nodes: int):
         coarse_edge_index:[2, E_c] int64 numpy array. Bidirectional coarse edges.
         num_coarse:       int M — number of coarse nodes.
     """
-    # 1. Build adjacency list (edge_index is already bidirectional, so no need to add reverse)
-    adj = [[] for _ in range(num_nodes)]
-    for i in range(edge_index_np.shape[1]):
-        u = int(edge_index_np[0, i])
-        v = int(edge_index_np[1, i])
-        adj[u].append(v)
+    # 1. Build CSR adjacency matrix (vectorized, no Python loop)
+    row = edge_index_np[0].astype(np.int32)
+    col = edge_index_np[1].astype(np.int32)
+    data = np.ones(row.shape[0], dtype=np.int8)
+    adj = csr_matrix((data, (row, col)), shape=(num_nodes, num_nodes))
 
-    # 2. Multi-source BFS — handles disconnected mesh components
+    # 2. Multi-source BFS using scipy C-level routines
+    n_comp, comp_labels = connected_components(adj, directed=False)
+
     depth = np.full(num_nodes, -1, dtype=np.int32)
     bfs_parent = np.arange(num_nodes, dtype=np.int32)  # default: own parent (for coarse nodes)
 
-    for seed in range(num_nodes):
-        if depth[seed] != -1:
-            continue
+    for comp_id in range(n_comp):
+        # Find seed (first node in this component)
+        comp_mask = (comp_labels == comp_id)
+        seed = int(np.argmax(comp_mask))
+
+        # Scipy BFS: returns nodes in BFS order + predecessor array (C-level speed)
+        order, predecessors = breadth_first_order(adj, i_start=seed, directed=False)
+
+        # Compute depth from BFS order (parents guaranteed processed first)
         depth[seed] = 0
-        queue = deque([seed])
-        while queue:
-            node = queue.popleft()
-            for nbr in adj[node]:
-                if depth[nbr] == -1:
-                    depth[nbr] = depth[node] + 1
-                    bfs_parent[nbr] = node
-                    queue.append(nbr)
+        for i in range(1, len(order)):
+            node = order[i]
+            depth[node] = depth[predecessors[node]] + 1
+            bfs_parent[node] = predecessors[node]
 
     # 3. Even-depth → coarse; odd-depth → fine-only (vectorized)
     coarse_mask = (depth % 2 == 0)

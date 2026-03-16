@@ -470,34 +470,40 @@ class MeshGraphDataset(Dataset):
         Coarsening is topology-based (BFS bi-stride on mesh_edge), so the same mapping
         applies to all timesteps of a given sample. This pass runs once at startup.
         """
-        print('Computing coarse edge normalization statistics...')
+        import time as _time
+        n_samples = len(self.sample_ids)
+        print(f'Computing coarse edge normalization statistics ({n_samples} samples)...')
         coarse_edge_stats = None
+        t_start = _time.time()
 
         with h5py.File(self.h5_file, 'r') as f:
-            for sid in self.sample_ids:
+            for i_sample, sid in enumerate(self.sample_ids):
+                if i_sample % max(1, n_samples // 10) == 0 or i_sample == n_samples - 1:
+                    elapsed = _time.time() - t_start
+                    print(f'  Coarsening sample {i_sample+1}/{n_samples} ({elapsed:.1f}s)')
+
                 try:
-                    data = f[f'data/{sid}/nodal_data'][:]   # [features, time, nodes]
                     mesh_edge = f[f'data/{sid}/mesh_edge'][:]  # [2, edges]
                 except Exception as e:
                     print(f"  Warning: could not load sample {sid}: {e}")
                     continue
 
-                num_nodes = data.shape[2]
+                # Read nodal_data only for the timesteps we need (avoid full load)
+                data_h5 = f[f'data/{sid}/nodal_data']
+                num_nodes = data_h5.shape[2]
                 edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
 
-                # Apply BFS bi-stride (level 1 coarsening)
+                # Apply BFS bi-stride (level 1 coarsening) — uses scipy C-level BFS
                 ftc, c_edge_idx, n_coarse = bfs_bistride_coarsen(edge_idx, num_nodes)
 
                 # For 2-level coarsening, apply BFS again on the coarse graph
                 if self.multiscale_levels >= 2 and n_coarse > 1 and c_edge_idx.shape[1] > 0:
                     ftc2, c_edge_idx2, n_coarse2 = bfs_bistride_coarsen(c_edge_idx, n_coarse)
-                    # Compose: fine → level1 coarse → level2 coarse
-                    ftc_composed = ftc2[ftc]  # [N] → level2 coarse indices
+                    ftc_composed = ftc2[ftc]  # Compose: fine → level1 → level2
                     cache_entry = {
                         'fine_to_coarse': ftc_composed,
                         'coarse_edge_index': c_edge_idx2,
                         'num_coarse': n_coarse2,
-                        # Level-1 intermediate (not needed in model forward for 2-level simple U-Net)
                     }
                     n_coarse_final = n_coarse2
                     c_edge_idx_final = c_edge_idx2
@@ -517,27 +523,31 @@ class MeshGraphDataset(Dataset):
                 if c_edge_idx_final.shape[1] == 0:
                     continue
 
-                # Collect coarse edge feature stats across sampled timesteps
-                max_t = min(100, self.num_timesteps)
+                # Collect coarse edge feature stats — 10 timesteps is sufficient
+                # (coarse centroid positions don't vary dramatically across timesteps)
+                max_t = min(10, self.num_timesteps)
                 if self.num_timesteps > 1:
                     timesteps = np.linspace(0, self.num_timesteps - 1, max_t, dtype=int)
                 else:
                     timesteps = [0]
 
                 for t in timesteps:
-                    deformed_pos = (data[:3, t, :] + data[3:6, t, :]).T  # [N, 3]
+                    # Read only needed features for this timestep (ref pos + displacement)
+                    pos_data = data_h5[:6, t, :]  # [6, nodes] — only ref_pos + disp
+                    deformed_pos = (pos_data[:3, :] + pos_data[3:6, :]).T  # [N, 3]
                     c_edge_attr = compute_coarse_edge_attr(
                         deformed_pos, ftc_final, c_edge_idx_final, n_coarse_final
                     )
                     coarse_edge_stats = _welford_update(coarse_edge_stats, c_edge_attr)
 
+        elapsed = _time.time() - t_start
         if coarse_edge_stats is None:
-            print('  Warning: no coarse edge stats collected; falling back to fine edge stats')
+            print(f'  Warning: no coarse edge stats collected; falling back to fine edge stats ({elapsed:.1f}s)')
             self.coarse_edge_mean = self.edge_mean.copy()
             self.coarse_edge_std = self.edge_std.copy()
         else:
             self.coarse_edge_mean, self.coarse_edge_std = _welford_finalize(coarse_edge_stats)
-            print(f'  Coarse edge features - mean: {self.coarse_edge_mean}, std: {self.coarse_edge_std}')
+            print(f'  Coarse edge stats done in {elapsed:.1f}s — mean: {self.coarse_edge_mean}, std: {self.coarse_edge_std}')
 
     def _compute_node_type_info(self) -> None:
         """Compute the number of unique node types from the dataset."""
