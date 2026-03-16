@@ -30,7 +30,13 @@
       "Bash(gh api repos/google-deepmind/deepmind-research/contents/meshgraphnets/common.py --jq '.content')",
       "Bash(grep -n \"warpage_static\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/_warpage_input/*.txt)",
       "WebFetch(domain:ar5iv.labs.arxiv.org)",
-      "WebFetch(domain:proceedings.mlr.press)"
+      "WebFetch(domain:proceedings.mlr.press)",
+      "Bash(grep -l \"use_multiscale\" c:/Users/Lee/Desktop/Huni/MeshGraphNets/_warpage_input/config_train*.txt)",
+      "Bash(grep -l \"use_multiscale\" c:/Users/Lee/Desktop/Huni/MeshGraphNets/_flag_input/*.txt)",
+      "Bash(for f in c:/Users/Lee/Desktop/Huni/MeshGraphNets/_flag_input/config_flag_dynamic*.txt c:/Users/Lee/Desktop/Huni/MeshGraphNets/_flag_input/config_flag_simple1.txt c:/Users/Lee/Desktop/Huni/MeshGraphNets/_flag_input/config_flag_simple2.txt)",
+      "Bash(do echo \"=== $f ===\")",
+      "Read(//c/Users/Lee/Desktop/Huni/MeshGraphNets/**)",
+      "Bash(done)"
     ]
   }
 }
