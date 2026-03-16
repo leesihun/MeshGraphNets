@@ -112,14 +112,11 @@ def single_worker(config, config_filename='config.txt'):
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=use_fused)
     print(f"Optimizer: AdamW (weight_decay={weight_decay}, fused={use_fused})")
 
-    # Initialize learning rate scheduler (OneCycleLR: warmup + cosine decay, stepped per batch)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=learning_rate,
-        steps_per_epoch=len(train_loader),
-        epochs=config.get('training_epochs'),
-        pct_start=0.1,
+    # Initialize learning rate scheduler (ReduceLROnPlateau: halves LR when val loss stalls)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-8,
     )
-    print(f"Learning rate scheduler: OneCycleLR (max_lr={learning_rate:.2e}, warmup=10%)")
+    print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=5, min_lr=1e-8)")
 
     if torch.cuda.is_available():
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
@@ -171,8 +168,9 @@ def single_worker(config, config_filename='config.txt'):
     try:
         for epoch in range(config.get('training_epochs')):
 
-            train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch, scheduler=scheduler)
+            train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
             valid_loss = validate_epoch(model, val_loader, device, config, epoch)
+            scheduler.step(valid_loss)
 
             # Per epoch, batch-averaged train, validation losses.
             current_lr = optimizer.param_groups[0]['lr']

@@ -197,15 +197,12 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
     if rank == 0:
         print(f"Optimizer: AdamW (weight_decay={weight_decay}, fused={use_fused})")
 
-    # Initialize learning rate scheduler (OneCycleLR: warmup + cosine decay, stepped per batch)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=learning_rate,
-        steps_per_epoch=len(train_loader),
-        epochs=config.get('training_epochs'),
-        pct_start=0.1,
+    # Initialize learning rate scheduler (ReduceLROnPlateau: halves LR when val loss stalls)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-8,
     )
     if rank == 0:
-        print(f"Learning rate scheduler: OneCycleLR (max_lr={learning_rate:.2e}, warmup=10%)")
+        print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=5, min_lr=1e-8)")
 
     if torch.cuda.is_available() and rank == 0:
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
@@ -263,7 +260,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         # Set epoch for distributed sampler (important for shuffling)
         train_sampler.set_epoch(epoch)
 
-        train_loss = train_epoch(ddp_model, train_loader, optimizer, device, config, epoch, scheduler=scheduler)
+        train_loss = train_epoch(ddp_model, train_loader, optimizer, device, config, epoch)
 
         # Synchronize stop decision across all ranks — if ANY rank wants to stop,
         # ALL ranks must stop together to avoid NCCL collective mismatches.
@@ -292,6 +289,9 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         dist.all_reduce(valid_loss_tensor, op=dist.ReduceOp.AVG)
         train_loss = train_loss_tensor.item()
         valid_loss = valid_loss_tensor.item()
+
+        # Step scheduler on all ranks (valid_loss is identical after all_reduce)
+        scheduler.step(valid_loss)
 
         # Per epoch, batch-averaged train, validation losses.
         current_lr = optimizer.param_groups[0]['lr']
