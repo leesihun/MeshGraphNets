@@ -41,19 +41,20 @@ def _build_loss_weights(config, device):
         if not isinstance(loss_weights, list):
             loss_weights = [loss_weights]
         loss_weights = torch.tensor(loss_weights, dtype=torch.float32, device=device)
-        # Normalize so weights sum to output_var (preserves loss magnitude scale)
-        loss_weights = loss_weights * len(loss_weights) / loss_weights.sum()
+        # Normalize so weights sum to 1 (loss is weighted mean over features)
+        loss_weights = loss_weights / loss_weights.sum()
     return loss_weights
 
 
 def _weighted_mse(errors, loss_weights):
-    """Compute loss: sum over features per node, then mean over nodes (matches DeepMind).
+    """Compute loss: weighted mean over features per node, then mean over nodes.
 
-    Original DeepMind: reduce_mean(reduce_sum((pred - target)^2, axis=-1))
+    With weights: mean_nodes( sum_features( error * weight ) )  where weights sum to 1.
+    Without weights: mean_nodes( mean_features( error ) ) = mean over all elements.
     """
     if loss_weights is not None:
         return torch.mean(torch.sum(errors * loss_weights, dim=-1))
-    return torch.mean(torch.sum(errors, dim=-1))
+    return torch.mean(errors)
 
 
 def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None):
