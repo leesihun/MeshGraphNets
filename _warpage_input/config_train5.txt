@@ -26,7 +26,7 @@ verbose     False
 monitor_gradients  False
 '
 % Memory Optimization
-use_checkpointing   True
+use_checkpointing   False
 '
 % Performance Optimization
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
