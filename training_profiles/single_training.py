@@ -117,11 +117,12 @@ def single_worker(config, config_filename='config.txt'):
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, fused=use_fused)
     print(f"Optimizer: Adam (fused={use_fused})")
 
-    # Initialize learning rate scheduler (ReduceLROnPlateau: halves LR when val loss stalls)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-8,
+    # Initialize learning rate scheduler (CosineAnnealingWarmRestarts: cycles LR to avoid premature decay)
+    t0 = max(1, config.get('training_epochs') // 4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=t0, eta_min=1e-8,
     )
-    print(f"Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=5, min_lr=1e-8)")
+    print(f"Learning rate scheduler: CosineAnnealingWarmRestarts (T_0={t0}, eta_min=1e-8)")
 
     if torch.cuda.is_available():
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
@@ -175,7 +176,7 @@ def single_worker(config, config_filename='config.txt'):
 
             train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
             valid_loss = validate_epoch(model, val_loader, device, config, epoch)
-            scheduler.step(valid_loss)
+            scheduler.step()
 
             # Per epoch, batch-averaged train, validation losses.
             current_lr = optimizer.param_groups[0]['lr']

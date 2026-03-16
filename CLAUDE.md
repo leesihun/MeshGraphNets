@@ -121,7 +121,7 @@ Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
 ### Training
 
 - **Optimizer**: Adam with `fused=True` on CUDA (no weight decay, matches DeepMind original)
-- **LR Scheduler**: ReduceLROnPlateau(factor=0.5, patience=2, min_lr=1e-8) for both single-GPU and DDP
+- **LR Scheduler**: CosineAnnealingWarmRestarts(T_0=10, eta_min=1e-8) for both single-GPU and DDP. Cycles LR every 10 epochs to prevent premature LR decay.
 - **AMP**: Optional bfloat16 mixed precision via `use_amp` config (bfloat16 preferred over float16 for GNN scatter_add safety)
 - **DataLoader**: Uses `persistent_workers=True` and `prefetch_factor=2` to avoid worker respawn overhead
 - **Loss**: Sum-over-features then mean-over-nodes on normalized deltas (matches DeepMind), with optional per-feature weighting (via `feature_loss_weights` config)
