@@ -55,7 +55,7 @@ class MeshGraphNets(nn.Module):
                 noise_padded[:, :output_var] = noise
                 graph.x = graph.x + noise_padded
                 # Adjust target to account for noisy input (DeepMind: delta -= gamma * noise)
-                noise_gamma = self.config.get('noise_gamma', 1.0)
+                noise_gamma = self.config.get('noise_gamma', 0.1)
                 noise_std_ratio = self.config.get('noise_std_ratio', None)
                 if noise_std_ratio is not None:
                     ratio = torch.tensor(noise_std_ratio, device=graph.x.device,
