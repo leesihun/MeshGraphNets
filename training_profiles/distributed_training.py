@@ -202,13 +202,13 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
     if rank == 0:
         print(f"Optimizer: Adam (fused={use_fused})")
 
-    # Initialize learning rate scheduler (CosineAnnealingWarmRestarts: cycles LR to avoid premature decay)
-    t0 = max(1, config.get('training_epochs') // 4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer, T_0=t0, eta_min=1e-8,
+    # Initialize learning rate scheduler (single cosine decay over full training, no restarts)
+    total_epochs = config.get('training_epochs')
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_epochs, eta_min=1e-8,
     )
     if rank == 0:
-        print(f"Learning rate scheduler: CosineAnnealingWarmRestarts (T_0={t0}, eta_min=1e-8)")
+        print(f"Learning rate scheduler: CosineAnnealingLR (T_max={total_epochs}, eta_min=1e-8)")
 
     if torch.cuda.is_available() and rank == 0:
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')

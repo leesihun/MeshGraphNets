@@ -14,10 +14,10 @@ feature_loss_weights  1.0, 1.0, 1.0  # Per-feature loss weights for [x_disp, y_d
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
-message_passing_num 10
-Training_epochs	4000
+message_passing_num 15
+Training_epochs	1000
 Batch_size	1
-LearningR	0.0005  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
+LearningR	0.001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0
@@ -26,7 +26,7 @@ verbose     False
 monitor_gradients  False
 '
 % Memory Optimization
-use_checkpointing   False
+use_checkpointing   True
 '
 % Performance Optimization
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
