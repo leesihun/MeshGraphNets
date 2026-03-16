@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**MeshGraphNets** is a GNN for simulating deformable mesh dynamics. It predicts node displacements and stresses using an Encoder-Processor-Decoder architecture with graph message passing. Based on NVIDIA PhysicsNeMo and DeepMind's MeshGraphNets paper (Pfaff et al., ICML 2020).
+**MeshGraphNets** is a GNN for simulating deformable mesh dynamics. It predicts node displacements and stresses using an Encoder-Processor-Decoder architecture with graph message passing. Based on DeepMind's MeshGraphNets paper (Pfaff et al., ICLR 2021).
 
 The model predicts **normalized deltas** (state_{t+1} - state_t), not absolute values. This decouples geometry scale from learned dynamics.
 
@@ -72,9 +72,17 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | use_node_types | False | One-hot encode node types from HDF5 metadata |
 | use_world_edges | False | Radius-based collision detection edges |
 | use_parallel_stats | True | Parallel normalization stat computation |
+| residual_scale | 1.0 | Scale factor for node+edge residuals. `0.5` dampens residuals, `1.0` = full (DeepMind default) |
 | verbose | False | Per-feature loss breakdowns |
 | monitor_gradients | True | Gradient norm tracking |
+| num_workers | 0 | DataLoader worker processes |
+| log_file_dir | - | Log filename under `outputs/` (e.g. `train1.log`). Enables debug npz dumps |
+| display_testset | True | Save HDF5 + PNG visualization for test batches |
+| test_batch_idx | 0 | Comma-separated batch indices to visualize (e.g. `0, 1, 2, 3`) |
+| plot_feature_idx | -1 | Feature index to visualize in plots (`-1` = last, i.e. stress) |
 | world_edge_backend | `torch_cluster` | `torch_cluster` (GPU) or `scipy_kdtree` (CPU). **Required in every config** — rollout.py has no default and crashes if absent |
+| world_radius_multiplier | - | `r_world = multiplier * min_mesh_edge_length` (auto-computed from dataset) |
+| world_max_num_neighbors | 64 | Max neighbors per node in world edge radius query |
 
 Full reference: [CONFIG_AND_EXECUTION_GUIDE.md](CONFIG_AND_EXECUTION_GUIDE.md)
 
@@ -97,7 +105,7 @@ Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
 
 - **Encoder**: Projects node features and edge features to `latent_dim` via MLPs
 - **GnBlock** ([model/blocks.py](model/blocks.py)): EdgeBlock updates edges, NodeBlock aggregates edges to nodes
-  - **Residual connections on both nodes and edges** (matches DeepMind original)
+  - **Residual connections on both nodes and edges, applied after the node update** (matches DeepMind: NodeBlock receives raw edge MLP output, then `edge_out = edge_in + edge_mlp`, `node_out = node_in + node_mlp`)
   - With `use_world_edges`: HybridNodeBlock aggregates mesh + world edges separately then concatenates
 - **Decoder**: Projects `latent_dim` to `output_var` (no LayerNorm on output)
 - **MLP**: 2 hidden layers, ReLU, LayerNorm on output (except decoder)
