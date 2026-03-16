@@ -4,13 +4,13 @@ gpu_ids 0,1    # -1 for CPU, GPU ids for multi-GPU training (DDP with both H200s
 log_file_dir    train3.log
 modelpath   ./outputs/warpage3.pth
 %   Datasets
-dataset_dir ./dataset/warpage_half.h5
+dataset_dir ./dataset/warpage_random_100.h5
 infer_dataset   ./dataset/warpage_infer.h5
 infer_timesteps 34
 %   Common params
 input_var   3   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  3   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
-feature_loss_weights  0.00001, 0.00001, 1.0  # Per-feature loss weights for [x_disp, y_disp, z_disp]
+feature_loss_weights  1.0, 1.0, 1.0  # Per-feature loss weights for [x_disp, y_disp, z_disp]
 edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
@@ -22,7 +22,7 @@ Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0.01
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
-verbose     False
+verbose     True
 monitor_gradients  False
 '
 % Memory Optimization
