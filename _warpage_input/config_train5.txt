@@ -15,18 +15,19 @@ edge_var    4   # dx, dy, dz, disp
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	1000
-Batch_size	8
+Training_epochs	2000
+Batch_size	1
 LearningR	0.001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
-Latent_dim	128	# MeshGraphNets latent dimension
+Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
+grad_accum_steps    1   # Gradient accumulation: 0=full epoch (1 step/epoch), 1=per-batch (default), N=every N batches
 verbose     False
 monitor_gradients  False
 '
 % Memory Optimization
-use_checkpointing   True
+use_checkpointing   False
 '
 % Performance Optimization
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
@@ -49,7 +50,7 @@ test_batch_idx  0, 1, 2, 3
 plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature, i.e., stress)
 '
 % Multi-Scale / Hierarchical Parameters (BFS Bi-Stride, ICML 2023)
-use_multiscale      True
+use_multiscale      False
 multiscale_levels   2
 fine_mp_pre         5
 coarse_mp_num       10

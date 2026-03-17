@@ -62,6 +62,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
     total_loss = 0.0
     total_grad_norm = 0.0
     num_batches = 0
+    num_steps = 0  # number of optimizer steps taken
 
     verbose = config.get('verbose')
     monitor_gradients = config.get('monitor_gradients', True)
@@ -70,12 +71,19 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
     use_compile = config.get('use_compile', False)
     amp_dtype = torch.bfloat16
 
+    # Gradient accumulation: 0 = full epoch (1 step/epoch), 1 = per-batch (default), N = every N batches
+    grad_accum_steps = config.get('grad_accum_steps', 1)
+    total_batches = len(dataloader)
+    actual_accum = total_batches if grad_accum_steps == 0 else grad_accum_steps
+
+    optimizer.zero_grad(set_to_none=True)
+    grad_norm = torch.tensor(0.0)
+
     pbar = tqdm.tqdm(dataloader)
     for batch_idx, graph in enumerate(pbar):
         # DEBUG: disabled when use_compile=True (.item() causes graph breaks)
         debug_internal = (not use_compile) and (batch_idx == 0 and (epoch < 5 or epoch % 10 == 0))
 
-        optimizer.zero_grad(set_to_none=True)
         graph = graph.to(device)
 
         with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
@@ -93,8 +101,10 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
 
             errors = ((predicted_acc - target_acc) ** 2)
             loss = _weighted_mse(errors, loss_weights)
+            # Scale loss so accumulated gradients equal the average (not sum) over batches
+            scaled_loss = loss / actual_accum
 
-        loss.backward()
+        scaled_loss.backward()
 
         # Per-feature loss breakdown for diagnostics
         if batch_idx == 0 and epoch % 10 == 0 and verbose:
@@ -107,34 +117,38 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
             for feat_idx, feat_name in enumerate(feature_names[:len(per_feature_loss_mean)]):
                 tqdm.tqdm.write(f"  {feat_name}: mean={per_feature_loss_mean[feat_idx].item():.2e}, max={per_feature_loss_max[feat_idx].item():.2e}, min={per_feature_loss_min[feat_idx].item():.2e}, std={per_feature_loss_std[feat_idx].item():.2e}")
 
-        # Single clip_grad_norm_ call: clips and returns the pre-clip norm
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        if monitor_gradients:
-            total_grad_norm += grad_norm.item()
-
-            if (batch_idx == 0 or batch_idx % 50 == 0) and verbose:
-                layer_grad_stats = []
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        grad_mean = param.grad.abs().mean().item()
-                        grad_max = param.grad.abs().max().item()
-                        if grad_mean > 1e-10:
-                            layer_grad_stats.append(f"{name}: mean={grad_mean:.2e}, max={grad_max:.2e}")
-                if layer_grad_stats:
-                    tqdm.tqdm.write(f"\n=== Gradient Stats (Batch {batch_idx}) ===")
-                    tqdm.tqdm.write(f"Total grad norm: {grad_norm.item():.2e}")
-                    tqdm.tqdm.write("\nPer-layer gradients (top 5):")
-                    for stat in layer_grad_stats[:5]:
-                        tqdm.tqdm.write(f"  {stat}")
-                    tqdm.tqdm.write("")
-
-        optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
-
-        loss_val = loss.item()  # single GPU sync per batch
+        loss_val = loss.item()  # unscaled loss for reporting
         total_loss += loss_val
         num_batches += 1
+
+        # Step optimizer at end of accumulation window or final batch
+        is_last_batch = (batch_idx == total_batches - 1)
+        if (batch_idx + 1) % actual_accum == 0 or is_last_batch:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            if monitor_gradients:
+                total_grad_norm += grad_norm.item()
+                num_steps += 1
+
+                if verbose:
+                    layer_grad_stats = []
+                    for name, param in model.named_parameters():
+                        if param.grad is not None:
+                            grad_mean = param.grad.abs().mean().item()
+                            grad_max = param.grad.abs().max().item()
+                            if grad_mean > 1e-10:
+                                layer_grad_stats.append(f"{name}: mean={grad_mean:.2e}, max={grad_max:.2e}")
+                    if layer_grad_stats:
+                        tqdm.tqdm.write(f"\n=== Gradient Stats (Step after batch {batch_idx}) ===")
+                        tqdm.tqdm.write(f"Total grad norm: {grad_norm.item():.2e}")
+                        tqdm.tqdm.write("\nPer-layer gradients (top 5):")
+                        for stat in layer_grad_stats[:5]:
+                            tqdm.tqdm.write(f"  {stat}")
+                        tqdm.tqdm.write("")
+
+            optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
 
         # Update progress bar every 10 batches to reduce memory query overhead
         if batch_idx % 10 == 0:
@@ -144,11 +158,11 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                 postfix['grad'] = f'{grad_norm.item():.2e}'
             pbar.set_postfix(postfix)
 
-    avg_grad_norm = total_grad_norm / num_batches if num_batches > 0 else 0.0
+    avg_grad_norm = total_grad_norm / num_steps if num_steps > 0 else 0.0
 
     # Print gradient summary for the epoch
-    if monitor_gradients and num_batches > 0:
-        tqdm.tqdm.write(f"Epoch {epoch} avg gradient norm: {avg_grad_norm:.2e}")
+    if monitor_gradients and num_steps > 0:
+        tqdm.tqdm.write(f"Epoch {epoch} avg gradient norm: {avg_grad_norm:.2e} ({num_steps} optimizer steps)")
         if avg_grad_norm < 1e-6:
             tqdm.tqdm.write("  ⚠️  WARNING: Very small gradients detected (< 1e-6) - possible vanishing gradient problem!")
         elif avg_grad_norm > 1e2:

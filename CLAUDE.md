@@ -65,6 +65,7 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | noise_gamma | 1.0 | Noise target correction factor. 1.0=full correction, 0.0=no correction, 0.1=DeepMind cloth default |
 | feature_loss_weights | None | Per-feature loss weights (comma-separated). Example: `1.0, 1.0, 5.0` emphasizes z_disp. Auto-normalized. |
 | use_checkpointing | False | Gradient checkpointing (saves ~60-70% VRAM) |
+| grad_accum_steps | 1 | Gradient accumulation: `1`=per-batch (default), `0`=full epoch (1 step/epoch), `N`=every N batches |
 | use_amp | False | Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs). Uses bfloat16 not float16 due to scatter_add overflow issues in GNNs |
 | use_compile | False | `torch.compile(dynamic=True)` for kernel fusion (10-30% speedup). First epoch slower due to JIT warmup |
 | test_interval | 10 | Run test/visualization every N epochs. Previous default was 1 (every epoch) |
