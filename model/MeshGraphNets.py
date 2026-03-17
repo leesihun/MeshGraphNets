@@ -24,6 +24,12 @@ class MeshGraphNets(nn.Module):
         self.model = EncoderProcessorDecoder(config).to(device)
         self.model.apply(init_weights)
 
+        # Scale decoder's last layer to near-zero so initial predictions ≈ 0
+        # (good prior for delta prediction: "predict no change" at start)
+        with torch.no_grad():
+            last_layer = self.model.decoder.decode_module[-1]
+            last_layer.weight.mul_(0.01)
+
         print('MeshGraphNets model created successfully')
 
     def set_checkpointing(self, enabled: bool):
