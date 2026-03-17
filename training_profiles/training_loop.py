@@ -124,7 +124,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
         # Step optimizer at end of accumulation window or final batch
         is_last_batch = (batch_idx == total_batches - 1)
         if (batch_idx + 1) % actual_accum == 0 or is_last_batch:
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
             if monitor_gradients:
                 total_grad_norm += grad_norm.item()
                 num_steps += 1
