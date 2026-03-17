@@ -22,7 +22,7 @@ Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
-grad_accum_steps    1   # Gradient accumulation: 0=full epoch (1 step/epoch), 1=per-batch (default), N=every N batches
+grad_accum_steps    0   # Gradient accumulation: 0=full epoch (1 step/epoch), 1=per-batch (default), N=every N batches
 verbose     False
 monitor_gradients  False
 '
