@@ -36,7 +36,9 @@
       "Bash(for f in c:/Users/Lee/Desktop/Huni/MeshGraphNets/_flag_input/config_flag_dynamic*.txt c:/Users/Lee/Desktop/Huni/MeshGraphNets/_flag_input/config_flag_simple1.txt c:/Users/Lee/Desktop/Huni/MeshGraphNets/_flag_input/config_flag_simple2.txt)",
       "Bash(do echo \"=== $f ===\")",
       "Read(//c/Users/Lee/Desktop/Huni/MeshGraphNets/**)",
-      "Bash(done)"
+      "Bash(done)",
+      "WebFetch(domain:pmc.ncbi.nlm.nih.gov)",
+      "Bash(pip install pymupdf)"
     ]
   }
 }
