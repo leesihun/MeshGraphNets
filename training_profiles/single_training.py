@@ -80,6 +80,14 @@ def single_worker(config, config_filename='config.txt'):
         shuffle=True,
         pin_memory=True
     )
+
+    # Diagnostic: batch_size=1 loader for train set reconstruction visualization
+    train_test_loader = DataLoader(
+        train_dataset,
+        batch_size=1,
+        shuffle=True,
+        pin_memory=True
+    )
     if torch.cuda.is_available():
         print(f'After dataloader creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
 
@@ -187,11 +195,13 @@ def single_worker(config, config_filename='config.txt'):
 
             train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
             valid_loss = validate_epoch(model, val_loader, device, config, epoch)
+            # Diagnostic: evaluate training set with model.eval() (same path as validation)
+            train_eval_loss = validate_epoch(model, train_loader, device, config, epoch)
             scheduler.step()
 
             # Per epoch, batch-averaged train, validation losses.
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} LR: {current_lr:.2e}")
+            print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} Train(eval): {train_eval_loss:.2e} LR: {current_lr:.2e}")
 
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
@@ -238,13 +248,16 @@ def single_worker(config, config_filename='config.txt'):
 
             if log_file_dir:
                 with open(log_file, 'a') as f:
-                    f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
+                    f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} Train(eval): {train_eval_loss:.4e} LR: {current_lr:.4e}\n")
 
             # Periodically test the model on the test set and save results with ground truth
             test_interval = int(config.get('test_interval', 10))
             last_epoch = epoch == config.get('training_epochs') - 1
             if epoch % test_interval == 0 or last_epoch:
                 test_loss = test_model(model, test_loader, device, config, epoch, dataset)
+                # Diagnostic: also save train set reconstructions for visual comparison
+                train_test_loss = test_model(model, train_test_loader, device, config, epoch, dataset, output_prefix='train_eval')
+                print(f"  Train(eval) test loss: {train_test_loss:.2e} vs Test loss: {test_loss:.2e}")
 
         print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
     except KeyboardInterrupt:
