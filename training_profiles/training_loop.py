@@ -46,15 +46,29 @@ def _build_loss_weights(config, device):
     return loss_weights
 
 
-def _weighted_mse(errors, loss_weights):
-    """Compute loss: weighted mean over features per node, then mean over nodes.
+def _weighted_mse(errors, loss_weights, batch=None):
+    """Compute loss with per-graph averaging for variable-size meshes.
 
-    With weights: mean_nodes( sum_features( error * weight ) )  where weights sum to 1.
-    Without weights: mean_nodes( mean_features( error ) ) = mean over all elements.
+    Each graph gets equal weight regardless of node count:
+      1. Reduce features to per-node scalar (weighted sum or mean)
+      2. Average per-node errors within each graph  (scatter mean)
+      3. Average over graphs in the batch
+
+    Falls back to global node mean when batch is None (e.g. batch_size=1).
     """
+    from torch_geometric.utils import scatter
+
+    # Step 1: per-node scalar error
     if loss_weights is not None:
-        return torch.mean(torch.sum(errors * loss_weights, dim=-1))
-    return torch.mean(errors)
+        per_node = torch.sum(errors * loss_weights, dim=-1)  # [N]
+    else:
+        per_node = torch.mean(errors, dim=-1)  # [N]
+
+    # Step 2-3: per-graph mean, then mean over graphs
+    if batch is not None:
+        per_graph = scatter(per_node, batch, dim=0, reduce='mean')  # [num_graphs]
+        return per_graph.mean()
+    return per_node.mean()
 
 
 def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None):
@@ -100,7 +114,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                     save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
 
             errors = ((predicted_acc - target_acc) ** 2)
-            loss = _weighted_mse(errors, loss_weights)
+            loss = _weighted_mse(errors, loss_weights, batch=graph.batch)
             # Scale loss so accumulated gradients equal the average (not sum) over batches
             scaled_loss = loss / actual_accum
 
@@ -199,7 +213,7 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
                 errors = ((predicted - target) ** 2)
-                loss = _weighted_mse(errors, loss_weights)
+                loss = _weighted_mse(errors, loss_weights, batch=graph.batch)
 
             # Accumulate per-feature losses
             per_feature_loss = torch.mean(errors, dim=0)  # Average across nodes
@@ -286,7 +300,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
                 errors = ((predicted - target) ** 2)
-                loss = _weighted_mse(errors, loss_weights)
+                loss = _weighted_mse(errors, loss_weights, batch=graph.batch)
 
             # Accumulate per-feature losses
             per_feature_loss = torch.mean(errors, dim=0)  # Average across nodes
