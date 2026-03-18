@@ -61,7 +61,7 @@ def single_worker(config, config_filename='config.txt'):
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=2 if num_workers > 0 else None,
+        prefetch_factor=8 if num_workers > 0 else None,
     )
 
     val_loader = DataLoader(
@@ -71,7 +71,7 @@ def single_worker(config, config_filename='config.txt'):
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=2 if num_workers > 0 else None,
+        prefetch_factor=8 if num_workers > 0 else None,
     )
 
     test_loader = DataLoader(
@@ -81,13 +81,6 @@ def single_worker(config, config_filename='config.txt'):
         pin_memory=True
     )
 
-    # Diagnostic: batch_size=1 loader for train set reconstruction visualization
-    train_test_loader = DataLoader(
-        train_dataset,
-        batch_size=1,
-        shuffle=True,
-        pin_memory=True
-    )
     if torch.cuda.is_available():
         print(f'After dataloader creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
 
@@ -195,8 +188,6 @@ def single_worker(config, config_filename='config.txt'):
 
             train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
             valid_loss = validate_epoch(model, val_loader, device, config, epoch)
-            # Diagnostic: evaluate training set with model.eval() (same path as validation)
-            # train_eval_loss = validate_epoch(model, train_loader, device, config, epoch)
             scheduler.step()
 
             # Per epoch, batch-averaged train, validation losses.
@@ -255,9 +246,7 @@ def single_worker(config, config_filename='config.txt'):
             last_epoch = epoch == config.get('training_epochs') - 1
             if epoch % test_interval == 0 or last_epoch:
                 test_loss = test_model(model, test_loader, device, config, epoch, dataset)
-                # Diagnostic: also save train set reconstructions for visual comparison
-                train_test_loss = test_model(model, train_test_loader, device, config, epoch, dataset, output_prefix='train_eval')
-                print(f"  Train(eval) test loss: {train_test_loss:.2e} vs Test loss: {test_loss:.2e}")
+                print(f"  Test loss: {test_loss:.2e}")
 
         print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
     except KeyboardInterrupt:
