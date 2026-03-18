@@ -196,12 +196,12 @@ def single_worker(config, config_filename='config.txt'):
             train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
             valid_loss = validate_epoch(model, val_loader, device, config, epoch)
             # Diagnostic: evaluate training set with model.eval() (same path as validation)
-            train_eval_loss = validate_epoch(model, train_loader, device, config, epoch)
+            # train_eval_loss = validate_epoch(model, train_loader, device, config, epoch)
             scheduler.step()
 
             # Per epoch, batch-averaged train, validation losses.
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} Train(eval): {train_eval_loss:.2e} LR: {current_lr:.2e}")
+            print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} LR: {current_lr:.2e}")
 
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
@@ -248,7 +248,7 @@ def single_worker(config, config_filename='config.txt'):
 
             if log_file_dir:
                 with open(log_file, 'a') as f:
-                    f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} Train(eval): {train_eval_loss:.4e} LR: {current_lr:.4e}\n")
+                    f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
 
             # Periodically test the model on the test set and save results with ground truth
             test_interval = int(config.get('test_interval', 10))
