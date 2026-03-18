@@ -946,19 +946,43 @@ class MeshGraphDataset(Dataset):
         # Set random seed for reproducibility
         np.random.seed(seed)
 
-        # Shuffle sample IDs
-        shuffled_ids = self.sample_ids.copy()
-        np.random.shuffle(shuffled_ids)
-
-        # Calculate split sizes
-        n_samples = len(shuffled_ids)
-        n_train = int(n_samples * train_ratio)
-        n_val = int(n_samples * val_ratio)
-
-        # Split IDs
-        train_ids = shuffled_ids[:n_train]
-        val_ids = shuffled_ids[n_train:n_train + n_val]
-        test_ids = shuffled_ids[n_train + n_val:]
+        # Stratified split: sort samples by node count, then assign from each
+        # stratum proportionally. This ensures each split has a representative
+        # distribution of mesh sizes (prevents train/val loss gap from
+        # unbalanced mesh sizes).
+        import h5py as _h5
+        try:
+            with _h5.File(self.h5_file, 'r') as _f:
+                node_counts = {sid: _f[f'data/{sid}/nodal_data'].shape[2] for sid in self.sample_ids}
+            # Sort by node count, then shuffle within strata
+            sorted_ids = sorted(self.sample_ids, key=lambda s: node_counts[s])
+            # Divide into strata (bins of ~50 samples each)
+            strata_size = max(50, len(sorted_ids) // 20)
+            train_ids, val_ids, test_ids = [], [], []
+            for i in range(0, len(sorted_ids), strata_size):
+                stratum = sorted_ids[i:i + strata_size]
+                np.random.shuffle(stratum)
+                n_s = len(stratum)
+                n_t = max(1, int(n_s * train_ratio))
+                n_v = max(1, int(n_s * val_ratio))
+                train_ids.extend(stratum[:n_t])
+                val_ids.extend(stratum[n_t:n_t + n_v])
+                test_ids.extend(stratum[n_t + n_v:])
+            # Final shuffle within each split
+            np.random.shuffle(train_ids)
+            np.random.shuffle(val_ids)
+            np.random.shuffle(test_ids)
+            print(f"  Using stratified split by node count ({len(set(node_counts.values()))} unique sizes)")
+        except Exception as e:
+            print(f"  Stratified split failed ({e}), falling back to random split")
+            shuffled_ids = self.sample_ids.copy()
+            np.random.shuffle(shuffled_ids)
+            n_samples = len(shuffled_ids)
+            n_train = int(n_samples * train_ratio)
+            n_val = int(n_samples * val_ratio)
+            train_ids = shuffled_ids[:n_train]
+            val_ids = shuffled_ids[n_train:n_train + n_val]
+            test_ids = shuffled_ids[n_train + n_val:]
 
         # Create subset datasets (copy all attributes including normalization params)
         train_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
@@ -1050,5 +1074,21 @@ class MeshGraphDataset(Dataset):
         test_dataset._coarse_cache = {k: v for k, v in self._coarse_cache.items() if k in test_id_set}
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
+
+        # Diagnostic: check node count distribution across splits
+        try:
+            import h5py as _h5
+            with _h5.File(self.h5_file, 'r') as _f:
+                _train_nc = [_f[f'data/{s}/nodal_data'].shape[2] for s in train_ids[:100]]
+                _val_nc = [_f[f'data/{s}/nodal_data'].shape[2] for s in val_ids[:100]]
+                _test_nc = [_f[f'data/{s}/nodal_data'].shape[2] for s in test_ids[:100]]
+                print(f"  Node counts (up to 100 samples):")
+                print(f"    Train: min={min(_train_nc)}, max={max(_train_nc)}, mean={sum(_train_nc)/len(_train_nc):.0f}")
+                print(f"    Val:   min={min(_val_nc)}, max={max(_val_nc)}, mean={sum(_val_nc)/len(_val_nc):.0f}")
+                print(f"    Test:  min={min(_test_nc)}, max={max(_test_nc)}, mean={sum(_test_nc)/len(_test_nc):.0f}")
+                if max(_train_nc + _val_nc) > 1.5 * min(_train_nc + _val_nc):
+                    print(f"    NOTE: Node counts vary >1.5x across samples")
+        except Exception:
+            pass
 
         return train_dataset, val_dataset, test_dataset
