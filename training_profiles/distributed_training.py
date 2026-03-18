@@ -11,6 +11,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 
 from general_modules.data_loader import load_data
+from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, test_model
@@ -122,7 +123,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=2 if num_workers > 0 else None,
+        prefetch_factor=8 if num_workers > 0 else None,
     )
 
     val_loader = DataLoader(
@@ -132,7 +133,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=2 if num_workers > 0 else None,
+        prefetch_factor=8 if num_workers > 0 else None,
     )
 
     # Test loader only needed on rank 0 (no DDP forward, uses unwrapped model)
@@ -386,6 +387,20 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 with open(_dbg_path, 'a') as _f:
                     _f.write(_json.dumps({'location': 'distributed_training.py:test_end', 'message': 'test_model completed', 'data': {'epoch': epoch, 'elapsed_s': round(_test_elapsed, 1)}, 'timestamp': int(time.time()*1000), 'hypothesisId': 'H1'}) + '\n')
                 # #endregion
+
+                # Optionally visualize training set reconstruction (same batch indices)
+                if config.get('display_trainset', False):
+                    train_viz_indices = config.get('test_batch_idx', [0])
+                    train_viz_indices = [i for i in train_viz_indices if i < len(train_dataset)]
+                    if train_viz_indices:
+                        train_viz_loader = DataLoader(
+                            Subset(train_dataset, train_viz_indices),
+                            batch_size=1, shuffle=False, pin_memory=True
+                        )
+                        viz_config = dict(config)
+                        viz_config['test_batch_idx'] = list(range(len(train_viz_indices)))
+                        train_viz_loss = test_model(model, train_viz_loader, device, viz_config, epoch, dataset, output_prefix='train')
+                        print(f"  Train reconstruction loss: {train_viz_loss:.2e}")
             dist.barrier(device_ids=[gpu_id])
 
     if rank == 0:

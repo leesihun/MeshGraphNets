@@ -7,6 +7,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 
 from general_modules.data_loader import load_data
+from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, test_model
@@ -247,6 +248,22 @@ def single_worker(config, config_filename='config.txt'):
             if epoch % test_interval == 0 or last_epoch:
                 test_loss = test_model(model, test_loader, device, config, epoch, dataset)
                 print(f"  Test loss: {test_loss:.2e}")
+
+                # Optionally visualize training set reconstruction (same batch indices)
+                if config.get('display_trainset', False):
+                    train_viz_indices = config.get('test_batch_idx', [0])
+                    # Clamp indices to train dataset size
+                    train_viz_indices = [i for i in train_viz_indices if i < len(train_dataset)]
+                    if train_viz_indices:
+                        train_viz_loader = DataLoader(
+                            Subset(train_dataset, train_viz_indices),
+                            batch_size=1, shuffle=False, pin_memory=True
+                        )
+                        # Map batch indices to 0..N so all subset samples get visualized
+                        viz_config = dict(config)
+                        viz_config['test_batch_idx'] = list(range(len(train_viz_indices)))
+                        train_viz_loss = test_model(model, train_viz_loader, device, viz_config, epoch, dataset, output_prefix='train')
+                        print(f"  Train reconstruction loss: {train_viz_loss:.2e}")
 
         print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
     except KeyboardInterrupt:
