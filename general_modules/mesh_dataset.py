@@ -61,13 +61,29 @@ def _welford_finalize(stats):
     return mean.astype(np.float32), np.maximum(std.astype(np.float32), 1e-8)
 
 
+def _persample_finalize(sum_mean, sum_meansqr, count):
+    """Finalize per-sample equal-weight statistics (NVIDIA approach).
+
+    Each sample contributes equally regardless of node count:
+        mean = avg(sample_means)
+        std  = sqrt(avg(sample_mean_of_squares) - avg(sample_means)^2)
+    """
+    mean = (sum_mean / count).astype(np.float32)
+    meansqr = (sum_meansqr / count).astype(np.float32)
+    var = np.maximum(meansqr - mean ** 2, 0)
+    std = np.sqrt(var).astype(np.float32)
+    return mean, np.maximum(std, 1e-8)
+
+
 def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
                           output_dim: int, num_timesteps: int) -> Dict:
     """
-    Worker function to process a chunk of samples using streaming statistics.
+    Worker function to process a chunk of samples.
 
-    Uses Welford's online algorithm so each worker only keeps O(features) memory
-    instead of accumulating all raw data. Returns compact (n, mean, M2) tuples.
+    Uses per-sample equal-weight accumulation (NVIDIA approach): each sample
+    contributes equally regardless of node count.  Accumulates sum-of-means
+    and sum-of-mean-squares so the master can finalize with
+    ``_persample_finalize``.
 
     Args:
         h5_file: Path to HDF5 dataset file
@@ -77,11 +93,19 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
         num_timesteps: Number of timesteps in the dataset
 
     Returns:
-        Dictionary with Welford stats for node/edge/delta features plus delta min/max.
+        Dictionary with per-sample sums for node/edge/delta features plus delta min/max.
     """
-    node_stats = None
-    edge_stats = None
-    delta_stats = [None for _ in range(output_dim)]
+    node_sum = np.zeros(input_dim, dtype=np.float64)
+    node_sumsq = np.zeros(input_dim, dtype=np.float64)
+    node_count = 0
+
+    edge_sum = np.zeros(4, dtype=np.float64)
+    edge_sumsq = np.zeros(4, dtype=np.float64)
+    edge_count = 0
+
+    delta_sum = np.zeros(output_dim, dtype=np.float64)
+    delta_sumsq = np.zeros(output_dim, dtype=np.float64)
+    delta_count = 0
     delta_min = np.full(output_dim, np.inf, dtype=np.float64)
     delta_max = np.full(output_dim, -np.inf, dtype=np.float64)
 
@@ -103,13 +127,17 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
 
                     for t in timesteps:
                         node_feat = data[3:3+input_dim, t, :].T  # [N, input_dim]
-                        node_stats = _welford_update(node_stats, node_feat)
+                        node_sum += np.mean(node_feat, axis=0)
+                        node_sumsq += np.mean(node_feat ** 2, axis=0)
+                        node_count += 1
 
                         pos = (data[:3, t, :] + data[3:6, t, :]).T  # [N, 3]
                         rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]
                         dist = np.linalg.norm(rel_pos, axis=1, keepdims=True)
                         edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
-                        edge_stats = _welford_update(edge_stats, edge_feat)
+                        edge_sum += np.mean(edge_feat, axis=0)
+                        edge_sumsq += np.mean(edge_feat ** 2, axis=0)
+                        edge_count += 1
 
                     # Delta features
                     if num_timesteps > 1:
@@ -118,40 +146,47 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
                         for t in delta_timesteps:
                             for feat_idx in range(output_dim):
                                 delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
-                                delta_2d = delta.reshape(-1, 1)
-                                delta_stats[feat_idx] = _welford_update(delta_stats[feat_idx], delta_2d)
+                                delta_sum[feat_idx] += np.mean(delta)
+                                delta_sumsq[feat_idx] += np.mean(delta ** 2)
                                 delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(delta)))
                                 delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(delta)))
+                            delta_count += 1
                     else:
                         for feat_idx in range(output_dim):
                             feat = data[3 + feat_idx, 0, :]
-                            feat_2d = feat.reshape(-1, 1)
-                            delta_stats[feat_idx] = _welford_update(delta_stats[feat_idx], feat_2d)
+                            delta_sum[feat_idx] += np.mean(feat)
+                            delta_sumsq[feat_idx] += np.mean(feat ** 2)
                             delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(feat)))
                             delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(feat)))
+                        delta_count += 1
 
                 except Exception as e:
                     print(f"Warning: Failed to process sample {sid}: {e}")
                     continue
 
         return {
-            'node_stats': node_stats,
-            'edge_stats': edge_stats,
-            'delta_stats': delta_stats,
-            'delta_min': delta_min,
-            'delta_max': delta_max,
-            'num_samples_processed': len(sample_ids)
+            'node_sum': node_sum, 'node_sumsq': node_sumsq, 'node_count': node_count,
+            'edge_sum': edge_sum, 'edge_sumsq': edge_sumsq, 'edge_count': edge_count,
+            'delta_sum': delta_sum, 'delta_sumsq': delta_sumsq, 'delta_count': delta_count,
+            'delta_min': delta_min, 'delta_max': delta_max,
+            'num_samples_processed': len(sample_ids),
         }
 
     except Exception as e:
         print(f"Error in worker process: {e}")
         return {
-            'node_stats': None,
-            'edge_stats': None,
-            'delta_stats': [None for _ in range(output_dim)],
+            'node_sum': np.zeros(input_dim, dtype=np.float64),
+            'node_sumsq': np.zeros(input_dim, dtype=np.float64),
+            'node_count': 0,
+            'edge_sum': np.zeros(4, dtype=np.float64),
+            'edge_sumsq': np.zeros(4, dtype=np.float64),
+            'edge_count': 0,
+            'delta_sum': np.zeros(output_dim, dtype=np.float64),
+            'delta_sumsq': np.zeros(output_dim, dtype=np.float64),
+            'delta_count': 0,
             'delta_min': np.full(output_dim, np.inf, dtype=np.float64),
             'delta_max': np.full(output_dim, -np.inf, dtype=np.float64),
-            'num_samples_processed': 0
+            'num_samples_processed': 0,
         }
 
 
@@ -268,23 +303,20 @@ class MeshGraphDataset(Dataset):
                 print(f'  Using serial processing ({num_samples} samples, threshold={min_samples_for_parallel})')
             stats = self._compute_stats_serial(num_samples)
 
-        # Finalize node and edge statistics from Welford accumulators
-        self.node_mean, self.node_std = _welford_finalize(stats['node_stats'])
-        self.edge_mean, self.edge_std = _welford_finalize(stats['edge_stats'])
+        # Finalize per-sample equal-weight statistics (NVIDIA approach)
+        self.node_mean, self.node_std = _persample_finalize(
+            stats['node_sum'], stats['node_sumsq'], stats['node_count'])
+        self.edge_mean, self.edge_std = _persample_finalize(
+            stats['edge_sum'], stats['edge_sumsq'], stats['edge_count'])
 
         print(f'  Node features - mean: {self.node_mean}, std: {self.node_std}')
         print(f'  Edge features - mean: {self.edge_mean}, std: {self.edge_std}')
 
-        # Finalize delta statistics per feature
-        self.delta_mean = np.zeros(self.output_dim, dtype=np.float32)
-        self.delta_std = np.zeros(self.output_dim, dtype=np.float32)
+        # Finalize delta statistics
+        self.delta_mean, self.delta_std = _persample_finalize(
+            stats['delta_sum'], stats['delta_sumsq'], stats['delta_count'])
         delta_min = stats['delta_min'].astype(np.float32)
         delta_max = stats['delta_max'].astype(np.float32)
-
-        for feat_idx in range(self.output_dim):
-            mean, std = _welford_finalize(stats['delta_stats'][feat_idx])
-            self.delta_mean[feat_idx] = mean[0]
-            self.delta_std[feat_idx] = std[0]
 
         print(f'  Delta features - mean: {self.delta_mean}, std: {self.delta_std}')
         print(f'  Delta features - min: {delta_min}, max: {delta_max}')
@@ -351,10 +383,22 @@ class MeshGraphDataset(Dataset):
             print(f'  [INFO] Could not update HDF5 normalization params (file locked by another process)')
 
     def _compute_stats_serial(self, num_samples: int) -> Dict:
-        """Serial streaming statistics using Welford's online algorithm. O(features) memory."""
-        node_stats = None
-        edge_stats = None
-        delta_stats = [None for _ in range(self.output_dim)]
+        """Serial statistics with per-sample equal weight (NVIDIA approach).
+
+        Each sample contributes equally to mean/std regardless of node count.
+        Accumulates sum-of-per-sample-means and sum-of-per-sample-mean-squares.
+        """
+        node_sum = np.zeros(self.input_dim, dtype=np.float64)
+        node_sumsq = np.zeros(self.input_dim, dtype=np.float64)
+        node_count = 0
+
+        edge_sum = np.zeros(4, dtype=np.float64)
+        edge_sumsq = np.zeros(4, dtype=np.float64)
+        edge_count = 0
+
+        delta_sum = np.zeros(self.output_dim, dtype=np.float64)
+        delta_sumsq = np.zeros(self.output_dim, dtype=np.float64)
+        delta_count = 0
         delta_min = np.full(self.output_dim, np.inf, dtype=np.float64)
         delta_max = np.full(self.output_dim, -np.inf, dtype=np.float64)
 
@@ -376,13 +420,17 @@ class MeshGraphDataset(Dataset):
 
                 for t in timesteps:
                     node_feat = data[3:3+self.input_dim, t, :].T  # [N, input_dim]
-                    node_stats = _welford_update(node_stats, node_feat)
+                    node_sum += np.mean(node_feat, axis=0)
+                    node_sumsq += np.mean(node_feat ** 2, axis=0)
+                    node_count += 1
 
                     pos = (data[:3, t, :] + data[3:6, t, :]).T  # [N, 3]
                     rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]
                     dist = np.linalg.norm(rel_pos, axis=1, keepdims=True)
                     edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
-                    edge_stats = _welford_update(edge_stats, edge_feat)
+                    edge_sum += np.mean(edge_feat, axis=0)
+                    edge_sumsq += np.mean(edge_feat ** 2, axis=0)
+                    edge_count += 1
 
                 # Delta features
                 if self.num_timesteps > 1:
@@ -391,28 +439,29 @@ class MeshGraphDataset(Dataset):
                     for t in delta_timesteps:
                         for feat_idx in range(self.output_dim):
                             delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
-                            delta_2d = delta.reshape(-1, 1)
-                            delta_stats[feat_idx] = _welford_update(delta_stats[feat_idx], delta_2d)
+                            delta_sum[feat_idx] += np.mean(delta)
+                            delta_sumsq[feat_idx] += np.mean(delta ** 2)
                             delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(delta)))
                             delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(delta)))
+                        delta_count += 1
                 else:
                     for feat_idx in range(self.output_dim):
                         feat = data[3 + feat_idx, 0, :]
-                        feat_2d = feat.reshape(-1, 1)
-                        delta_stats[feat_idx] = _welford_update(delta_stats[feat_idx], feat_2d)
+                        delta_sum[feat_idx] += np.mean(feat)
+                        delta_sumsq[feat_idx] += np.mean(feat ** 2)
                         delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(feat)))
                         delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(feat)))
+                    delta_count += 1
 
         return {
-            'node_stats': node_stats,
-            'edge_stats': edge_stats,
-            'delta_stats': delta_stats,
-            'delta_min': delta_min,
-            'delta_max': delta_max,
+            'node_sum': node_sum, 'node_sumsq': node_sumsq, 'node_count': node_count,
+            'edge_sum': edge_sum, 'edge_sumsq': edge_sumsq, 'edge_count': edge_count,
+            'delta_sum': delta_sum, 'delta_sumsq': delta_sumsq, 'delta_count': delta_count,
+            'delta_min': delta_min, 'delta_max': delta_max,
         }
 
     def _compute_stats_parallel(self, num_workers: int, num_samples: int) -> Dict:
-        """Parallel streaming statistics — each worker returns compact Welford stats, master merges."""
+        """Parallel statistics — workers return per-sample sums, master merges by addition."""
         chunk_size = max(1, num_samples // num_workers)
         sample_chunks = []
         for i in range(0, num_samples, chunk_size):
@@ -426,21 +475,31 @@ class MeshGraphDataset(Dataset):
                 ]
                 results = pool.starmap(_process_sample_chunk, worker_args)
 
-            # Merge Welford stats from all workers — O(workers * features) memory
-            node_stats = None
-            edge_stats = None
-            delta_stats = [None for _ in range(self.output_dim)]
+            # Merge per-sample sums from all workers — simple addition
+            node_sum = np.zeros(self.input_dim, dtype=np.float64)
+            node_sumsq = np.zeros(self.input_dim, dtype=np.float64)
+            node_count = 0
+            edge_sum = np.zeros(4, dtype=np.float64)
+            edge_sumsq = np.zeros(4, dtype=np.float64)
+            edge_count = 0
+            delta_sum = np.zeros(self.output_dim, dtype=np.float64)
+            delta_sumsq = np.zeros(self.output_dim, dtype=np.float64)
+            delta_count = 0
             delta_min = np.full(self.output_dim, np.inf, dtype=np.float64)
             delta_max = np.full(self.output_dim, -np.inf, dtype=np.float64)
 
             total_processed = 0
             for result in results:
                 if result['num_samples_processed'] > 0:
-                    node_stats = _welford_combine(node_stats, result['node_stats'])
-                    edge_stats = _welford_combine(edge_stats, result['edge_stats'])
-                    for feat_idx in range(self.output_dim):
-                        delta_stats[feat_idx] = _welford_combine(
-                            delta_stats[feat_idx], result['delta_stats'][feat_idx])
+                    node_sum += result['node_sum']
+                    node_sumsq += result['node_sumsq']
+                    node_count += result['node_count']
+                    edge_sum += result['edge_sum']
+                    edge_sumsq += result['edge_sumsq']
+                    edge_count += result['edge_count']
+                    delta_sum += result['delta_sum']
+                    delta_sumsq += result['delta_sumsq']
+                    delta_count += result['delta_count']
                     np.minimum(delta_min, result['delta_min'], out=delta_min)
                     np.maximum(delta_max, result['delta_max'], out=delta_max)
                     total_processed += result['num_samples_processed']
@@ -451,11 +510,10 @@ class MeshGraphDataset(Dataset):
                 raise RuntimeError("No samples were successfully processed in parallel mode")
 
             return {
-                'node_stats': node_stats,
-                'edge_stats': edge_stats,
-                'delta_stats': delta_stats,
-                'delta_min': delta_min,
-                'delta_max': delta_max,
+                'node_sum': node_sum, 'node_sumsq': node_sumsq, 'node_count': node_count,
+                'edge_sum': edge_sum, 'edge_sumsq': edge_sumsq, 'edge_count': edge_count,
+                'delta_sum': delta_sum, 'delta_sumsq': delta_sumsq, 'delta_count': delta_count,
+                'delta_min': delta_min, 'delta_max': delta_max,
             }
 
         except Exception as e:
@@ -473,7 +531,9 @@ class MeshGraphDataset(Dataset):
         import time as _time
         n_samples = len(self.sample_ids)
         print(f'Computing coarse edge normalization statistics ({n_samples} samples)...')
-        coarse_edge_stats = None
+        coarse_sum = np.zeros(4, dtype=np.float64)
+        coarse_sumsq = np.zeros(4, dtype=np.float64)
+        coarse_count = 0
         t_start = _time.time()
 
         with h5py.File(self.h5_file, 'r') as f:
@@ -538,15 +598,19 @@ class MeshGraphDataset(Dataset):
                     c_edge_attr = compute_coarse_edge_attr(
                         deformed_pos, ftc_final, c_edge_idx_final, n_coarse_final
                     )
-                    coarse_edge_stats = _welford_update(coarse_edge_stats, c_edge_attr)
+                    # Per-sample equal weight (NVIDIA approach)
+                    coarse_sum += np.mean(c_edge_attr, axis=0)
+                    coarse_sumsq += np.mean(c_edge_attr ** 2, axis=0)
+                    coarse_count += 1
 
         elapsed = _time.time() - t_start
-        if coarse_edge_stats is None:
+        if coarse_count == 0:
             print(f'  Warning: no coarse edge stats collected; falling back to fine edge stats ({elapsed:.1f}s)')
             self.coarse_edge_mean = self.edge_mean.copy()
             self.coarse_edge_std = self.edge_std.copy()
         else:
-            self.coarse_edge_mean, self.coarse_edge_std = _welford_finalize(coarse_edge_stats)
+            self.coarse_edge_mean, self.coarse_edge_std = _persample_finalize(
+                coarse_sum, coarse_sumsq, coarse_count)
             print(f'  Coarse edge stats done in {elapsed:.1f}s — mean: {self.coarse_edge_mean}, std: {self.coarse_edge_std}')
 
     def _compute_node_type_info(self) -> None:
@@ -926,7 +990,7 @@ class MeshGraphDataset(Dataset):
 
         return graph_data
 
-    def split(self, train_ratio: float, val_ratio: float, test_ratio: float, seed: int = 42):
+    def split(self, train_ratio: float, val_ratio: float, test_ratio: float, seed: int = 0):
         """
         Split dataset into train, validation, and test sets.
 
@@ -946,43 +1010,16 @@ class MeshGraphDataset(Dataset):
         # Set random seed for reproducibility
         np.random.seed(seed)
 
-        # Stratified split: sort samples by node count, then assign from each
-        # stratum proportionally. This ensures each split has a representative
-        # distribution of mesh sizes (prevents train/val loss gap from
-        # unbalanced mesh sizes).
-        import h5py as _h5
-        try:
-            with _h5.File(self.h5_file, 'r') as _f:
-                node_counts = {sid: _f[f'data/{sid}/nodal_data'].shape[2] for sid in self.sample_ids}
-            # Sort by node count, then shuffle within strata
-            sorted_ids = sorted(self.sample_ids, key=lambda s: node_counts[s])
-            # Divide into strata (bins of ~50 samples each)
-            strata_size = max(50, len(sorted_ids) // 20)
-            train_ids, val_ids, test_ids = [], [], []
-            for i in range(0, len(sorted_ids), strata_size):
-                stratum = sorted_ids[i:i + strata_size]
-                np.random.shuffle(stratum)
-                n_s = len(stratum)
-                n_t = max(1, int(n_s * train_ratio))
-                n_v = max(1, int(n_s * val_ratio))
-                train_ids.extend(stratum[:n_t])
-                val_ids.extend(stratum[n_t:n_t + n_v])
-                test_ids.extend(stratum[n_t + n_v:])
-            # Final shuffle within each split
-            np.random.shuffle(train_ids)
-            np.random.shuffle(val_ids)
-            np.random.shuffle(test_ids)
-            print(f"  Using stratified split by node count ({len(set(node_counts.values()))} unique sizes)")
-        except Exception as e:
-            print(f"  Stratified split failed ({e}), falling back to random split")
-            shuffled_ids = self.sample_ids.copy()
-            np.random.shuffle(shuffled_ids)
-            n_samples = len(shuffled_ids)
-            n_train = int(n_samples * train_ratio)
-            n_val = int(n_samples * val_ratio)
-            train_ids = shuffled_ids[:n_train]
-            val_ids = shuffled_ids[n_train:n_train + n_val]
-            test_ids = shuffled_ids[n_train + n_val:]
+        # Random shuffle split (normalization now uses per-sample equal weight,
+        # so no need for stratified splitting by node count or delta magnitude)
+        shuffled_ids = self.sample_ids.copy()
+        np.random.shuffle(shuffled_ids)
+        n_samples = len(shuffled_ids)
+        n_train = int(n_samples * train_ratio)
+        n_val = int(n_samples * val_ratio)
+        train_ids = shuffled_ids[:n_train]
+        val_ids = shuffled_ids[n_train:n_train + n_val]
+        test_ids = shuffled_ids[n_train + n_val:]
 
         # Create subset datasets (copy all attributes including normalization params)
         train_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
@@ -1075,7 +1112,7 @@ class MeshGraphDataset(Dataset):
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
 
-        # Diagnostic: check node count distribution across splits
+        # Diagnostic: check node count and delta magnitude across splits
         try:
             import h5py as _h5
             with _h5.File(self.h5_file, 'r') as _f:
@@ -1086,8 +1123,6 @@ class MeshGraphDataset(Dataset):
                 print(f"    Train: min={min(_train_nc)}, max={max(_train_nc)}, mean={sum(_train_nc)/len(_train_nc):.0f}")
                 print(f"    Val:   min={min(_val_nc)}, max={max(_val_nc)}, mean={sum(_val_nc)/len(_val_nc):.0f}")
                 print(f"    Test:  min={min(_test_nc)}, max={max(_test_nc)}, mean={sum(_test_nc)/len(_test_nc):.0f}")
-                if max(_train_nc + _val_nc) > 1.5 * min(_train_nc + _val_nc):
-                    print(f"    NOTE: Node counts vary >1.5x across samples")
         except Exception:
             pass
 

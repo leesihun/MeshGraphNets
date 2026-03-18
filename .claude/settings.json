@@ -38,7 +38,9 @@
       "Read(//c/Users/Lee/Desktop/Huni/MeshGraphNets/**)",
       "Bash(done)",
       "WebFetch(domain:pmc.ncbi.nlm.nih.gov)",
-      "Bash(pip install pymupdf)"
+      "Bash(pip install pymupdf)",
+      "Bash(grep -n \"model.train\\(\\)\\\\|model.eval\\(\\)\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/training_profiles/*.py)",
+      "Bash(curl -s https://api.github.com/repos/google-deepmind/deepmind-research/contents/meshgraphnets)"
     ]
   }
 }
