@@ -67,7 +67,7 @@ def single_worker(config, config_filename='config.txt'):
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
-        shuffle=False,
+        shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
