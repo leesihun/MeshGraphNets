@@ -228,6 +228,134 @@ class MeshGraphDataset(Dataset):
         print(f"Found {len(self.sample_ids)} samples")
         print(f"  num_timesteps: {self.num_timesteps}")
 
+        self._sanity_check_mesh_topology()
+
+    def _sanity_check_mesh_topology(self) -> None:
+        """Validate mesh topology across all samples.
+
+        Reports node/edge/cell sizes, edge/node ratio distribution, infers
+        likely element type from cell/node ratios, flags outliers, and checks
+        edge index validity.
+        """
+        print('\n  === Mesh Topology Sanity Check ===')
+        n_samples = len(self.sample_ids)
+
+        node_counts = np.empty(n_samples, dtype=np.int64)
+        edge_counts = np.empty(n_samples, dtype=np.int64)
+        cell_counts = np.empty(n_samples, dtype=np.int64)
+        has_cells = False
+        ev_ratios = np.empty(n_samples, dtype=np.float64)
+        issues = []
+
+        with h5py.File(self.h5_file, 'r') as f:
+            for i, sid in enumerate(self.sample_ids):
+                grp = f[f'data/{sid}']
+                nodal_shape = grp['nodal_data'].shape   # (features, time, nodes)
+                edge_data = grp['mesh_edge'][:]          # (2, edges)
+
+                n_nodes = nodal_shape[2]
+                n_edges = edge_data.shape[1]
+                node_counts[i] = n_nodes
+                edge_counts[i] = n_edges
+                ev_ratios[i] = n_edges / n_nodes if n_nodes > 0 else 0.0
+
+                # Read cell count from metadata if available
+                meta = grp.get('metadata')
+                if meta is not None and 'num_cells' in meta.attrs:
+                    cell_counts[i] = int(meta.attrs['num_cells'])
+                    has_cells = True
+                else:
+                    cell_counts[i] = 0
+
+                # Edge index bounds
+                if n_edges > 0:
+                    emin, emax = int(edge_data.min()), int(edge_data.max())
+                    if emin < 0 or emax >= n_nodes:
+                        issues.append(f"  ERROR: sample {sid}: edge index out of range "
+                                      f"[{emin}, {emax}] for {n_nodes} nodes")
+                    self_loops = int(np.sum(edge_data[0] == edge_data[1]))
+                    if self_loops > 0:
+                        issues.append(f"  ERROR: sample {sid}: {self_loops} self-loops")
+
+                if n_nodes == 0:
+                    issues.append(f"  ERROR: sample {sid}: 0 nodes")
+                if n_edges == 0:
+                    issues.append(f"  ERROR: sample {sid}: 0 edges")
+
+        # --- Summary statistics ---
+        ev_mean = float(np.mean(ev_ratios))
+        ev_std = float(np.std(ev_ratios))
+
+        print(f'  Nodes      - min: {int(np.min(node_counts)):,}  max: {int(np.max(node_counts)):,}  '
+              f'mean: {int(np.mean(node_counts)):,}')
+        print(f'  Edges      - min: {int(np.min(edge_counts)):,}  max: {int(np.max(edge_counts)):,}  '
+              f'mean: {int(np.mean(edge_counts)):,}')
+        if has_cells:
+            valid_cells = cell_counts[cell_counts > 0]
+            print(f'  Cells      - min: {int(np.min(valid_cells)):,}  max: {int(np.max(valid_cells)):,}  '
+                  f'mean: {int(np.mean(valid_cells)):,}')
+        print(f'  Edge/Node  - min: {float(np.min(ev_ratios)):.4f}  max: {float(np.max(ev_ratios)):.4f}  '
+              f'mean: {ev_mean:.4f}  std: {ev_std:.4f}')
+
+        # --- Element type inference from cell metadata ---
+        if has_cells:
+            valid_mask = (cell_counts > 0) & (node_counts > 0) & (edge_counts > 0)
+            if np.any(valid_mask):
+                cv_ratios = cell_counts[valid_mask].astype(np.float64) / node_counts[valid_mask]
+                ec_ratios = edge_counts[valid_mask].astype(np.float64) / cell_counts[valid_mask]
+                cv_mean = float(np.mean(cv_ratios))
+                ec_mean = float(np.mean(ec_ratios))
+
+                print(f'  Cell/Node  - mean: {cv_mean:.4f}')
+                print(f'  Edge/Cell  - mean: {ec_mean:.4f}')
+
+                # Classify element type using (Cell/Node, Edge/Node) signature:
+                #   Tri shell:   C/V ~ 2.0, E/V ~ 3.0  (cells = triangular faces)
+                #   Tet volume:  C/V ~ 3-6, E/V ~ 4.5-7 (cells = tetrahedra)
+                #   Quad shell:  C/V ~ 1.0, E/V ~ 2.0  (cells = quad faces)
+                #   Hex volume:  C/V ~ 1.0, E/V ~ 3-4  (cells = hexahedra)
+                if 1.7 <= cv_mean <= 2.3 and 2.7 <= ev_mean <= 3.3:
+                    elem_type = 'triangulated surface (shell)'
+                elif cv_mean > 2.5 and ev_mean > 4.0:
+                    elem_type = 'tetrahedral volume'
+                elif 0.7 <= cv_mean <= 1.3 and 1.7 <= ev_mean <= 2.3:
+                    elem_type = 'quad surface (shell)'
+                elif 0.7 <= cv_mean <= 1.3 and ev_mean > 2.3:
+                    elem_type = 'hexahedral volume'
+                else:
+                    elem_type = f'unknown (C/V={cv_mean:.2f}, E/V={ev_mean:.2f})'
+                print(f'  Likely element type: {elem_type}')
+
+        # --- Edge/Node ratio distribution (histogram for wide spreads) ---
+        if ev_std > 0.01:
+            hist, bin_edges = np.histogram(ev_ratios, bins=min(15, n_samples))
+            print(f'  Edge/Node ratio distribution:')
+            max_bar = max(hist) if max(hist) > 0 else 1
+            for j in range(len(hist)):
+                if hist[j] == 0:
+                    continue
+                lo, hi = bin_edges[j], bin_edges[j + 1]
+                bar = '#' * max(1, int(40 * hist[j] / max_bar))
+                print(f'    [{lo:.3f}, {hi:.3f}): {hist[j]:>5}  {bar}')
+
+        # --- Outliers (>3 sigma from mean) ---
+        if ev_std > 1e-6:
+            outlier_mask = np.abs(ev_ratios - ev_mean) > 3 * ev_std
+            n_outliers = int(np.sum(outlier_mask))
+            if n_outliers > 0:
+                print(f'  WARNING: {n_outliers} sample(s) with outlier edge/node ratio (>3 sigma):')
+                for j in np.where(outlier_mask)[0][:10]:
+                    sid = self.sample_ids[j]
+                    print(f'    sample {sid}: nodes={node_counts[j]:,}  '
+                          f'edges={edge_counts[j]:,}  edge/node={ev_ratios[j]:.4f}')
+
+        # --- Issues ---
+        if issues:
+            for issue in issues[:20]:
+                print(issue)
+        else:
+            print('  All samples passed topology checks')
+
     def prepare_preprocessing(self) -> None:
         """Fit preprocessing statistics using this dataset's sample_ids only."""
         if self.use_node_types:
