@@ -3,6 +3,7 @@ import torch.nn.init as init
 import torch.nn as nn
 import torch
 from torch_geometric.data import Data
+from general_modules.edge_features import EDGE_FEATURE_DIM
 from model.blocks import EdgeBlock, NodeBlock, HybridNodeBlock
 from model.checkpointing import process_with_checkpointing
 from model.coarsening import pool_features, unpool_features
@@ -79,7 +80,11 @@ class EncoderProcessorDecoder(nn.Module):
         self.config = config
 
         self.message_passing_num = config['message_passing_num']
-        self.edge_input_size = config['edge_var']
+        self.edge_input_size = int(config['edge_var'])
+        if self.edge_input_size != EDGE_FEATURE_DIM:
+            raise ValueError(
+                f"edge_var must be {EDGE_FEATURE_DIM}, got {self.edge_input_size}"
+            )
         self.latent_dim = config['latent_dim']
         self.use_checkpointing = config.get('use_checkpointing', False)
         self.use_world_edges = config.get('use_world_edges', False)
@@ -161,7 +166,7 @@ class EncoderProcessorDecoder(nn.Module):
         # Extract multiscale topology BEFORE encoder (encoder drops custom attrs)
         fine_to_coarse    = graph.fine_to_coarse     # [N_total] long — already offset for batch
         coarse_edge_index = graph.coarse_edge_index  # [2, E_c] — already offset for batch
-        coarse_edge_attr_raw = graph.coarse_edge_attr  # [E_c, 4] normalized coarse edge features
+        coarse_edge_attr_raw = graph.coarse_edge_attr  # [E_c, 8] normalized coarse edge features
         num_coarse = int(graph.num_coarse.sum())        # total coarse nodes in batch
 
         # Step 1: Encode fine graph

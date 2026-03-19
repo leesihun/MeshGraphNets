@@ -7,6 +7,7 @@ import torch
 from torch_geometric.data import Data
 from scipy.spatial import KDTree
 
+from general_modules.edge_features import EDGE_FEATURE_DIM, compute_edge_attr
 from model.MeshGraphNets import MeshGraphNets
 
 # Multiscale coarsening (only needed when use_multiscale=True)
@@ -268,12 +269,8 @@ def run_rollout(config, config_filename='config.txt'):
                 displacement = current_state[:, :3]  # [N, 3]
                 deformed_pos = ref_pos + displacement  # [N, 3]
 
-                # --- e. Compute edge features ---
-                src_idx = edge_index[0]
-                dst_idx = edge_index[1]
-                relative_pos = deformed_pos[dst_idx] - deformed_pos[src_idx]  # [2M, 3]
-                distance = np.linalg.norm(relative_pos, axis=1, keepdims=True)  # [2M, 1]
-                edge_attr_raw = np.concatenate([relative_pos, distance], axis=1)  # [2M, 4]
+                # --- e. Compute 8-D edge features from current and reference geometry ---
+                edge_attr_raw = compute_edge_attr(ref_pos, deformed_pos, edge_index)
 
                 # --- f. Normalize edge features ---
                 edge_attr_norm = (edge_attr_raw - edge_mean) / edge_std
@@ -290,7 +287,7 @@ def run_rollout(config, config_filename='config.txt'):
                 # --- h. Compute world edges if enabled ---
                 if use_world_edges and world_edge_radius is not None:
                     world_ei, world_ea = _compute_world_edges(
-                        deformed_pos, edge_index, world_edge_radius,
+                        ref_pos, deformed_pos, edge_index, world_edge_radius,
                         world_max_num_neighbors, world_edge_backend,
                         edge_mean, edge_std
                     )
@@ -298,14 +295,14 @@ def run_rollout(config, config_filename='config.txt'):
                     graph.world_edge_attr = torch.from_numpy(world_ea.astype(np.float32)).to(device)
                 else:
                     graph.world_edge_index = torch.zeros((2, 0), dtype=torch.long, device=device)
-                    graph.world_edge_attr = torch.zeros((0, 4), dtype=torch.float32, device=device)
+                    graph.world_edge_attr = torch.zeros((0, EDGE_FEATURE_DIM), dtype=torch.float32, device=device)
 
                 # --- h2. Attach coarse graph data if multiscale ---
                 if use_multiscale and coarse_cache is not None:
                     ftc_np = coarse_cache['ftc']
                     c_ei_np = coarse_cache['c_ei']
                     n_c = coarse_cache['n_c']
-                    c_ea_raw = compute_coarse_edge_attr(deformed_pos, ftc_np, c_ei_np, n_c)
+                    c_ea_raw = compute_coarse_edge_attr(ref_pos, deformed_pos, ftc_np, c_ei_np, n_c)
                     if c_ea_raw.shape[0] > 0:
                         c_ea_norm = (c_ea_raw - coarse_edge_mean) / coarse_edge_std
                     else:
@@ -453,40 +450,41 @@ def run_rollout(config, config_filename='config.txt'):
     print(f"\nRollout inference complete. Processed {len(sample_ids)} samples.")
 
 
-def _compute_world_edges(deformed_pos, mesh_edge_index, radius,
+def _compute_world_edges(reference_pos, deformed_pos, mesh_edge_index, radius,
                          max_num_neighbors, backend, edge_mean, edge_std):
     """
     Compute world edges (radius-based collision detection) for a single timestep.
 
     Args:
+        reference_pos: [N, 3] reference node positions
         deformed_pos: [N, 3] deformed node positions
         mesh_edge_index: [2, 2M] bidirectional mesh edges
         radius: World edge radius
         max_num_neighbors: Maximum neighbors per node
         backend: 'torch_cluster' or 'scipy_kdtree'
-        edge_mean: [4] edge normalization mean
-        edge_std: [4] edge normalization std
+        edge_mean: [8] edge normalization mean
+        edge_std: [8] edge normalization std
 
     Returns:
         world_edge_index: [2, E_world] world edge indices
-        world_edge_attr_norm: [E_world, 4] normalized world edge features
+        world_edge_attr_norm: [E_world, 8] normalized world edge features
     """
     if backend == 'torch_cluster' and HAS_TORCH_CLUSTER:
         return _world_edges_torch_cluster(
-            deformed_pos, mesh_edge_index, radius,
+            reference_pos, deformed_pos, mesh_edge_index, radius,
             max_num_neighbors, edge_mean, edge_std
         )
     else:
         return _world_edges_scipy(
-            deformed_pos, mesh_edge_index, radius,
+            reference_pos, deformed_pos, mesh_edge_index, radius,
             edge_mean, edge_std
         )
 
 
-def _world_edges_torch_cluster(pos, mesh_edges, radius,
+def _world_edges_torch_cluster(reference_pos, deformed_pos, mesh_edges, radius,
                                 max_num_neighbors, edge_mean, edge_std):
     """GPU-accelerated world edge computation using torch_cluster."""
-    pos_tensor = torch.from_numpy(pos).float().cuda()
+    pos_tensor = torch.from_numpy(deformed_pos).float().cuda()
 
     world_edges = radius_graph(
         x=pos_tensor, r=radius, batch=None,
@@ -495,7 +493,7 @@ def _world_edges_torch_cluster(pos, mesh_edges, radius,
     world_edges_np = world_edges.cpu().numpy()
 
     if world_edges_np.shape[1] == 0:
-        return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+        return np.zeros((2, 0), dtype=np.int64), np.zeros((0, EDGE_FEATURE_DIM), dtype=np.float32)
 
     # Filter out existing mesh edges
     mesh_set = {(int(mesh_edges[0, i]), int(mesh_edges[1, i]))
@@ -507,23 +505,21 @@ def _world_edges_torch_cluster(pos, mesh_edges, radius,
     we = world_edges_np[:, valid_mask]
 
     if we.shape[1] == 0:
-        return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+        return np.zeros((2, 0), dtype=np.int64), np.zeros((0, EDGE_FEATURE_DIM), dtype=np.float32)
 
-    rel = pos[we[1]] - pos[we[0]]
-    dist = np.linalg.norm(rel, axis=1, keepdims=True)
-    world_attr_raw = np.concatenate([rel, dist], axis=1).astype(np.float32)
+    world_attr_raw = compute_edge_attr(reference_pos, deformed_pos, we)
     world_attr_norm = (world_attr_raw - edge_mean) / edge_std
 
     return we, world_attr_norm
 
 
-def _world_edges_scipy(pos, mesh_edges, radius, edge_mean, edge_std):
+def _world_edges_scipy(reference_pos, deformed_pos, mesh_edges, radius, edge_mean, edge_std):
     """CPU world edge computation using scipy KDTree."""
-    tree = KDTree(pos)
+    tree = KDTree(deformed_pos)
     pairs = tree.query_pairs(r=radius, output_type='ndarray')
 
     if len(pairs) == 0:
-        return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+        return np.zeros((2, 0), dtype=np.int64), np.zeros((0, EDGE_FEATURE_DIM), dtype=np.float32)
 
     mesh_set = {(int(mesh_edges[0, i]), int(mesh_edges[1, i]))
                 for i in range(mesh_edges.shape[1])}
@@ -536,12 +532,10 @@ def _world_edges_scipy(pos, mesh_edges, radius, edge_mean, edge_std):
             we.append([r, s])
 
     if not we:
-        return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+        return np.zeros((2, 0), dtype=np.int64), np.zeros((0, EDGE_FEATURE_DIM), dtype=np.float32)
 
     wei = np.array(we, dtype=np.int64).T
-    rel = pos[wei[1]] - pos[wei[0]]
-    dist = np.linalg.norm(rel, axis=1, keepdims=True)
-    world_attr_raw = np.concatenate([rel, dist], axis=1).astype(np.float32)
+    world_attr_raw = compute_edge_attr(reference_pos, deformed_pos, wei)
     world_attr_norm = (world_attr_raw - edge_mean) / edge_std
 
     return wei, world_attr_norm

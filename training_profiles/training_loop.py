@@ -35,45 +35,42 @@ def save_debug_batch(epoch, batch_idx, graph, predicted, target, log_dir):
         tqdm.tqdm.write(f"  Warning: Could not save debug data: {e}")
 
 def _build_loss_weights(config, device):
-    """Build per-feature loss weight tensor from config. Returns None if not configured."""
+    """Build per-feature loss weights normalized to sum to output_var."""
     loss_weights = config.get('feature_loss_weights', None)
     if loss_weights is not None:
         if not isinstance(loss_weights, list):
             loss_weights = [loss_weights]
         loss_weights = torch.tensor(loss_weights, dtype=torch.float32, device=device)
-        # Normalize so weights sum to 1 (loss is weighted mean over features)
-        loss_weights = loss_weights / loss_weights.sum()
+        loss_weights = loss_weights * (loss_weights.numel() / loss_weights.sum())
     return loss_weights
 
 
-def _weighted_mse(errors, loss_weights, batch=None):
-    """Compute loss with per-graph averaging for variable-size meshes.
-
-    Each graph gets equal weight regardless of node count:
-      1. Reduce features to per-node scalar (weighted sum or mean)
-      2. Average per-node errors within each graph  (scatter mean)
-      3. Average over graphs in the batch
-
-    Falls back to global node mean when batch is None (e.g. batch_size=1).
-    """
-    from torch_geometric.utils import scatter
-
-    # Step 1: per-node scalar error
+def _per_node_loss(errors, loss_weights):
+    """Reduce feature errors to one scalar per node."""
     if loss_weights is not None:
-        per_node = torch.sum(errors * loss_weights, dim=-1)  # [N]
-    else:
-        per_node = torch.mean(errors, dim=-1)  # [N]
+        return torch.sum(errors * loss_weights, dim=-1)
+    return torch.sum(errors, dim=-1)
 
-    # Step 2-3: per-graph mean, then mean over graphs
-    if batch is not None:
-        per_graph = scatter(per_node, batch, dim=0, reduce='mean')  # [num_graphs]
-        return per_graph.mean()
-    return per_node.mean()
+
+def _loss_from_errors(errors, loss_weights):
+    """Return mean loss used for backprop plus exact aggregation stats."""
+    per_node = _per_node_loss(errors, loss_weights)
+    loss_sum = per_node.sum()
+    loss_count = per_node.numel()
+    return loss_sum / loss_count, loss_sum.item(), loss_count
+
+
+def _accum_window_size(batch_idx, total_batches, actual_accum):
+    """Return the number of batches in the current accumulation window."""
+    window_start = (batch_idx // actual_accum) * actual_accum
+    window_end = min(window_start + actual_accum, total_batches)
+    return window_end - window_start
 
 
 def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None):
     model.train()
-    total_loss = 0.0
+    total_loss_sum = 0.0
+    total_loss_count = 0
     total_grad_norm = 0.0
     num_batches = 0
     num_steps = 0  # number of optimizer steps taken
@@ -114,9 +111,9 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                     save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
 
             errors = ((predicted_acc - target_acc) ** 2)
-            loss = _weighted_mse(errors, loss_weights, batch=graph.batch)
-            # Scale loss so accumulated gradients equal the average (not sum) over batches
-            scaled_loss = loss / actual_accum
+            loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
+            # Scale loss so accumulated gradients equal the mean within each accumulation window.
+            scaled_loss = loss / _accum_window_size(batch_idx, total_batches, actual_accum)
 
         scaled_loss.backward()
 
@@ -131,8 +128,9 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
             for feat_idx, feat_name in enumerate(feature_names[:len(per_feature_loss_mean)]):
                 tqdm.tqdm.write(f"  {feat_name}: mean={per_feature_loss_mean[feat_idx].item():.2e}, max={per_feature_loss_max[feat_idx].item():.2e}, min={per_feature_loss_min[feat_idx].item():.2e}, std={per_feature_loss_std[feat_idx].item():.2e}")
 
-        loss_val = loss.item()  # unscaled loss for reporting
-        total_loss += loss_val
+        loss_val = batch_loss_sum / batch_loss_count
+        total_loss_sum += batch_loss_sum
+        total_loss_count += batch_loss_count
         num_batches += 1
 
         # Step optimizer at end of accumulation window or final batch
@@ -182,7 +180,11 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
         elif avg_grad_norm > 1e2:
             tqdm.tqdm.write("  ⚠️  WARNING: Very large gradients detected (> 100) - possible exploding gradient problem!")
 
-    return total_loss / num_batches
+    return {
+        'mean': total_loss_sum / total_loss_count,
+        'sum': total_loss_sum,
+        'count': total_loss_count,
+    }
 
 def validate_epoch(model, dataloader, device, config, epoch=0):
     model.eval()
@@ -195,11 +197,13 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
     amp_dtype = torch.bfloat16
 
     with torch.no_grad():
-        total_loss = 0.0
+        total_loss_sum = 0.0
+        total_loss_count = 0
         num_batches = 0
 
         # Accumulate per-feature losses across all batches
         accumulated_per_feature_loss = None
+        accumulated_per_feature_count = 0
 
         pbar = tqdm.tqdm(dataloader)
         for batch_idx, graph in enumerate(pbar):
@@ -213,14 +217,15 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
                 errors = ((predicted - target) ** 2)
-                loss = _weighted_mse(errors, loss_weights, batch=graph.batch)
+                loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             # Accumulate per-feature losses
-            per_feature_loss = torch.mean(errors, dim=0)  # Average across nodes
+            per_feature_loss = torch.sum(errors, dim=0)
             if accumulated_per_feature_loss is None:
                 accumulated_per_feature_loss = per_feature_loss
             else:
                 accumulated_per_feature_loss += per_feature_loss
+            accumulated_per_feature_count += errors.shape[0]
 
             if batch_idx < 3 and verbose:
                 mem_after = torch.cuda.memory_allocated() / 1e9
@@ -231,19 +236,24 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
             mem_gb = torch.cuda.memory_allocated() / 1e9
             pbar.set_postfix({'loss': f'{loss.item():.2e}', 'mem': f'{mem_gb:.1f}GB'})
 
-            total_loss += loss.item()
+            total_loss_sum += batch_loss_sum
+            total_loss_count += batch_loss_count
             num_batches += 1
         
         # Print per-feature validation loss breakdown
-        if verbose and accumulated_per_feature_loss is not None and num_batches > 0:
-            avg_per_feature_loss = accumulated_per_feature_loss / num_batches
+        if verbose and accumulated_per_feature_loss is not None and accumulated_per_feature_count > 0:
+            avg_per_feature_loss = accumulated_per_feature_loss / accumulated_per_feature_count
             feature_names = ['x_disp', 'y_disp', 'z_disp', 'stress']
             tqdm.tqdm.write(f"\n=== Per-Feature Validation MSE Loss (Epoch {epoch}) ===")
             for feat_idx, feat_name in enumerate(feature_names[:len(avg_per_feature_loss)]):
                 tqdm.tqdm.write(f"  {feat_name}: {avg_per_feature_loss[feat_idx].item():.2e}")
             tqdm.tqdm.write("")
 
-    return total_loss / num_batches
+    return {
+        'mean': total_loss_sum / total_loss_count,
+        'sum': total_loss_sum,
+        'count': total_loss_count,
+    }
 
 
 def test_model(model, dataloader, device, config, epoch, dataset=None, output_prefix='test'):
@@ -282,11 +292,13 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             print(f"Using denormalization: delta_mean={delta_mean}, delta_std={delta_std}")
 
     with torch.no_grad():
-        total_loss = 0.0
+        total_loss_sum = 0.0
+        total_loss_count = 0
         num_batches = 0
 
         # Accumulate per-feature losses across all test batches
         accumulated_per_feature_loss = None
+        accumulated_per_feature_count = 0
 
         # Collect plot data for parallel processing
         plot_data_queue = []
@@ -300,20 +312,22 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
                 errors = ((predicted - target) ** 2)
-                loss = _weighted_mse(errors, loss_weights, batch=graph.batch)
+                loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             # Accumulate per-feature losses
-            per_feature_loss = torch.mean(errors, dim=0)  # Average across nodes
+            per_feature_loss = torch.sum(errors, dim=0)
             if accumulated_per_feature_loss is None:
                 accumulated_per_feature_loss = per_feature_loss
             else:
                 accumulated_per_feature_loss += per_feature_loss
+            accumulated_per_feature_count += errors.shape[0]
 
             # Update progress bar
             mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
             pbar.set_postfix({'loss': f'{loss.item():.2e}', 'mem': f'{mem_gb:.1f}GB'})
 
-            total_loss += loss.item()
+            total_loss_sum += batch_loss_sum
+            total_loss_count += batch_loss_count
             num_batches += 1
 
             # Save results with GPU-accelerated mesh reconstruction
@@ -413,12 +427,12 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
                 print("All visualizations complete!")
         
         # Print per-feature test loss breakdown
-        if verbose and accumulated_per_feature_loss is not None and num_batches > 0:
-            avg_per_feature_loss = accumulated_per_feature_loss / num_batches
+        if verbose and accumulated_per_feature_loss is not None and accumulated_per_feature_count > 0:
+            avg_per_feature_loss = accumulated_per_feature_loss / accumulated_per_feature_count
             feature_names = ['x_disp', 'y_disp', 'z_disp', 'stress']
             print(f"\n=== Per-Feature Test MSE Loss (Epoch {epoch}) ===")
             for feat_idx, feat_name in enumerate(feature_names[:len(avg_per_feature_loss)]):
                 print(f"  {feat_name}: {avg_per_feature_loss[feat_idx].item():.2e}")
             print("")
 
-    return total_loss / num_batches if num_batches > 0 else 0.0
+    return total_loss_sum / total_loss_count if total_loss_count > 0 else 0.0

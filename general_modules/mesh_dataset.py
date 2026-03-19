@@ -7,6 +7,8 @@ from torch_geometric.data import Data
 from scipy.spatial import KDTree
 import multiprocessing as mp
 
+from general_modules.edge_features import EDGE_FEATURE_DIM, compute_edge_attr
+
 # Multiscale coarsening (optional — only imported when use_multiscale=True)
 try:
     from model.coarsening import bfs_bistride_coarsen, compute_coarse_edge_attr, MultiscaleData
@@ -21,56 +23,13 @@ try:
 except ImportError:
     HAS_TORCH_CLUSTER = False
 
-
-def _welford_update(stats, batch):
-    """Update running (n, mean, M2) with a new batch [B, D]. O(D) memory."""
-    b = batch.shape[0]
-    if b == 0:
-        return stats
-    b_mean = np.mean(batch, axis=0, dtype=np.float64)
-    b_M2 = np.var(batch, axis=0, dtype=np.float64) * b
-    if stats is None:
-        return (b, b_mean, b_M2)
-    n_a, mean_a, M2_a = stats
-    n = n_a + b
-    delta = b_mean - mean_a
-    mean = mean_a + delta * (b / n)
-    M2 = M2_a + b_M2 + delta ** 2 * (n_a * b / n)
-    return (n, mean, M2)
-
-
-def _welford_combine(stats_a, stats_b):
-    """Merge two sets of Welford statistics from parallel workers."""
-    if stats_a is None:
-        return stats_b
-    if stats_b is None:
-        return stats_a
-    n_a, mean_a, M2_a = stats_a
-    n_b, mean_b, M2_b = stats_b
-    n = n_a + n_b
-    delta = mean_b - mean_a
-    mean = mean_a + delta * (n_b / n)
-    M2 = M2_a + M2_b + delta ** 2 * (n_a * n_b / n)
-    return (n, mean, M2)
-
-
-def _welford_finalize(stats):
-    """Extract (mean, std) as float32 from Welford stats. Clamps std >= 1e-8."""
-    n, mean, M2 = stats
-    std = np.sqrt(M2 / n)
-    return mean.astype(np.float32), np.maximum(std.astype(np.float32), 1e-8)
-
-
-def _persample_finalize(sum_mean, sum_meansqr, count):
-    """Finalize per-sample equal-weight statistics (NVIDIA approach).
-
-    Each sample contributes equally regardless of node count:
-        mean = avg(sample_means)
-        std  = sqrt(avg(sample_mean_of_squares) - avg(sample_means)^2)
-    """
-    mean = (sum_mean / count).astype(np.float32)
-    meansqr = (sum_meansqr / count).astype(np.float32)
-    var = np.maximum(meansqr - mean ** 2, 0)
+def _finalize_moments(feature_sum, feature_sumsq, count):
+    """Finalize element-weighted mean/std from sums and squared sums."""
+    if count <= 0:
+        raise ValueError("Cannot finalize normalization statistics with count <= 0")
+    mean = (feature_sum / count).astype(np.float32)
+    meansq = (feature_sumsq / count).astype(np.float32)
+    var = np.maximum(meansq - mean ** 2, 0.0)
     std = np.sqrt(var).astype(np.float32)
     return mean, np.maximum(std, 1e-8)
 
@@ -80,10 +39,9 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
     """
     Worker function to process a chunk of samples.
 
-    Uses per-sample equal-weight accumulation (NVIDIA approach): each sample
-    contributes equally regardless of node count.  Accumulates sum-of-means
-    and sum-of-mean-squares so the master can finalize with
-    ``_persample_finalize``.
+    Accumulates element-weighted statistics over all nodes, edges, and deltas
+    in the provided sample subset. This matches MeshGraphNets' online training
+    normalizers more closely than per-sample averaging.
 
     Args:
         h5_file: Path to HDF5 dataset file
@@ -93,14 +51,15 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
         num_timesteps: Number of timesteps in the dataset
 
     Returns:
-        Dictionary with per-sample sums for node/edge/delta features plus delta min/max.
+        Dictionary with element-wise sums for node/edge/delta features plus
+        delta min/max.
     """
     node_sum = np.zeros(input_dim, dtype=np.float64)
     node_sumsq = np.zeros(input_dim, dtype=np.float64)
     node_count = 0
 
-    edge_sum = np.zeros(4, dtype=np.float64)
-    edge_sumsq = np.zeros(4, dtype=np.float64)
+    edge_sum = np.zeros(EDGE_FEATURE_DIM, dtype=np.float64)
+    edge_sumsq = np.zeros(EDGE_FEATURE_DIM, dtype=np.float64)
     edge_count = 0
 
     delta_sum = np.zeros(output_dim, dtype=np.float64)
@@ -127,38 +86,38 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
 
                     for t in timesteps:
                         node_feat = data[3:3+input_dim, t, :].T  # [N, input_dim]
-                        node_sum += np.mean(node_feat, axis=0)
-                        node_sumsq += np.mean(node_feat ** 2, axis=0)
-                        node_count += 1
+                        node_sum += np.sum(node_feat, axis=0)
+                        node_sumsq += np.sum(node_feat ** 2, axis=0)
+                        node_count += node_feat.shape[0]
 
-                        pos = (data[:3, t, :] + data[3:6, t, :]).T  # [N, 3]
-                        rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]
-                        dist = np.linalg.norm(rel_pos, axis=1, keepdims=True)
-                        edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
-                        edge_sum += np.mean(edge_feat, axis=0)
-                        edge_sumsq += np.mean(edge_feat ** 2, axis=0)
-                        edge_count += 1
+                        ref_pos = data[:3, t, :].T
+                        deformed_pos = ref_pos + data[3:6, t, :].T
+                        edge_feat = compute_edge_attr(ref_pos, deformed_pos, edge_idx)
+                        edge_sum += np.sum(edge_feat, axis=0)
+                        edge_sumsq += np.sum(edge_feat ** 2, axis=0)
+                        edge_count += edge_feat.shape[0]
 
                     # Delta features
                     if num_timesteps > 1:
                         num_delta_samples = min(max_timesteps_for_stats, num_timesteps - 1)
                         delta_timesteps = np.linspace(0, num_timesteps - 2, num_delta_samples, dtype=int)
                         for t in delta_timesteps:
-                            for feat_idx in range(output_dim):
-                                delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
-                                delta_sum[feat_idx] += np.mean(delta)
-                                delta_sumsq[feat_idx] += np.mean(delta ** 2)
-                                delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(delta)))
-                                delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(delta)))
-                            delta_count += 1
+                            delta = (
+                                data[3:3 + output_dim, t + 1, :] -
+                                data[3:3 + output_dim, t, :]
+                            ).T
+                            delta_sum += np.sum(delta, axis=0)
+                            delta_sumsq += np.sum(delta ** 2, axis=0)
+                            delta_min = np.minimum(delta_min, np.min(delta, axis=0))
+                            delta_max = np.maximum(delta_max, np.max(delta, axis=0))
+                            delta_count += delta.shape[0]
                     else:
-                        for feat_idx in range(output_dim):
-                            feat = data[3 + feat_idx, 0, :]
-                            delta_sum[feat_idx] += np.mean(feat)
-                            delta_sumsq[feat_idx] += np.mean(feat ** 2)
-                            delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(feat)))
-                            delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(feat)))
-                        delta_count += 1
+                        delta = data[3:3 + output_dim, 0, :].T
+                        delta_sum += np.sum(delta, axis=0)
+                        delta_sumsq += np.sum(delta ** 2, axis=0)
+                        delta_min = np.minimum(delta_min, np.min(delta, axis=0))
+                        delta_max = np.maximum(delta_max, np.max(delta, axis=0))
+                        delta_count += delta.shape[0]
 
                 except Exception as e:
                     print(f"Warning: Failed to process sample {sid}: {e}")
@@ -178,8 +137,8 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
             'node_sum': np.zeros(input_dim, dtype=np.float64),
             'node_sumsq': np.zeros(input_dim, dtype=np.float64),
             'node_count': 0,
-            'edge_sum': np.zeros(4, dtype=np.float64),
-            'edge_sumsq': np.zeros(4, dtype=np.float64),
+            'edge_sum': np.zeros(EDGE_FEATURE_DIM, dtype=np.float64),
+            'edge_sumsq': np.zeros(EDGE_FEATURE_DIM, dtype=np.float64),
             'edge_count': 0,
             'delta_sum': np.zeros(output_dim, dtype=np.float64),
             'delta_sumsq': np.zeros(output_dim, dtype=np.float64),
@@ -198,6 +157,14 @@ class MeshGraphDataset(Dataset):
         # Graph and feature parameters
         self.input_dim = config.get('input_var')  # Physical features only (4)
         self.output_dim = config.get('output_var')  # Physical features only (4)
+        configured_edge_dim = int(config.get('edge_var', EDGE_FEATURE_DIM))
+        if configured_edge_dim != EDGE_FEATURE_DIM:
+            raise ValueError(
+                f"edge_var must be {EDGE_FEATURE_DIM} "
+                f"([deformed_dx, deformed_dy, deformed_dz, deformed_dist, "
+                f"ref_dx, ref_dy, ref_dz, ref_dist]), got {configured_edge_dim}"
+            )
+        self.edge_dim = EDGE_FEATURE_DIM
 
         # Node type parameters
         self.use_node_types = config.get('use_node_types', False)
@@ -229,7 +196,7 @@ class MeshGraphDataset(Dataset):
         self._coarse_cache: Dict = {}  # {sample_id: {'fine_to_coarse':..., 'coarse_edge_index':..., 'num_coarse':...}}
 
         print(f"Loading MeshGraphDataset: {h5_file}")
-        print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}")
+        print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}, edge_dim: {self.edge_dim}")
         print(f"  use_node_types: {self.use_node_types}")
         print(f"  use_world_edges: {self.use_world_edges}")
         print(f"  use_multiscale: {self.use_multiscale}" + (f" (levels={self.multiscale_levels})" if self.use_multiscale else ""))
@@ -252,15 +219,21 @@ class MeshGraphDataset(Dataset):
 
             self.delta_mean = None
             self.delta_std = None
+            self.node_mean = None
+            self.node_std = None
+            self.edge_mean = None
+            self.edge_std = None
+            self._h5_handle = None
 
         print(f"Found {len(self.sample_ids)} samples")
         print(f"  num_timesteps: {self.num_timesteps}")
 
-        # Compute z-score normalization statistics for node and edge features
-        self._compute_zscore_stats()
-
+    def prepare_preprocessing(self) -> None:
+        """Fit preprocessing statistics using this dataset's sample_ids only."""
         if self.use_node_types:
             self._compute_node_type_info()
+
+        self._compute_zscore_stats()
 
         if self.use_world_edges:
             self._compute_world_edge_radius()
@@ -270,14 +243,114 @@ class MeshGraphDataset(Dataset):
                 raise ImportError("use_multiscale=True requires model/coarsening.py (import failed)")
             self._compute_coarse_edge_stats()
 
+    def inherit_preprocessing_from(self, source_dataset) -> None:
+        """Reuse preprocessing fit on another dataset, typically the train split."""
+        self.node_mean = source_dataset.node_mean.copy()
+        self.node_std = source_dataset.node_std.copy()
+        self.edge_mean = source_dataset.edge_mean.copy()
+        self.edge_std = source_dataset.edge_std.copy()
+        self.delta_mean = source_dataset.delta_mean.copy()
+        self.delta_std = source_dataset.delta_std.copy()
+        self.num_node_types = source_dataset.num_node_types
+        self.node_type_to_idx = (
+            dict(source_dataset.node_type_to_idx)
+            if source_dataset.node_type_to_idx is not None
+            else None
+        )
+        self.world_edge_radius = source_dataset.world_edge_radius
+        self.min_edge_length = source_dataset.min_edge_length
+        self.coarse_edge_mean = (
+            source_dataset.coarse_edge_mean.copy()
+            if source_dataset.coarse_edge_mean is not None
+            else None
+        )
+        self.coarse_edge_std = (
+            source_dataset.coarse_edge_std.copy()
+            if source_dataset.coarse_edge_std is not None
+            else None
+        )
+
+    def write_preprocessing_to_hdf5(self, split_seed: int) -> None:
+        """Persist train-derived preprocessing statistics to the HDF5 dataset."""
+        if any(value is None for value in (
+            self.node_mean, self.node_std,
+            self.edge_mean, self.edge_std,
+            self.delta_mean, self.delta_std,
+        )):
+            raise RuntimeError("Cannot write preprocessing stats before prepare_preprocessing()")
+
+        with h5py.File(self.h5_file, 'r+') as f:
+            metadata = f.require_group('metadata')
+            norm_group = metadata.require_group('normalization_params')
+
+            def _write_array(name: str, value: np.ndarray) -> None:
+                if name in norm_group:
+                    del norm_group[name]
+                norm_group.create_dataset(name, data=value.astype(np.float32))
+
+            _write_array('node_mean', self.node_mean)
+            _write_array('node_std', self.node_std)
+            _write_array('edge_mean', self.edge_mean)
+            _write_array('edge_std', self.edge_std)
+            _write_array('delta_mean', self.delta_mean)
+            _write_array('delta_std', self.delta_std)
+
+            norm_group.attrs['edge_feature_layout'] = (
+                'deformed_dx,deformed_dy,deformed_dz,deformed_dist,'
+                'ref_dx,ref_dy,ref_dz,ref_dist'
+            )
+            norm_group.attrs['edge_var'] = self.edge_dim
+            norm_group.attrs['normalization_source'] = 'train_split'
+            norm_group.attrs['split_seed'] = int(split_seed)
+
+    def _create_subset(self, sample_ids: List[int]):
+        subset = MeshGraphDataset.__new__(MeshGraphDataset)
+        subset.h5_file = self.h5_file
+        subset.config = self.config
+        subset.input_dim = self.input_dim
+        subset.output_dim = self.output_dim
+        subset.edge_dim = self.edge_dim
+        subset.sample_ids = list(sample_ids)
+        subset.num_timesteps = self.num_timesteps
+        subset.use_node_types = self.use_node_types
+        subset.num_node_types = None
+        subset.node_type_to_idx = None
+        subset.use_world_edges = self.use_world_edges
+        subset.world_radius_multiplier = self.world_radius_multiplier
+        subset.world_max_num_neighbors = self.world_max_num_neighbors
+        subset.world_edge_backend = self.world_edge_backend
+        subset.world_edge_radius = None
+        subset.min_edge_length = None
+        subset.delta_mean = None
+        subset.delta_std = None
+        subset.node_mean = None
+        subset.node_std = None
+        subset.edge_mean = None
+        subset.edge_std = None
+        subset.use_multiscale = self.use_multiscale
+        subset.multiscale_levels = self.multiscale_levels
+        subset.coarse_edge_mean = None
+        subset.coarse_edge_std = None
+        subset._coarse_cache = {}
+        subset._h5_handle = None
+        return subset
+
+    def _resolve_split_ids(self, train_ratio: float, val_ratio: float, test_ratio: float, seed: int):
+        """Always generate a deterministic seeded split."""
+        rng = np.random.default_rng(seed)
+        shuffled_ids = self.sample_ids.copy()
+        rng.shuffle(shuffled_ids)
+        n_samples = len(shuffled_ids)
+        n_train = int(n_samples * train_ratio)
+        n_val = int(n_samples * val_ratio)
+        train_ids = shuffled_ids[:n_train]
+        val_ids = shuffled_ids[n_train:n_train + n_val]
+        test_ids = shuffled_ids[n_train + n_val:]
+        print(f"Using seeded random split (seed={seed}).")
+        return train_ids, val_ids, test_ids
+
     def _compute_zscore_stats(self) -> None:
-        """Compute z-score normalization statistics (mean, std) for node, edge, and delta features.
-
-        Also updates the HDF5 file with correct delta normalization parameters computed from
-        actual data, fixing any incorrect pre-stored values.
-
-        Supports parallel processing for large datasets via config option 'use_parallel_stats'.
-        """
+        """Compute train-split z-score statistics for node, edge, and delta features."""
         print('Computing z-score normalization statistics...')
 
         num_samples = len(self.sample_ids)
@@ -303,17 +376,17 @@ class MeshGraphDataset(Dataset):
                 print(f'  Using serial processing ({num_samples} samples, threshold={min_samples_for_parallel})')
             stats = self._compute_stats_serial(num_samples)
 
-        # Finalize per-sample equal-weight statistics (NVIDIA approach)
-        self.node_mean, self.node_std = _persample_finalize(
+        # Finalize element-weighted statistics
+        self.node_mean, self.node_std = _finalize_moments(
             stats['node_sum'], stats['node_sumsq'], stats['node_count'])
-        self.edge_mean, self.edge_std = _persample_finalize(
+        self.edge_mean, self.edge_std = _finalize_moments(
             stats['edge_sum'], stats['edge_sumsq'], stats['edge_count'])
 
         print(f'  Node features - mean: {self.node_mean}, std: {self.node_std}')
         print(f'  Edge features - mean: {self.edge_mean}, std: {self.edge_std}')
 
         # Finalize delta statistics
-        self.delta_mean, self.delta_std = _persample_finalize(
+        self.delta_mean, self.delta_std = _finalize_moments(
             stats['delta_sum'], stats['delta_sumsq'], stats['delta_count'])
         delta_min = stats['delta_min'].astype(np.float32)
         delta_max = stats['delta_max'].astype(np.float32)
@@ -354,114 +427,18 @@ class MeshGraphDataset(Dataset):
         else:
             print('  ✓ All normalization statistics look reasonable')
 
-        # Update HDF5 file with computed normalization parameters
-        self._update_hdf5_normalization_params(delta_min, delta_max)
-
-    def _update_hdf5_normalization_params(self, delta_min: np.ndarray, delta_max: np.ndarray) -> None:
-        """Update HDF5 file with computed delta normalization parameters.
-
-        Uses pre-computed delta_min/delta_max from the streaming stats pass,
-        avoiding a redundant full re-read of all samples.
-        """
-        try:
-            with h5py.File(self.h5_file, 'r+') as f:
-                if 'metadata/normalization_params' not in f:
-                    f.create_group('metadata/normalization_params')
-
-                norm_params = f['metadata/normalization_params']
-
-                if 'delta_mean' in norm_params and 'delta_std' in norm_params:
-                    norm_params['delta_mean'][...] = self.delta_mean
-                    norm_params['delta_std'][...] = self.delta_std
-
-                    if 'delta_max' in norm_params and 'delta_min' in norm_params:
-                        norm_params['delta_max'][...] = delta_max
-                        norm_params['delta_min'][...] = delta_min
-
-                    print(f'  [OK] HDF5 delta normalization parameters updated successfully')
-        except (OSError, BlockingIOError):
-            print(f'  [INFO] Could not update HDF5 normalization params (file locked by another process)')
-
     def _compute_stats_serial(self, num_samples: int) -> Dict:
-        """Serial statistics with per-sample equal weight (NVIDIA approach).
-
-        Each sample contributes equally to mean/std regardless of node count.
-        Accumulates sum-of-per-sample-means and sum-of-per-sample-mean-squares.
-        """
-        node_sum = np.zeros(self.input_dim, dtype=np.float64)
-        node_sumsq = np.zeros(self.input_dim, dtype=np.float64)
-        node_count = 0
-
-        edge_sum = np.zeros(4, dtype=np.float64)
-        edge_sumsq = np.zeros(4, dtype=np.float64)
-        edge_count = 0
-
-        delta_sum = np.zeros(self.output_dim, dtype=np.float64)
-        delta_sumsq = np.zeros(self.output_dim, dtype=np.float64)
-        delta_count = 0
-        delta_min = np.full(self.output_dim, np.inf, dtype=np.float64)
-        delta_max = np.full(self.output_dim, -np.inf, dtype=np.float64)
-
-        max_timesteps_for_stats = 500
-
-        with h5py.File(self.h5_file, 'r') as f:
-            for i in range(num_samples):
-                sid = self.sample_ids[i]
-                data = f[f'data/{sid}/nodal_data'][:]  # [features, time, nodes]
-                mesh_edge = f[f'data/{sid}/mesh_edge'][:]  # [2, edges]
-
-                if self.num_timesteps > 1:
-                    num_samples_t = min(max_timesteps_for_stats, self.num_timesteps)
-                    timesteps = np.linspace(0, self.num_timesteps - 1, num_samples_t, dtype=int)
-                else:
-                    timesteps = [0]
-
-                edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
-
-                for t in timesteps:
-                    node_feat = data[3:3+self.input_dim, t, :].T  # [N, input_dim]
-                    node_sum += np.mean(node_feat, axis=0)
-                    node_sumsq += np.mean(node_feat ** 2, axis=0)
-                    node_count += 1
-
-                    pos = (data[:3, t, :] + data[3:6, t, :]).T  # [N, 3]
-                    rel_pos = pos[edge_idx[1]] - pos[edge_idx[0]]
-                    dist = np.linalg.norm(rel_pos, axis=1, keepdims=True)
-                    edge_feat = np.concatenate([rel_pos, dist], axis=1)  # [2E, 4]
-                    edge_sum += np.mean(edge_feat, axis=0)
-                    edge_sumsq += np.mean(edge_feat ** 2, axis=0)
-                    edge_count += 1
-
-                # Delta features
-                if self.num_timesteps > 1:
-                    num_delta_samples = min(max_timesteps_for_stats, self.num_timesteps - 1)
-                    delta_timesteps = np.linspace(0, self.num_timesteps - 2, num_delta_samples, dtype=int)
-                    for t in delta_timesteps:
-                        for feat_idx in range(self.output_dim):
-                            delta = data[3 + feat_idx, t + 1, :] - data[3 + feat_idx, t, :]
-                            delta_sum[feat_idx] += np.mean(delta)
-                            delta_sumsq[feat_idx] += np.mean(delta ** 2)
-                            delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(delta)))
-                            delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(delta)))
-                        delta_count += 1
-                else:
-                    for feat_idx in range(self.output_dim):
-                        feat = data[3 + feat_idx, 0, :]
-                        delta_sum[feat_idx] += np.mean(feat)
-                        delta_sumsq[feat_idx] += np.mean(feat ** 2)
-                        delta_min[feat_idx] = min(delta_min[feat_idx], float(np.min(feat)))
-                        delta_max[feat_idx] = max(delta_max[feat_idx], float(np.max(feat)))
-                    delta_count += 1
-
-        return {
-            'node_sum': node_sum, 'node_sumsq': node_sumsq, 'node_count': node_count,
-            'edge_sum': edge_sum, 'edge_sumsq': edge_sumsq, 'edge_count': edge_count,
-            'delta_sum': delta_sum, 'delta_sumsq': delta_sumsq, 'delta_count': delta_count,
-            'delta_min': delta_min, 'delta_max': delta_max,
-        }
+        """Serial statistics over the current split."""
+        return _process_sample_chunk(
+            self.h5_file,
+            self.sample_ids[:num_samples],
+            self.input_dim,
+            self.output_dim,
+            self.num_timesteps,
+        )
 
     def _compute_stats_parallel(self, num_workers: int, num_samples: int) -> Dict:
-        """Parallel statistics — workers return per-sample sums, master merges by addition."""
+        """Parallel statistics — workers return element-wise sums, master merges them."""
         chunk_size = max(1, num_samples // num_workers)
         sample_chunks = []
         for i in range(0, num_samples, chunk_size):
@@ -479,8 +456,8 @@ class MeshGraphDataset(Dataset):
             node_sum = np.zeros(self.input_dim, dtype=np.float64)
             node_sumsq = np.zeros(self.input_dim, dtype=np.float64)
             node_count = 0
-            edge_sum = np.zeros(4, dtype=np.float64)
-            edge_sumsq = np.zeros(4, dtype=np.float64)
+            edge_sum = np.zeros(self.edge_dim, dtype=np.float64)
+            edge_sumsq = np.zeros(self.edge_dim, dtype=np.float64)
             edge_count = 0
             delta_sum = np.zeros(self.output_dim, dtype=np.float64)
             delta_sumsq = np.zeros(self.output_dim, dtype=np.float64)
@@ -531,8 +508,8 @@ class MeshGraphDataset(Dataset):
         import time as _time
         n_samples = len(self.sample_ids)
         print(f'Computing coarse edge normalization statistics ({n_samples} samples)...')
-        coarse_sum = np.zeros(4, dtype=np.float64)
-        coarse_sumsq = np.zeros(4, dtype=np.float64)
+        coarse_sum = np.zeros(self.edge_dim, dtype=np.float64)
+        coarse_sumsq = np.zeros(self.edge_dim, dtype=np.float64)
         coarse_count = 0
         t_start = _time.time()
 
@@ -594,14 +571,14 @@ class MeshGraphDataset(Dataset):
                 for t in timesteps:
                     # Read only needed features for this timestep (ref pos + displacement)
                     pos_data = data_h5[:6, t, :]  # [6, nodes] — only ref_pos + disp
+                    ref_pos = pos_data[:3, :].T
                     deformed_pos = (pos_data[:3, :] + pos_data[3:6, :]).T  # [N, 3]
                     c_edge_attr = compute_coarse_edge_attr(
-                        deformed_pos, ftc_final, c_edge_idx_final, n_coarse_final
+                        ref_pos, deformed_pos, ftc_final, c_edge_idx_final, n_coarse_final
                     )
-                    # Per-sample equal weight (NVIDIA approach)
-                    coarse_sum += np.mean(c_edge_attr, axis=0)
-                    coarse_sumsq += np.mean(c_edge_attr ** 2, axis=0)
-                    coarse_count += 1
+                    coarse_sum += np.sum(c_edge_attr, axis=0)
+                    coarse_sumsq += np.sum(c_edge_attr ** 2, axis=0)
+                    coarse_count += c_edge_attr.shape[0]
 
         elapsed = _time.time() - t_start
         if coarse_count == 0:
@@ -609,7 +586,7 @@ class MeshGraphDataset(Dataset):
             self.coarse_edge_mean = self.edge_mean.copy()
             self.coarse_edge_std = self.edge_std.copy()
         else:
-            self.coarse_edge_mean, self.coarse_edge_std = _persample_finalize(
+            self.coarse_edge_mean, self.coarse_edge_std = _finalize_moments(
                 coarse_sum, coarse_sumsq, coarse_count)
             print(f'  Coarse edge stats done in {elapsed:.1f}s — mean: {self.coarse_edge_mean}, std: {self.coarse_edge_std}')
 
@@ -617,12 +594,9 @@ class MeshGraphDataset(Dataset):
         """Compute the number of unique node types from the dataset."""
         print('Computing node type information...')
         with h5py.File(self.h5_file, 'r') as f:
-            # Collect unique node types from first few samples
-            # Node types are always the last feature
+            # Collect unique node types from the entire current split.
             unique_types = set()
-            num_samples = min(10, len(self.sample_ids))
-            for i in range(num_samples):
-                sid = self.sample_ids[i]
+            for sid in self.sample_ids:
                 nodal_data = f[f'data/{sid}/nodal_data'][:]
                 node_types = nodal_data[-1, 0, :].astype(np.int32)  # Last feature, first timestep
                 unique_types.update(node_types)
@@ -650,7 +624,7 @@ class MeshGraphDataset(Dataset):
         print(f'  min_edge_length: {self.min_edge_length:.6f}')
         print(f'  world_edge_radius: {self.world_edge_radius:.6f}')
 
-    def _compute_world_edges(self, pos, mesh_edges):
+    def _compute_world_edges(self, reference_pos, deformed_pos, mesh_edges):
         """
         Compute world edges using either torch_cluster (GPU) or scipy.KDTree (CPU).
 
@@ -659,28 +633,29 @@ class MeshGraphDataset(Dataset):
         - 'scipy_kdtree': CPU-based fallback (original implementation)
 
         Args:
-            pos: (N, 3) array of node positions
+            reference_pos: (N, 3) array of reference node positions
+            deformed_pos: (N, 3) array of current node positions
             mesh_edges: (2, E_mesh) array of existing mesh edge indices
 
         Returns:
             world_edge_index: (2, E_world) array of world edge indices
-            world_edge_attr: (E_world, 4) array with [dx, dy, dz, distance]
+            world_edge_attr: (E_world, 8) array with deformed + reference edge features
         """
         if not self.world_edge_radius:
-            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, self.edge_dim), dtype=np.float32)
 
         if self.world_edge_backend == 'torch_cluster':
-            return self._compute_world_edges_torch_cluster(pos, mesh_edges)
+            return self._compute_world_edges_torch_cluster(reference_pos, deformed_pos, mesh_edges)
         else:
-            return self._compute_world_edges_scipy_kdtree(pos, mesh_edges)
+            return self._compute_world_edges_scipy_kdtree(reference_pos, deformed_pos, mesh_edges)
 
-    def _compute_world_edges_torch_cluster(self, pos, mesh_edges):
+    def _compute_world_edges_torch_cluster(self, reference_pos, deformed_pos, mesh_edges):
         """
         Compute world edges using GPU-accelerated torch_cluster.radius_graph().
         Expected 5-10x speedup for 68k-node meshes compared to scipy.KDTree.
         """
         # Convert positions to GPU tensor
-        pos_tensor = torch.from_numpy(pos).float().cuda()
+        pos_tensor = torch.from_numpy(deformed_pos).float().cuda()
 
         # GPU-accelerated radius query (torch_cluster)
         world_edges = radius_graph(
@@ -695,7 +670,7 @@ class MeshGraphDataset(Dataset):
         world_edges_np = world_edges.cpu().numpy()
 
         if world_edges_np.shape[1] == 0:
-            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, self.edge_dim), dtype=np.float32)
 
         # Efficient filtering: remove edges that already exist in mesh topology
         mesh_set = {(int(mesh_edges[0, i]), int(mesh_edges[1, i])) for i in range(mesh_edges.shape[1])}
@@ -708,24 +683,20 @@ class MeshGraphDataset(Dataset):
         we = world_edges_np[:, valid_mask]
 
         if we.shape[1] == 0:
-            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, self.edge_dim), dtype=np.float32)
 
-        # Compute edge features: [relative_position, distance]
-        rel = pos[we[1]] - pos[we[0]]
-        dist = np.linalg.norm(rel, axis=1, keepdims=True)
+        return we, compute_edge_attr(reference_pos, deformed_pos, we)
 
-        return we, np.concatenate([rel, dist], axis=1).astype(np.float32)
-
-    def _compute_world_edges_scipy_kdtree(self, pos, mesh_edges):
+    def _compute_world_edges_scipy_kdtree(self, reference_pos, deformed_pos, mesh_edges):
         """
         Compute world edges using scipy.spatial.KDTree (CPU fallback).
         Original implementation, slower but always available.
         """
-        tree = KDTree(pos)
+        tree = KDTree(deformed_pos)
         pairs = tree.query_pairs(r=self.world_edge_radius, output_type='ndarray')
 
         if len(pairs) == 0:
-            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, self.edge_dim), dtype=np.float32)
 
         # Filter out existing mesh edges
         mesh_set = {(int(mesh_edges[0, i]), int(mesh_edges[1, i])) for i in range(mesh_edges.shape[1])}
@@ -737,13 +708,10 @@ class MeshGraphDataset(Dataset):
                 we.append([r, s])
 
         if not we:
-            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, 4), dtype=np.float32)
+            return np.zeros((2, 0), dtype=np.int64), np.zeros((0, self.edge_dim), dtype=np.float32)
 
         wei = np.array(we, dtype=np.int64).T
-        rel = pos[wei[1]] - pos[wei[0]]
-        dist = np.linalg.norm(rel, axis=1, keepdims=True)
-
-        return wei, np.concatenate([rel, dist], axis=1).astype(np.float32)
+        return wei, compute_edge_attr(reference_pos, deformed_pos, wei)
 
     def __len__(self) -> int:
         """
@@ -801,7 +769,7 @@ class MeshGraphDataset(Dataset):
             pos: [N, 3] positions at time t
             y: [N, 4] normalized target delta (state_t+1 - state_t)
 
-        All features are normalized using precomputed global statistics.
+        All features are normalized using statistics fit on the training split.
 
         Args:
             idx: Sample index
@@ -871,17 +839,18 @@ class MeshGraphDataset(Dataset):
         displacement = x_raw[:, :3]  # [N, 3] - extract displacement components (x_disp, y_disp, z_disp)
         deformed_pos = pos + displacement  # [N, 3] - actual mesh position at time t
 
-        # Compute edge features (before normalization)
-        # Edge features are computed for all edges (including reverse edges)
-        # Reverse edges naturally get negated relative_pos since src/dst are swapped
-        src_idx = edge_index[0]
-        dst_idx = edge_index[1]
-        relative_pos = deformed_pos[dst_idx] - deformed_pos[src_idx]  # [2M, 3]
-        distance = np.linalg.norm(relative_pos, axis=1, keepdims=True)  # [2M, 1]
-        edge_attr_raw = np.concatenate([relative_pos, distance], axis=1)  # [2M, 4]
+        # Compute 8-D edge features from current and reference geometry.
+        edge_attr_raw = compute_edge_attr(pos, deformed_pos, edge_index)
 
         # Apply z-score normalization to all features
         # Node features: z-score normalization
+
+        if self.node_mean is None or self.node_std is None:
+            raise RuntimeError("Dataset preprocessing has not been prepared: node statistics are missing.")
+        if self.edge_mean is None or self.edge_std is None:
+            raise RuntimeError("Dataset preprocessing has not been prepared: edge statistics are missing.")
+        if self.delta_mean is None or self.delta_std is None:
+            raise RuntimeError("Dataset preprocessing has not been prepared: delta statistics are missing.")
 
         x_norm = (x_raw - self.node_mean) / self.node_std
 
@@ -897,11 +866,7 @@ class MeshGraphDataset(Dataset):
             x_norm = np.concatenate([x_norm, node_type_onehot], axis=1)
 
         # Target features: z-score normalization using delta-specific parameters
-        if self.delta_mean is not None and self.delta_std is not None:
-            target_norm = (target_delta - self.delta_mean) / self.delta_std
-        else:
-            # Fallback: use node stats
-            target_norm = (target_delta - self.node_mean) / self.node_std
+        target_norm = (target_delta - self.delta_mean) / self.delta_std
 
         # Edge features: z-score normalization
         edge_attr_norm = (edge_attr_raw - self.edge_mean) / self.edge_std
@@ -936,7 +901,8 @@ class MeshGraphDataset(Dataset):
         # IMPORTANT: Use deformed_pos (reference + displacement) for collision detection
         if self.use_world_edges:
             world_edge_index, world_edge_attr_raw = self._compute_world_edges(
-                deformed_pos,  # Use DEFORMED position (pos + displacement), not reference
+                pos,
+                deformed_pos,
                 edge_index.numpy() if isinstance(edge_index, torch.Tensor) else edge_index
             )
             # Normalize world edge features using the same statistics as mesh edges
@@ -949,7 +915,7 @@ class MeshGraphDataset(Dataset):
             graph_data.world_edge_attr = torch.from_numpy(world_edge_attr_norm.astype(np.float32))
         else:
             graph_data.world_edge_index = torch.zeros((2, 0), dtype=torch.long)
-            graph_data.world_edge_attr = torch.zeros((0, 4), dtype=torch.float32)
+            graph_data.world_edge_attr = torch.zeros((0, self.edge_dim), dtype=torch.float32)
 
         # Attach coarsening data (only when use_multiscale=True)
         if self.use_multiscale:
@@ -974,8 +940,9 @@ class MeshGraphDataset(Dataset):
             n_coarse = cache['num_coarse']             # int
 
             # Compute coarse edge attributes from current deformed positions (same as fine edges)
-            deformed_np = deformed_pos.astype(np.float32)  # [N, 3] ref + displacement
-            c_edge_attr_raw = compute_coarse_edge_attr(deformed_np, ftc_np, c_ei_np, n_coarse)
+            ref_np = pos.astype(np.float32)
+            deformed_np = deformed_pos.astype(np.float32)
+            c_edge_attr_raw = compute_coarse_edge_attr(ref_np, deformed_np, ftc_np, c_ei_np, n_coarse)
 
             # Normalize coarse edge attributes
             if c_edge_attr_raw.shape[0] > 0 and self.coarse_edge_mean is not None:
@@ -1007,110 +974,17 @@ class MeshGraphDataset(Dataset):
         if not np.isclose(train_ratio + val_ratio + test_ratio, 1.0):
             raise ValueError(f"Ratios must sum to 1.0, got {train_ratio + val_ratio + test_ratio}")
 
-        # Set random seed for reproducibility
-        np.random.seed(seed)
+        train_ids, val_ids, test_ids = self._resolve_split_ids(train_ratio, val_ratio, test_ratio, seed)
 
-        # Random shuffle split (normalization now uses per-sample equal weight,
-        # so no need for stratified splitting by node count or delta magnitude)
-        shuffled_ids = self.sample_ids.copy()
-        np.random.shuffle(shuffled_ids)
-        n_samples = len(shuffled_ids)
-        n_train = int(n_samples * train_ratio)
-        n_val = int(n_samples * val_ratio)
-        train_ids = shuffled_ids[:n_train]
-        val_ids = shuffled_ids[n_train:n_train + n_val]
-        test_ids = shuffled_ids[n_train + n_val:]
-
-        # Create subset datasets (copy all attributes including normalization params)
-        train_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
-        train_dataset.h5_file = self.h5_file
-        train_dataset.config = self.config
-        train_dataset.input_dim = self.input_dim
-        train_dataset.output_dim = self.output_dim
-        train_dataset.sample_ids = train_ids
-        train_dataset.num_timesteps = self.num_timesteps
-        train_dataset.use_node_types = self.use_node_types
-        train_dataset.num_node_types = self.num_node_types
-        train_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
-        train_dataset.use_world_edges = self.use_world_edges
-        train_dataset.world_radius_multiplier = self.world_radius_multiplier
-        train_dataset.world_max_num_neighbors = self.world_max_num_neighbors
-        train_dataset.world_edge_backend = self.world_edge_backend
-        train_dataset.world_edge_radius = self.world_edge_radius
-        train_dataset.min_edge_length = self.min_edge_length
-        train_dataset.delta_mean = self.delta_mean
-        train_dataset.delta_std = self.delta_std
-        train_dataset.node_mean = self.node_mean
-        train_dataset.node_std = self.node_std
-        train_dataset.edge_mean = self.edge_mean
-        train_dataset.edge_std = self.edge_std
-        train_dataset.use_multiscale = self.use_multiscale
-        train_dataset.multiscale_levels = self.multiscale_levels
-        train_dataset.coarse_edge_mean = self.coarse_edge_mean
-        train_dataset.coarse_edge_std = self.coarse_edge_std
-        # Share pre-computed coarsening topology — avoids re-running BFS on first access
-        train_id_set = set(train_ids)
-        train_dataset._coarse_cache = {k: v for k, v in self._coarse_cache.items() if k in train_id_set}
-
-        val_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
-        val_dataset.h5_file = self.h5_file
-        val_dataset.config = self.config
-        val_dataset.input_dim = self.input_dim
-        val_dataset.output_dim = self.output_dim
-        val_dataset.sample_ids = val_ids
-        val_dataset.num_timesteps = self.num_timesteps
-        val_dataset.use_node_types = self.use_node_types
-        val_dataset.num_node_types = self.num_node_types
-        val_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
-        val_dataset.use_world_edges = self.use_world_edges
-        val_dataset.world_radius_multiplier = self.world_radius_multiplier
-        val_dataset.world_max_num_neighbors = self.world_max_num_neighbors
-        val_dataset.world_edge_backend = self.world_edge_backend
-        val_dataset.world_edge_radius = self.world_edge_radius
-        val_dataset.min_edge_length = self.min_edge_length
-        val_dataset.delta_mean = self.delta_mean
-        val_dataset.delta_std = self.delta_std
-        val_dataset.node_mean = self.node_mean
-        val_dataset.node_std = self.node_std
-        val_dataset.edge_mean = self.edge_mean
-        val_dataset.edge_std = self.edge_std
-        val_dataset.use_multiscale = self.use_multiscale
-        val_dataset.multiscale_levels = self.multiscale_levels
-        val_dataset.coarse_edge_mean = self.coarse_edge_mean
-        val_dataset.coarse_edge_std = self.coarse_edge_std
-        val_id_set = set(val_ids)
-        val_dataset._coarse_cache = {k: v for k, v in self._coarse_cache.items() if k in val_id_set}
-
-        test_dataset = MeshGraphDataset.__new__(MeshGraphDataset)
-        test_dataset.h5_file = self.h5_file
-        test_dataset.config = self.config
-        test_dataset.input_dim = self.input_dim
-        test_dataset.output_dim = self.output_dim
-        test_dataset.sample_ids = test_ids
-        test_dataset.num_timesteps = self.num_timesteps
-        test_dataset.use_node_types = self.use_node_types
-        test_dataset.num_node_types = self.num_node_types
-        test_dataset.node_type_to_idx = self.node_type_to_idx if self.use_node_types else None
-        test_dataset.use_world_edges = self.use_world_edges
-        test_dataset.world_radius_multiplier = self.world_radius_multiplier
-        test_dataset.world_max_num_neighbors = self.world_max_num_neighbors
-        test_dataset.world_edge_backend = self.world_edge_backend
-        test_dataset.world_edge_radius = self.world_edge_radius
-        test_dataset.min_edge_length = self.min_edge_length
-        test_dataset.delta_mean = self.delta_mean
-        test_dataset.delta_std = self.delta_std
-        test_dataset.node_mean = self.node_mean
-        test_dataset.node_std = self.node_std
-        test_dataset.edge_mean = self.edge_mean
-        test_dataset.edge_std = self.edge_std
-        test_dataset.use_multiscale = self.use_multiscale
-        test_dataset.multiscale_levels = self.multiscale_levels
-        test_dataset.coarse_edge_mean = self.coarse_edge_mean
-        test_dataset.coarse_edge_std = self.coarse_edge_std
-        test_id_set = set(test_ids)
-        test_dataset._coarse_cache = {k: v for k, v in self._coarse_cache.items() if k in test_id_set}
+        train_dataset = self._create_subset(train_ids)
+        val_dataset = self._create_subset(val_ids)
+        test_dataset = self._create_subset(test_ids)
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
+        print("Fitting preprocessing on train split only...")
+        train_dataset.prepare_preprocessing()
+        val_dataset.inherit_preprocessing_from(train_dataset)
+        test_dataset.inherit_preprocessing_from(train_dataset)
 
         # Diagnostic: check node count and delta magnitude across splits
         try:

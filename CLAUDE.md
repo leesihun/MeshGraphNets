@@ -55,7 +55,7 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | infer_timesteps | - | Rollout steps for inference |
 | input_var | 4 | Node input features (excluding node types) |
 | output_var | 4 | Node output features |
-| edge_var | 4 | Always `[dx, dy, dz, distance]` |
+| edge_var | 8 | Always `[deformed_dx, deformed_dy, deformed_dz, deformed_dist, ref_dx, ref_dy, ref_dz, ref_dist]` |
 | Latent_dim | 128 | MLP hidden dimension |
 | message_passing_num | 15 | GNN depth (number of processor blocks) |
 | Batch_size | 50 | Per-GPU batch size |
@@ -164,7 +164,7 @@ Full spec: [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md)
 
 Z-score per feature, computed separately for three domains:
 - **Node**: from physical features `nodal_data[3:3+input_var]` across all samples and sampled timesteps (up to 500 per sample)
-- **Edge**: from deformed edge positions `[dx, dy, dz, distance]`
+- **Edge**: from deformed and reference edge positions `[deformed_dx, deformed_dy, deformed_dz, deformed_dist, ref_dx, ref_dy, ref_dz, ref_dist]`
 - **Delta**: from actual `state_{t+1} - state_t` transitions (for T=1 datasets, delta = feature value itself)
 
 Stored in checkpoint: `checkpoint['normalization']` dict with `node_mean`, `node_std`, `edge_mean`, `edge_std`, `delta_mean`, `delta_std`, plus `node_type_to_idx` and `world_edge_radius` if applicable.

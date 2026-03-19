@@ -2,9 +2,6 @@ import os
 import time
 
 import torch
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
 
 from general_modules.data_loader import load_data
 from torch.utils.data import Subset
@@ -37,20 +34,25 @@ def single_worker(config, config_filename='config.txt'):
     if torch.cuda.is_available():
         print(f'After dataset load: {torch.cuda.memory_allocated()/1e9:.2f}GB')
 
-    # Pass num_node_types to config for model to compute input dimension
-    if config.get('use_node_types', False) and dataset.num_node_types is not None:
-        config['num_node_types'] = dataset.num_node_types
-        print(f"  Node types enabled: {dataset.num_node_types} types will be added to input")
-
-    # Compute noise target correction ratio (node_std / delta_std)
-    if dataset.node_std is not None and dataset.delta_std is not None:
-        import numpy as np
-        output_var = config['output_var']
-        config['noise_std_ratio'] = (dataset.node_std[:output_var] / np.maximum(dataset.delta_std, 1e-8)).tolist()
-
     # Divide the dataset into training, validation, and test sets
     print("\nSplitting dataset...")
-    train_dataset, val_dataset, test_dataset = dataset.split(0.8, 0.1, 0.1)
+    split_seed = int(config.get('split_seed', 42))
+    train_dataset, val_dataset, test_dataset = dataset.split(0.8, 0.1, 0.1, seed=split_seed)
+    print("Writing train-derived normalization stats to HDF5...")
+    train_dataset.write_preprocessing_to_hdf5(split_seed)
+
+    # Pass num_node_types to config for model to compute input dimension
+    if config.get('use_node_types', False) and train_dataset.num_node_types is not None:
+        config['num_node_types'] = train_dataset.num_node_types
+        print(f"  Node types enabled: {train_dataset.num_node_types} types will be added to input")
+
+    # Compute noise target correction ratio (node_std / delta_std) from train split stats
+    if train_dataset.node_std is not None and train_dataset.delta_std is not None:
+        import numpy as np
+        output_var = config['output_var']
+        config['noise_std_ratio'] = (
+            train_dataset.node_std[:output_var] / np.maximum(train_dataset.delta_std, 1e-8)
+        ).tolist()
 
     # Create dataloaders (no distributed samplers for single process)
     print("\nCreating dataloaders...")
@@ -80,6 +82,22 @@ def single_worker(config, config_filename='config.txt'):
         batch_size=1,
         shuffle=True,
         pin_memory=True
+    )
+
+    import numpy as np
+    train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 256)))
+    train_eval_rng = np.random.default_rng(split_seed)
+    train_eval_indices = train_eval_rng.choice(
+        len(train_dataset), size=train_eval_subset_size, replace=False
+    ).tolist()
+    train_eval_loader = DataLoader(
+        Subset(train_dataset, train_eval_indices),
+        batch_size=config['batch_size'],
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=8 if num_workers > 0 else None,
     )
 
     if torch.cuda.is_available():
@@ -187,34 +205,44 @@ def single_worker(config, config_filename='config.txt'):
     try:
         for epoch in range(config.get('training_epochs')):
 
-            train_loss = train_epoch(model, train_loader, optimizer, device, config, epoch)
-            valid_loss = validate_epoch(model, val_loader, device, config, epoch)
+            train_metrics = train_epoch(model, train_loader, optimizer, device, config, epoch)
+            train_eval_metrics = validate_epoch(model, train_eval_loader, device, config, epoch)
+            valid_metrics = validate_epoch(model, val_loader, device, config, epoch)
+            train_loss = train_metrics['mean']
+            train_eval_loss = train_eval_metrics['mean']
+            valid_loss = valid_metrics['mean']
             scheduler.step()
 
-            # Per epoch, batch-averaged train, validation losses.
+            # Per epoch, node-weighted optimization, clean-train, and validation losses.
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"Epoch {epoch}/{config['training_epochs']} Train Loss: {train_loss:.2e} Valid Loss: {valid_loss:.2e} LR: {current_lr:.2e}")
+            print(
+                f"Epoch {epoch}/{config['training_epochs']} "
+                f"Train Opt Loss: {train_loss:.2e} "
+                f"Train Eval Loss: {train_eval_loss:.2e} "
+                f"Valid Loss: {valid_loss:.2e} "
+                f"LR: {current_lr:.2e}"
+            )
 
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
                 best_epoch = epoch
                 checkpoint_path = modelname
                 normalization = {
-                    'node_mean': dataset.node_mean,
-                    'node_std': dataset.node_std,
-                    'edge_mean': dataset.edge_mean,
-                    'edge_std': dataset.edge_std,
-                    'delta_mean': dataset.delta_mean,
-                    'delta_std': dataset.delta_std,
+                    'node_mean': train_dataset.node_mean,
+                    'node_std': train_dataset.node_std,
+                    'edge_mean': train_dataset.edge_mean,
+                    'edge_std': train_dataset.edge_std,
+                    'delta_mean': train_dataset.delta_mean,
+                    'delta_std': train_dataset.delta_std,
                 }
-                if dataset.use_node_types and dataset.node_type_to_idx is not None:
-                    normalization['node_type_to_idx'] = dataset.node_type_to_idx
-                    normalization['num_node_types'] = dataset.num_node_types
-                if dataset.use_world_edges and dataset.world_edge_radius is not None:
-                    normalization['world_edge_radius'] = dataset.world_edge_radius
-                if dataset.use_multiscale and dataset.coarse_edge_mean is not None:
-                    normalization['coarse_edge_mean'] = dataset.coarse_edge_mean
-                    normalization['coarse_edge_std']  = dataset.coarse_edge_std
+                if train_dataset.use_node_types and train_dataset.node_type_to_idx is not None:
+                    normalization['node_type_to_idx'] = train_dataset.node_type_to_idx
+                    normalization['num_node_types'] = train_dataset.num_node_types
+                if train_dataset.use_world_edges and train_dataset.world_edge_radius is not None:
+                    normalization['world_edge_radius'] = train_dataset.world_edge_radius
+                if train_dataset.use_multiscale and train_dataset.coarse_edge_mean is not None:
+                    normalization['coarse_edge_mean'] = train_dataset.coarse_edge_mean
+                    normalization['coarse_edge_std']  = train_dataset.coarse_edge_std
                 model_config = {
                     'input_var': config.get('input_var'),
                     'output_var': config.get('output_var'),
@@ -240,13 +268,18 @@ def single_worker(config, config_filename='config.txt'):
 
             if log_file_dir:
                 with open(log_file, 'a') as f:
-                    f.write(f"Elapsed time: {time.time() - start_time:.2f}s Epoch {epoch} Train Loss: {train_loss:.4e} Valid Loss: {valid_loss:.4e} LR: {current_lr:.4e}\n")
+                    f.write(
+                        f"Elapsed time: {time.time() - start_time:.2f}s "
+                        f"Epoch {epoch} TrainOpt {train_loss:.4e} "
+                        f"TrainEval {train_eval_loss:.4e} "
+                        f"Valid {valid_loss:.4e} LR: {current_lr:.4e}\n"
+                    )
 
             # Periodically test the model on the test set and save results with ground truth
             test_interval = int(config.get('test_interval', 10))
             last_epoch = epoch == config.get('training_epochs') - 1
             if epoch % test_interval == 0 or last_epoch:
-                test_loss = test_model(model, test_loader, device, config, epoch, dataset)
+                test_loss = test_model(model, test_loader, device, config, epoch, train_dataset)
                 print(f"  Test loss: {test_loss:.2e}")
 
                 # Optionally visualize training set reconstruction (same batch indices)
@@ -262,7 +295,7 @@ def single_worker(config, config_filename='config.txt'):
                         # Map batch indices to 0..N so all subset samples get visualized
                         viz_config = dict(config)
                         viz_config['test_batch_idx'] = list(range(len(train_viz_indices)))
-                        train_viz_loss = test_model(model, train_viz_loader, device, viz_config, epoch, dataset, output_prefix='train')
+                        train_viz_loss = test_model(model, train_viz_loader, device, viz_config, epoch, train_dataset, output_prefix='train')
                         print(f"  Train reconstruction loss: {train_viz_loss:.2e}")
 
         print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")

@@ -1056,7 +1056,7 @@ For 68k-node meshes with 206k mesh edges:
 
 The implementation maintains exact correctness:
 - Same edge topology as scipy.KDTree (same node pairs connected)
-- Identical edge features ([dx, dy, dz, distance])
+- Identical edge features ([deformed_dx, deformed_dy, deformed_dz, deformed_dist, ref_dx, ref_dy, ref_dz, ref_dist])
 - Model accuracy unchanged (only data pipeline optimization)
 
 **Validation script**: Run `python test_world_edges_speedup.py` to verify:

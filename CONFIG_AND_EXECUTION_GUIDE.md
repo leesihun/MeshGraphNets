@@ -181,7 +181,7 @@ Values are auto-parsed in this order by `general_modules/load_config.py`:
 |-----------|------|---------|-------------|
 | `input_var` | int | - | Node input features (excluding node types). Typically `4`: [x_disp, y_disp, z_disp, stress]. |
 | `output_var` | int | - | Node output features. Typically `4`: [x_disp, y_disp, z_disp, stress]. |
-| `edge_var` | int | - | Edge features. Always `4`: [dx, dy, dz, distance]. |
+| `edge_var` | int | - | Edge features. Always `8`: [deformed_dx, deformed_dy, deformed_dz, deformed_dist, ref_dx, ref_dy, ref_dz, ref_dist]. |
 | `Latent_dim` | int | 128 | Hidden dimension of all MLPs. VRAM scales **quadratically** with this. |
 | `message_passing_num` | int | 15 | Number of GNN message passing blocks. More = larger receptive field, linear VRAM scaling. |
 
@@ -497,7 +497,7 @@ infer_timesteps 100
 %   Common params
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
-edge_var    4   # dx, dy, dz, disp
+edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
 '
 %   Network parameters
 message_passing_num 15
@@ -548,7 +548,7 @@ infer_timesteps 100
 %   Common params
 input_var   4
 output_var  4
-edge_var    4
+edge_var    8
 '
 %   Network parameters (overridden by checkpoint, but must be present for parsing)
 message_passing_num 15

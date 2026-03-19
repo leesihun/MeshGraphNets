@@ -86,7 +86,7 @@ Example configs are provided in `_flag_input/` and `_warpage_input/`.
 | **infer_timesteps** | int | - | Number of rollout steps to predict |
 | **input_var** | int | 4 | Node input features (excluding node types) |
 | **output_var** | int | 4 | Node output features |
-| **edge_var** | int | 4 | Edge features (always: `[dx, dy, dz, distance]`) |
+| **edge_var** | int | 8 | Edge features (always: `[deformed_dx, deformed_dy, deformed_dz, deformed_dist, ref_dx, ref_dy, ref_dz, ref_dist]`) |
 
 ### Network Hyperparameters
 
@@ -158,7 +158,7 @@ Input (node + edge features)
 - **HDF5 format**: `nodal_data [features, time, nodes]`, `mesh_edge [2, edges]`, `metadata`
   - Features: `[x, y, z, x_disp, y_disp, z_disp, stress, (part_number)]`
 - **Edges**: Always bidirectional (`edge_index = [mesh_edge; mesh_edge[[1,0]]]`)
-- **Edge features**: `[dx, dy, dz, distance]` computed from deformed positions (reference + displacement)
+- **Edge features**: `[deformed_dx, deformed_dy, deformed_dz, deformed_dist, ref_dx, ref_dy, ref_dz, ref_dist]`
 - **Normalization**: Z-score per feature, computed separately for nodes, edges, and deltas
 - **Node types**: One-hot encoded and concatenated after normalization
 

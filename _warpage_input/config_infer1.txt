@@ -10,7 +10,7 @@ infer_timesteps 34
 %   Common params
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
-edge_var    4   # dx, dy, dz, disp
+edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
 '
 %   Network paramete5
 Training_epochs	50
