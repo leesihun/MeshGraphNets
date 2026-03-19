@@ -798,22 +798,8 @@ class MeshGraphDataset(Dataset):
         data = f[f'data/{sample_id}/nodal_data'][:]  # [7 or 8, time, nodes]
         edge_index = f[f'data/{sample_id}/mesh_edge'][:]  # [2, M]
 
-        if self.config['use_node_types']:
-            has_part_info = True
-        else:
-            has_part_info = False
-
-        if has_part_info:
-            part_ids = data[-1, 0, :].astype(np.int32)  # [nodes]
-        else:
-            part_ids = None
-
-        if self.use_node_types:
-            node_types = data[-1, 0, :].astype(np.int32)  # [nodes]
-        else:
-            node_types = None
-
-            # Essentially, node_types are part_ids
+        node_types = data[-1, 0, :].astype(np.int32) if self.use_node_types else None  # [nodes]
+        part_ids = node_types  # same raw IDs, stored separately in graph for visualization
 
         # Make edges bidirectional (like DeepMind's MeshGraphNets implementation)
         edge_index = np.concatenate([edge_index, edge_index[[1, 0], :]], axis=1)  # [2, 2M]

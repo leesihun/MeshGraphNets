@@ -1,3 +1,4 @@
+import os
 import tqdm
 import torch
 import numpy as np
@@ -11,7 +12,6 @@ from general_modules.mesh_utils_fast import (
 def save_debug_batch(epoch, batch_idx, graph, predicted, target, log_dir):
     """Save actual input/output values to debug file for inspection."""
     try:
-        import os
         debug_file = os.path.join(log_dir, f'debug_epoch{epoch:03d}_batch{batch_idx:03d}.npz')
 
         # Convert to numpy
@@ -35,21 +35,21 @@ def save_debug_batch(epoch, batch_idx, graph, predicted, target, log_dir):
         tqdm.tqdm.write(f"  Warning: Could not save debug data: {e}")
 
 def _build_loss_weights(config, device):
-    """Build per-feature loss weights normalized to sum to output_var."""
+    """Build per-feature loss weights normalized to sum to 1 (weighted mean)."""
     loss_weights = config.get('feature_loss_weights', None)
     if loss_weights is not None:
         if not isinstance(loss_weights, list):
             loss_weights = [loss_weights]
         loss_weights = torch.tensor(loss_weights, dtype=torch.float32, device=device)
-        loss_weights = loss_weights * (loss_weights.numel() / loss_weights.sum())
+        loss_weights = loss_weights / loss_weights.sum()
     return loss_weights
 
 
 def _per_node_loss(errors, loss_weights):
-    """Reduce feature errors to one scalar per node."""
+    """Reduce feature errors to one scalar per node (mean over features)."""
     if loss_weights is not None:
         return torch.sum(errors * loss_weights, dim=-1)
-    return torch.sum(errors, dim=-1)
+    return torch.mean(errors, dim=-1)
 
 
 def _loss_from_errors(errors, loss_weights):
@@ -65,6 +65,37 @@ def _accum_window_size(batch_idx, total_batches, actual_accum):
     window_start = (batch_idx // actual_accum) * actual_accum
     window_end = min(window_start + actual_accum, total_batches)
     return window_end - window_start
+
+
+def log_training_config(config):
+    """Log per-feature loss weights and multiscale architecture to stdout."""
+    loss_weights_cfg = config.get('feature_loss_weights', None)
+    if loss_weights_cfg is not None:
+        if not isinstance(loss_weights_cfg, list):
+            loss_weights_cfg = [loss_weights_cfg]
+        w = torch.tensor(loss_weights_cfg, dtype=torch.float32)
+        w_normalized = (w / w.sum()).tolist()
+        print(f"Per-feature loss weights (raw):         {loss_weights_cfg}")
+        print(f"Per-feature loss weights (normalized):  {[f'{v:.4f}' for v in w_normalized]}")
+    else:
+        print("Per-feature loss weights: equal (default)")
+
+    if config.get('use_multiscale', False):
+        _L = int(config.get('multiscale_levels', 1))
+        _mp = config.get('mp_per_level', None)
+        if _mp is None:
+            _mp = [int(config.get('fine_mp_pre', 5)), int(config.get('coarse_mp_num', 5)), int(config.get('fine_mp_post', 5))]
+        if not isinstance(_mp, list):
+            _mp = [int(_mp)]
+        print(f"Multi-Scale: ENABLED (V-cycle, {_L} coarsening levels, {sum(int(x) for x in _mp)} total GnBlocks)")
+        for i in range(_L):
+            print(f"  Level {i} pre:  {_mp[i]} blocks")
+        print(f"  Coarsest:    {_mp[_L]} blocks")
+        for i in range(_L - 1, -1, -1):
+            print(f"  Level {i} post: {_mp[2 * _L - i]} blocks")
+        print(f"  [message_passing_num is IGNORED when use_multiscale=True]")
+    else:
+        print(f"Multi-Scale: disabled (flat GNN, message_passing_num={config.get('message_passing_num')})")
 
 
 def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None):
@@ -190,7 +221,6 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
     model.eval()
 
     verbose = config.get('verbose')
-    output_var = config.get('output_var', 4)
     loss_weights = _build_loss_weights(config, device)
 
     use_amp = config.get('use_amp', False)
@@ -260,7 +290,6 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
     model.eval()
 
     verbose = config.get('verbose')
-    output_var = config.get('output_var', 4)
     loss_weights = _build_loss_weights(config, device)
 
     # Use GPU for triangle reconstruction if available
@@ -376,7 +405,6 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
 
                 # DENORMALIZE: Convert normalized deltas to actual physical deltas
                 if delta_mean is not None and delta_std is not None:
-                    import numpy as np
                     predicted_denorm = predicted_np * delta_std + delta_mean
                     target_denorm = target_np * delta_std + delta_mean
                 else:

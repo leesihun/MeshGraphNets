@@ -1,8 +1,7 @@
 # MeshGraphNets
 import argparse
-import numpy as np
-import torch
-from torch_geometric.loader import DataLoader
+import os
+import socket
 import torch.multiprocessing as mp
 from torch.multiprocessing.spawn import ProcessExitedException
 from general_modules.load_config import load_config
@@ -46,13 +45,6 @@ def main():
     print(f'           Running in    : {run_mode} mode')
     print('\n'*2)
     
-    # Current limitation: All timesteps must be equal for all samples
-    print('\n'*2)
-    print('\n'*2)
-    print("Current limitation: All timesteps must be equal for all samples")
-    print('\n'*2)
-    print('\n'*2)
-
     # Auto-configure distributed training from gpu_ids
     gpu_ids = config.get('gpu_ids')  # Default to GPU 0 if not specified
 
@@ -70,7 +62,6 @@ def main():
     print(f"  use_distributed (auto-calculated): {use_distributed}")
     print('\n'*2)
 
-    import os
     # Display the current absolute path
     print(f"Current absolute path: {os.path.abspath('.')}")
 
@@ -84,7 +75,6 @@ def main():
     else:
         # Find a free port once, before spawning, so workers never collide
         # with zombie processes from prior runs.
-        import socket
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.bind(('', 0))
             config['_ddp_port'] = str(s.getsockname()[1])

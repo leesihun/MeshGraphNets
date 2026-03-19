@@ -368,14 +368,6 @@ def save_inference_results_fast(output_path, graph,
             print(f"Warning: No features in face values for sample_id={sample_id}, time_idx={time_idx}. Skipping visualization.")
             return None
 
-        # Debug: Print shape info for timestep==1
-        if time_idx == 1:
-            print(f"DEBUG timestep==1: sample_id={sample_id}")
-            print(f"  faces: {faces.shape}")
-            print(f"  pred_face_values_norm: {pred_face_values_norm.shape}")
-            print(f"  target_face_values_norm: {target_face_values_norm.shape}")
-            print(f"  feature_idx: {feature_idx}")
-
         # Return plot data for parallel processing with full metadata
         # Include both normalized and denormalized values for visualization
         return {

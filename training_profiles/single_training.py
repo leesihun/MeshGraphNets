@@ -1,13 +1,15 @@
+import glob
 import os
 import time
 
+import numpy as np
 import torch
 
 from general_modules.data_loader import load_data
 from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
-from training_profiles.training_loop import train_epoch, validate_epoch, test_model
+from training_profiles.training_loop import train_epoch, validate_epoch, test_model, log_training_config
 
 # Disable HDF5 file locking for persistent SWMR handles with multiple DataLoader workers
 os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
@@ -48,7 +50,6 @@ def single_worker(config, config_filename='config.txt'):
 
     # Compute noise target correction ratio (node_std / delta_std) from train split stats
     if train_dataset.node_std is not None and train_dataset.delta_std is not None:
-        import numpy as np
         output_var = config['output_var']
         config['noise_std_ratio'] = (
             train_dataset.node_std[:output_var] / np.maximum(train_dataset.delta_std, 1e-8)
@@ -84,7 +85,6 @@ def single_worker(config, config_filename='config.txt'):
         pin_memory=True
     )
 
-    import numpy as np
     train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 256)))
     train_eval_rng = np.random.default_rng(split_seed)
     train_eval_indices = train_eval_rng.choice(
@@ -148,38 +148,7 @@ def single_worker(config, config_filename='config.txt'):
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
         print(f'Peak memory so far: {torch.cuda.max_memory_allocated()/1e9:.2f}GB')
 
-    # Log per-feature loss weights if configured
-    loss_weights_cfg = config.get('feature_loss_weights', None)
-    if loss_weights_cfg is not None:
-        if not isinstance(loss_weights_cfg, list):
-            loss_weights_cfg = [loss_weights_cfg]
-        import torch as _torch
-        w = _torch.tensor(loss_weights_cfg, dtype=_torch.float32)
-        w_normalized = (w * len(w) / w.sum()).tolist()
-        w_proportional = (w / w.sum()).tolist()
-        print(f"Per-feature loss weights (raw):         {loss_weights_cfg}")
-        print(f"Per-feature loss weights (normalized):  {[f'{v:.3f}' for v in w_normalized]}")
-        print(f"Per-feature loss weights (proportional):{[f'{v:.4f}' for v in w_proportional]}")
-    else:
-        print("Per-feature loss weights: equal (default)")
-
-    # Log multiscale config if enabled
-    if config.get('use_multiscale', False):
-        _L = int(config.get('multiscale_levels', 1))
-        _mp = config.get('mp_per_level', None)
-        if _mp is None:
-            _mp = [int(config.get('fine_mp_pre', 5)), int(config.get('coarse_mp_num', 5)), int(config.get('fine_mp_post', 5))]
-        if not isinstance(_mp, list):
-            _mp = [int(_mp)]
-        print(f"Multi-Scale: ENABLED (V-cycle, {_L} coarsening levels, {sum(int(x) for x in _mp)} total GnBlocks)")
-        for i in range(_L):
-            print(f"  Level {i} pre:  {_mp[i]} blocks")
-        print(f"  Coarsest:    {_mp[_L]} blocks")
-        for i in range(_L - 1, -1, -1):
-            print(f"  Level {i} post: {_mp[2 * _L - i]} blocks")
-        print(f"  [message_passing_num is IGNORED when use_multiscale=True]")
-    else:
-        print(f"Multi-Scale: disabled (flat GNN, message_passing_num={config.get('message_passing_num')})")
+    log_training_config(config)
 
     print("\n" + "="*60)
     print("Starting training loop...")
@@ -317,8 +286,6 @@ def single_worker(config, config_filename='config.txt'):
 
     # Analyze debug files if they exist
     if log_dir:
-        import glob
-        import numpy as np
         debug_files = sorted(glob.glob(os.path.join(log_dir, 'debug_*.npz')))
 
         if debug_files:
