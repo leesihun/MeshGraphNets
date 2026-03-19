@@ -154,7 +154,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         pin_memory=True
     )
     if rank == 0:
-        train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 256)))
+        train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 16)))
         train_eval_rng = np.random.default_rng(split_seed)
         train_eval_indices = train_eval_rng.choice(
             len(train_dataset), size=train_eval_subset_size, replace=False
@@ -209,7 +209,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         print("Model initialized successfully")
         if config.get('use_checkpointing', False):
             print("Gradient checkpointing: ENABLED")
-        if config.get('use_amp', False):
+        if config.get('use_amp', True):
             print("Mixed precision (AMP): ENABLED (bfloat16)")
         if config.get('use_compile', False):
             print("torch.compile: ENABLED (dynamic=True)")
@@ -411,8 +411,8 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 print(f"  Test completed in {time.time() - _test_start:.1f}s")
 
                 # Optionally visualize training set reconstruction (same batch indices)
-                if config.get('display_trainset', False):
-                    train_viz_indices = config.get('test_batch_idx', [0])
+                if config.get('display_trainset', True):
+                    train_viz_indices = config.get('test_batch_idx', [0, 1, 2, 3, 4, 5, 6, 7])
                     train_viz_indices = [i for i in train_viz_indices if i < len(train_dataset)]
                     if train_viz_indices:
                         train_viz_loader = DataLoader(

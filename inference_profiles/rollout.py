@@ -136,10 +136,10 @@ def run_rollout(config, config_filename='config.txt'):
     # World edge info
     use_world_edges = config.get('use_world_edges')
     world_edge_radius = norm.get('world_edge_radius')
-    world_max_num_neighbors = config.get('world_max_num_neighbors')
+    world_max_num_neighbors = config.get('world_max_num_neighbors', 64)
 
     # Determine world edge backend
-    requested_backend = config.get('world_edge_backend').lower()
+    requested_backend = config.get('world_edge_backend', 'scipy_kdtree').lower()
     if requested_backend == 'torch_cluster' and HAS_TORCH_CLUSTER:
         world_edge_backend = 'torch_cluster'
     else:

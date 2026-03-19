@@ -106,10 +106,10 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
     num_batches = 0
     num_steps = 0  # number of optimizer steps taken
 
-    verbose = config.get('verbose')
-    monitor_gradients = config.get('monitor_gradients', True)
+    verbose = config.get('verbose', False)
+    monitor_gradients = config.get('monitor_gradients', False)
     loss_weights = _build_loss_weights(config, device)
-    use_amp = config.get('use_amp', False)
+    use_amp = config.get('use_amp', True)
     use_compile = config.get('use_compile', False)
     amp_dtype = torch.bfloat16
 
@@ -220,10 +220,10 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
 def validate_epoch(model, dataloader, device, config, epoch=0):
     model.eval()
 
-    verbose = config.get('verbose')
+    verbose = config.get('verbose', False)
     loss_weights = _build_loss_weights(config, device)
 
-    use_amp = config.get('use_amp', False)
+    use_amp = config.get('use_amp', True)
     amp_dtype = torch.bfloat16
 
     with torch.no_grad():
@@ -289,7 +289,7 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
 def test_model(model, dataloader, device, config, epoch, dataset=None, output_prefix='test'):
     model.eval()
 
-    verbose = config.get('verbose')
+    verbose = config.get('verbose', False)
     loss_weights = _build_loss_weights(config, device)
 
     # Use GPU for triangle reconstruction if available
@@ -299,7 +299,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
     # Cache reconstructed faces by sample_id (topology is constant across timesteps)
     faces_cache = {}
 
-    use_amp = config.get('use_amp', False)
+    use_amp = config.get('use_amp', True)
     amp_dtype = torch.bfloat16
 
     # Cap test batches to avoid NCCL timeout in DDP (test runs only on rank 0;
@@ -360,7 +360,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             num_batches += 1
 
             # Save results with GPU-accelerated mesh reconstruction
-            if batch_idx in config.get('test_batch_idx',[0]):
+            if batch_idx in config.get('test_batch_idx', [0, 1, 2, 3, 4, 5, 6, 7]):
                 gpu_ids = str(config.get('gpu_ids'))
 
                 # Build filename with sample_id and time_idx for clarity

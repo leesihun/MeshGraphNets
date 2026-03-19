@@ -85,7 +85,7 @@ def single_worker(config, config_filename='config.txt'):
         pin_memory=True
     )
 
-    train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 256)))
+    train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 16)))
     train_eval_rng = np.random.default_rng(split_seed)
     train_eval_indices = train_eval_rng.choice(
         len(train_dataset), size=train_eval_subset_size, replace=False
@@ -118,7 +118,7 @@ def single_worker(config, config_filename='config.txt'):
     print("Model initialized successfully")
     if config.get('use_checkpointing', False):
         print("Gradient checkpointing: ENABLED")
-    if config.get('use_amp', False):
+    if config.get('use_amp', True):
         print("Mixed precision (AMP): ENABLED (bfloat16)")
     if config.get('use_compile', False):
         print("torch.compile: ENABLED (dynamic=True)")
@@ -265,8 +265,8 @@ def single_worker(config, config_filename='config.txt'):
                 print(f"  Test loss: {test_loss:.2e}")
 
                 # Optionally visualize training set reconstruction (same batch indices)
-                if config.get('display_trainset', False):
-                    train_viz_indices = config.get('test_batch_idx', [0])
+                if config.get('display_trainset', True):
+                    train_viz_indices = config.get('test_batch_idx', [0, 1, 2, 3, 4, 5, 6, 7])
                     # Clamp indices to train dataset size
                     train_viz_indices = [i for i in train_viz_indices if i < len(train_dataset)]
                     if train_viz_indices:

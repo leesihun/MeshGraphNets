@@ -179,7 +179,7 @@ class MeshGraphDataset(Dataset):
         self.min_edge_length = None    # Computed from first sample
 
         # Determine which world edge backend to use
-        requested_backend = config.get('world_edge_backend', 'torch_cluster').lower()
+        requested_backend = config.get('world_edge_backend', 'scipy_kdtree').lower()
         if requested_backend == 'torch_cluster' and HAS_TORCH_CLUSTER:
             self.world_edge_backend = 'torch_cluster'
         elif requested_backend == 'scipy_kdtree' or not HAS_TORCH_CLUSTER:
