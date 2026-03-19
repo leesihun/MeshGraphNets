@@ -11,7 +11,7 @@ from general_modules.edge_features import EDGE_FEATURE_DIM, compute_edge_attr
 
 # Multiscale coarsening (optional — only imported when use_multiscale=True)
 try:
-    from model.coarsening import bfs_bistride_coarsen, compute_coarse_edge_attr, MultiscaleData
+    from model.coarsening import bfs_bistride_coarsen, compute_coarse_edge_attr, compute_coarse_centroids, MultiscaleData
     HAS_COARSENING = True
 except ImportError:
     HAS_COARSENING = False
@@ -191,9 +191,9 @@ class MeshGraphDataset(Dataset):
         # Multiscale / coarsening parameters
         self.use_multiscale = config.get('use_multiscale', False)
         self.multiscale_levels = int(config.get('multiscale_levels', 1))
-        self.coarse_edge_mean = None
-        self.coarse_edge_std = None
-        self._coarse_cache: Dict = {}  # {sample_id: {'fine_to_coarse':..., 'coarse_edge_index':..., 'num_coarse':...}}
+        self.coarse_edge_means: List = []   # per-level: [mean_level_0, mean_level_1, ...]
+        self.coarse_edge_stds: List = []    # per-level: [std_level_0, std_level_1, ...]
+        self._coarse_cache: Dict = {}  # {sample_id: {'levels': L, 'fine_to_coarse_0':..., 'coarse_edge_index_0':..., 'num_coarse_0':..., ...}}
 
         print(f"Loading MeshGraphDataset: {h5_file}")
         print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}, edge_dim: {self.edge_dim}")
@@ -259,16 +259,8 @@ class MeshGraphDataset(Dataset):
         )
         self.world_edge_radius = source_dataset.world_edge_radius
         self.min_edge_length = source_dataset.min_edge_length
-        self.coarse_edge_mean = (
-            source_dataset.coarse_edge_mean.copy()
-            if source_dataset.coarse_edge_mean is not None
-            else None
-        )
-        self.coarse_edge_std = (
-            source_dataset.coarse_edge_std.copy()
-            if source_dataset.coarse_edge_std is not None
-            else None
-        )
+        self.coarse_edge_means = [m.copy() for m in source_dataset.coarse_edge_means]
+        self.coarse_edge_stds = [s.copy() for s in source_dataset.coarse_edge_stds]
 
     def write_preprocessing_to_hdf5(self, split_seed: int) -> None:
         """Persist train-derived preprocessing statistics to the HDF5 dataset."""
@@ -329,8 +321,8 @@ class MeshGraphDataset(Dataset):
         subset.edge_std = None
         subset.use_multiscale = self.use_multiscale
         subset.multiscale_levels = self.multiscale_levels
-        subset.coarse_edge_mean = None
-        subset.coarse_edge_std = None
+        subset.coarse_edge_means = []
+        subset.coarse_edge_stds = []
         subset._coarse_cache = {}
         subset._h5_handle = None
         return subset
@@ -500,17 +492,25 @@ class MeshGraphDataset(Dataset):
     def _compute_coarse_edge_stats(self) -> None:
         """
         Compute z-score normalization stats for coarse edge features and pre-populate
-        the coarsening cache (fine_to_coarse, coarse_edge_index, num_coarse per sample).
+        the coarsening cache with per-level topology.
 
         Coarsening is topology-based (BFS bi-stride on mesh_edge), so the same mapping
         applies to all timesteps of a given sample. This pass runs once at startup.
+
+        For multiscale_levels=L, stores per-level mappings:
+            fine_to_coarse_{i}: level i → level i+1 (NOT composed)
+            coarse_edge_index_{i}: edge topology at level i+1
+            num_coarse_{i}: node count at level i+1
         """
         import time as _time
         n_samples = len(self.sample_ids)
-        print(f'Computing coarse edge normalization statistics ({n_samples} samples)...')
-        coarse_sum = np.zeros(self.edge_dim, dtype=np.float64)
-        coarse_sumsq = np.zeros(self.edge_dim, dtype=np.float64)
-        coarse_count = 0
+        L = self.multiscale_levels
+        print(f'Computing coarse edge normalization statistics ({n_samples} samples, {L} levels)...')
+
+        # Per-level accumulators for edge feature stats
+        level_sum = [np.zeros(self.edge_dim, dtype=np.float64) for _ in range(L)]
+        level_sumsq = [np.zeros(self.edge_dim, dtype=np.float64) for _ in range(L)]
+        level_count = [0] * L
         t_start = _time.time()
 
         with h5py.File(self.h5_file, 'r') as f:
@@ -525,43 +525,27 @@ class MeshGraphDataset(Dataset):
                     print(f"  Warning: could not load sample {sid}: {e}")
                     continue
 
-                # Read nodal_data only for the timesteps we need (avoid full load)
                 data_h5 = f[f'data/{sid}/nodal_data']
                 num_nodes = data_h5.shape[2]
                 edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
 
-                # Apply BFS bi-stride (level 1 coarsening) — uses scipy C-level BFS
-                ftc, c_edge_idx, n_coarse = bfs_bistride_coarsen(edge_idx, num_nodes)
-
-                # For 2-level coarsening, apply BFS again on the coarse graph
-                if self.multiscale_levels >= 2 and n_coarse > 1 and c_edge_idx.shape[1] > 0:
-                    ftc2, c_edge_idx2, n_coarse2 = bfs_bistride_coarsen(c_edge_idx, n_coarse)
-                    ftc_composed = ftc2[ftc]  # Compose: fine → level1 → level2
-                    cache_entry = {
-                        'fine_to_coarse': ftc_composed,
-                        'coarse_edge_index': c_edge_idx2,
-                        'num_coarse': n_coarse2,
-                    }
-                    n_coarse_final = n_coarse2
-                    c_edge_idx_final = c_edge_idx2
-                    ftc_final = ftc_composed
-                else:
-                    cache_entry = {
-                        'fine_to_coarse': ftc,
-                        'coarse_edge_index': c_edge_idx,
-                        'num_coarse': n_coarse,
-                    }
-                    n_coarse_final = n_coarse
-                    c_edge_idx_final = c_edge_idx
-                    ftc_final = ftc
-
+                # Iterative BFS coarsening: level 0 → 1 → 2 → ...
+                cache_entry = {}
+                current_ei, current_n = edge_idx, num_nodes
+                actual_levels = 0
+                for level in range(L):
+                    ftc, c_ei, n_c = bfs_bistride_coarsen(current_ei, current_n)
+                    cache_entry[f'fine_to_coarse_{level}'] = ftc
+                    cache_entry[f'coarse_edge_index_{level}'] = c_ei
+                    cache_entry[f'num_coarse_{level}'] = n_c
+                    actual_levels += 1
+                    if n_c <= 1 or c_ei.shape[1] == 0:
+                        break
+                    current_ei, current_n = c_ei, n_c
+                cache_entry['levels'] = actual_levels
                 self._coarse_cache[sid] = cache_entry
 
-                if c_edge_idx_final.shape[1] == 0:
-                    continue
-
-                # Collect coarse edge feature stats — 10 timesteps is sufficient
-                # (coarse centroid positions don't vary dramatically across timesteps)
+                # Collect coarse edge stats per level — 10 timesteps is sufficient
                 max_t = min(10, self.num_timesteps)
                 if self.num_timesteps > 1:
                     timesteps = np.linspace(0, self.num_timesteps - 1, max_t, dtype=int)
@@ -569,26 +553,47 @@ class MeshGraphDataset(Dataset):
                     timesteps = [0]
 
                 for t in timesteps:
-                    # Read only needed features for this timestep (ref pos + displacement)
-                    pos_data = data_h5[:6, t, :]  # [6, nodes] — only ref_pos + disp
-                    ref_pos = pos_data[:3, :].T
+                    pos_data = data_h5[:6, t, :]  # [6, nodes] — ref_pos + disp
+                    ref_pos = pos_data[:3, :].T         # [N, 3]
                     deformed_pos = (pos_data[:3, :] + pos_data[3:6, :]).T  # [N, 3]
-                    c_edge_attr = compute_coarse_edge_attr(
-                        ref_pos, deformed_pos, ftc_final, c_edge_idx_final, n_coarse_final
-                    )
-                    coarse_sum += np.sum(c_edge_attr, axis=0)
-                    coarse_sumsq += np.sum(c_edge_attr ** 2, axis=0)
-                    coarse_count += c_edge_attr.shape[0]
+
+                    # Chain centroid computation through levels
+                    cur_ref, cur_def = ref_pos, deformed_pos
+                    for level in range(actual_levels):
+                        ftc_l = cache_entry[f'fine_to_coarse_{level}']
+                        c_ei_l = cache_entry[f'coarse_edge_index_{level}']
+                        n_c_l = cache_entry[f'num_coarse_{level}']
+
+                        # Compute centroids at this level
+                        coarse_ref = compute_coarse_centroids(cur_ref, ftc_l, n_c_l)
+                        coarse_def = compute_coarse_centroids(cur_def, ftc_l, n_c_l)
+
+                        if c_ei_l.shape[1] > 0:
+                            c_edge_attr = compute_edge_attr(
+                                coarse_ref.astype(np.float32),
+                                coarse_def.astype(np.float32),
+                                c_ei_l
+                            )
+                            level_sum[level] += np.sum(c_edge_attr, axis=0)
+                            level_sumsq[level] += np.sum(c_edge_attr ** 2, axis=0)
+                            level_count[level] += c_edge_attr.shape[0]
+
+                        cur_ref, cur_def = coarse_ref, coarse_def
 
         elapsed = _time.time() - t_start
-        if coarse_count == 0:
-            print(f'  Warning: no coarse edge stats collected; falling back to fine edge stats ({elapsed:.1f}s)')
-            self.coarse_edge_mean = self.edge_mean.copy()
-            self.coarse_edge_std = self.edge_std.copy()
-        else:
-            self.coarse_edge_mean, self.coarse_edge_std = _finalize_moments(
-                coarse_sum, coarse_sumsq, coarse_count)
-            print(f'  Coarse edge stats done in {elapsed:.1f}s — mean: {self.coarse_edge_mean}, std: {self.coarse_edge_std}')
+        self.coarse_edge_means = []
+        self.coarse_edge_stds = []
+        for level in range(L):
+            if level_count[level] == 0:
+                print(f'  Level {level}: no coarse edge stats; falling back to fine edge stats')
+                self.coarse_edge_means.append(self.edge_mean.copy())
+                self.coarse_edge_stds.append(self.edge_std.copy())
+            else:
+                mean, std = _finalize_moments(level_sum[level], level_sumsq[level], level_count[level])
+                self.coarse_edge_means.append(mean)
+                self.coarse_edge_stds.append(std)
+                print(f'  Level {level} coarse edge stats: mean={mean}, std={std}')
+        print(f'  Coarse edge stats done in {elapsed:.1f}s')
 
     def _compute_node_type_info(self) -> None:
         """Compute the number of unique node types from the dataset."""
@@ -917,43 +922,65 @@ class MeshGraphDataset(Dataset):
             graph_data.world_edge_index = torch.zeros((2, 0), dtype=torch.long)
             graph_data.world_edge_attr = torch.zeros((0, self.edge_dim), dtype=torch.float32)
 
-        # Attach coarsening data (only when use_multiscale=True)
+        # Attach per-level coarsening data (only when use_multiscale=True)
         if self.use_multiscale:
             # Retrieve from cache (or compute on-demand for split subsets)
             if sample_id not in self._coarse_cache:
                 raw_edge_idx = edge_index.numpy()  # already bidirectional [2, 2M]
                 num_nodes_n = pos.shape[0]
-                ftc, c_ei, n_c = bfs_bistride_coarsen(raw_edge_idx, num_nodes_n)
-                if self.multiscale_levels >= 2 and n_c > 1 and c_ei.shape[1] > 0:
-                    ftc2, c_ei2, n_c2 = bfs_bistride_coarsen(c_ei, n_c)
-                    self._coarse_cache[sample_id] = {
-                        'fine_to_coarse': ftc2[ftc], 'coarse_edge_index': c_ei2, 'num_coarse': n_c2,
-                    }
-                else:
-                    self._coarse_cache[sample_id] = {
-                        'fine_to_coarse': ftc, 'coarse_edge_index': c_ei, 'num_coarse': n_c,
-                    }
+                cache_entry = {}
+                current_ei, current_n = raw_edge_idx, num_nodes_n
+                actual_levels = 0
+                for level in range(self.multiscale_levels):
+                    ftc, c_ei, n_c = bfs_bistride_coarsen(current_ei, current_n)
+                    cache_entry[f'fine_to_coarse_{level}'] = ftc
+                    cache_entry[f'coarse_edge_index_{level}'] = c_ei
+                    cache_entry[f'num_coarse_{level}'] = n_c
+                    actual_levels += 1
+                    if n_c <= 1 or c_ei.shape[1] == 0:
+                        break
+                    current_ei, current_n = c_ei, n_c
+                cache_entry['levels'] = actual_levels
+                self._coarse_cache[sample_id] = cache_entry
 
             cache = self._coarse_cache[sample_id]
-            ftc_np = cache['fine_to_coarse']          # [N] int32
-            c_ei_np = cache['coarse_edge_index']       # [2, E_c] int64
-            n_coarse = cache['num_coarse']             # int
+            actual_levels = cache['levels']
 
-            # Compute coarse edge attributes from current deformed positions (same as fine edges)
+            # Chain centroid computation through levels for edge attr
             ref_np = pos.astype(np.float32)
             deformed_np = deformed_pos.astype(np.float32)
-            c_edge_attr_raw = compute_coarse_edge_attr(ref_np, deformed_np, ftc_np, c_ei_np, n_coarse)
+            cur_ref, cur_def = ref_np, deformed_np
 
-            # Normalize coarse edge attributes
-            if c_edge_attr_raw.shape[0] > 0 and self.coarse_edge_mean is not None:
-                c_edge_attr_norm = (c_edge_attr_raw - self.coarse_edge_mean) / self.coarse_edge_std
-            else:
-                c_edge_attr_norm = c_edge_attr_raw
+            for level in range(actual_levels):
+                ftc_np = cache[f'fine_to_coarse_{level}']
+                c_ei_np = cache[f'coarse_edge_index_{level}']
+                n_coarse = cache[f'num_coarse_{level}']
 
-            graph_data.fine_to_coarse = torch.from_numpy(ftc_np.astype(np.int64))
-            graph_data.coarse_edge_index = torch.from_numpy(c_ei_np)
-            graph_data.coarse_edge_attr = torch.from_numpy(c_edge_attr_norm.astype(np.float32))
-            graph_data.num_coarse = torch.tensor([n_coarse], dtype=torch.long)
+                # Compute centroids at this level
+                coarse_ref = compute_coarse_centroids(cur_ref, ftc_np, n_coarse)
+                coarse_def = compute_coarse_centroids(cur_def, ftc_np, n_coarse)
+
+                # Compute and normalize edge features
+                if c_ei_np.shape[1] > 0:
+                    c_edge_attr_raw = compute_edge_attr(
+                        coarse_ref.astype(np.float32),
+                        coarse_def.astype(np.float32),
+                        c_ei_np
+                    )
+                else:
+                    c_edge_attr_raw = np.zeros((0, self.edge_dim), dtype=np.float32)
+
+                if c_edge_attr_raw.shape[0] > 0 and level < len(self.coarse_edge_means):
+                    c_edge_attr_norm = (c_edge_attr_raw - self.coarse_edge_means[level]) / self.coarse_edge_stds[level]
+                else:
+                    c_edge_attr_norm = c_edge_attr_raw
+
+                graph_data[f'fine_to_coarse_{level}'] = torch.from_numpy(ftc_np.astype(np.int64))
+                graph_data[f'coarse_edge_index_{level}'] = torch.from_numpy(c_ei_np)
+                graph_data[f'coarse_edge_attr_{level}'] = torch.from_numpy(c_edge_attr_norm.astype(np.float32))
+                graph_data[f'num_coarse_{level}'] = torch.tensor([n_coarse], dtype=torch.long)
+
+                cur_ref, cur_def = coarse_ref, coarse_def
 
         return graph_data
 

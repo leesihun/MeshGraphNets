@@ -165,11 +165,18 @@ def single_worker(config, config_filename='config.txt'):
 
     # Log multiscale config if enabled
     if config.get('use_multiscale', False):
-        print(f"Multi-Scale: ENABLED (BFS bi-stride hierarchical U-Net)")
-        print(f"  multiscale_levels : {config.get('multiscale_levels', 1)}")
-        print(f"  fine_mp_pre       : {config.get('fine_mp_pre', 5)}  (GnBlocks before pool)")
-        print(f"  coarse_mp_num     : {config.get('coarse_mp_num', 5)}  (GnBlocks at coarse level)")
-        print(f"  fine_mp_post      : {config.get('fine_mp_post', 5)}  (GnBlocks after unpool)")
+        _L = int(config.get('multiscale_levels', 1))
+        _mp = config.get('mp_per_level', None)
+        if _mp is None:
+            _mp = [int(config.get('fine_mp_pre', 5)), int(config.get('coarse_mp_num', 5)), int(config.get('fine_mp_post', 5))]
+        if not isinstance(_mp, list):
+            _mp = [int(_mp)]
+        print(f"Multi-Scale: ENABLED (V-cycle, {_L} coarsening levels, {sum(int(x) for x in _mp)} total GnBlocks)")
+        for i in range(_L):
+            print(f"  Level {i} pre:  {_mp[i]} blocks")
+        print(f"  Coarsest:    {_mp[_L]} blocks")
+        for i in range(_L - 1, -1, -1):
+            print(f"  Level {i} post: {_mp[2 * _L - i]} blocks")
         print(f"  [message_passing_num is IGNORED when use_multiscale=True]")
     else:
         print(f"Multi-Scale: disabled (flat GNN, message_passing_num={config.get('message_passing_num')})")
@@ -240,9 +247,9 @@ def single_worker(config, config_filename='config.txt'):
                     normalization['num_node_types'] = train_dataset.num_node_types
                 if train_dataset.use_world_edges and train_dataset.world_edge_radius is not None:
                     normalization['world_edge_radius'] = train_dataset.world_edge_radius
-                if train_dataset.use_multiscale and train_dataset.coarse_edge_mean is not None:
-                    normalization['coarse_edge_mean'] = train_dataset.coarse_edge_mean
-                    normalization['coarse_edge_std']  = train_dataset.coarse_edge_std
+                if train_dataset.use_multiscale and len(train_dataset.coarse_edge_means) > 0:
+                    normalization['coarse_edge_means'] = train_dataset.coarse_edge_means
+                    normalization['coarse_edge_stds']  = train_dataset.coarse_edge_stds
                 model_config = {
                     'input_var': config.get('input_var'),
                     'output_var': config.get('output_var'),
@@ -253,6 +260,12 @@ def single_worker(config, config_filename='config.txt'):
                     'num_node_types': config.get('num_node_types', 0),
                     'use_world_edges': config.get('use_world_edges', False),
                     'use_checkpointing': config.get('use_checkpointing', False),
+                    'use_multiscale': config.get('use_multiscale', False),
+                    'multiscale_levels': config.get('multiscale_levels', 1),
+                    'mp_per_level': config.get('mp_per_level', None),
+                    'fine_mp_pre': config.get('fine_mp_pre', 5),
+                    'coarse_mp_num': config.get('coarse_mp_num', 5),
+                    'fine_mp_post': config.get('fine_mp_post', 5),
                 }
                 torch.save({
                     'epoch': epoch,

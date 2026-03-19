@@ -12,7 +12,7 @@ from model.MeshGraphNets import MeshGraphNets
 
 # Multiscale coarsening (only needed when use_multiscale=True)
 try:
-    from model.coarsening import bfs_bistride_coarsen, compute_coarse_edge_attr, MultiscaleData
+    from model.coarsening import bfs_bistride_coarsen, compute_coarse_edge_attr, compute_coarse_centroids, MultiscaleData
     HAS_COARSENING = True
 except ImportError:
     HAS_COARSENING = False
@@ -91,9 +91,18 @@ def run_rollout(config, config_filename='config.txt'):
     edge_std = norm['edge_std']    # np.ndarray [4]
     delta_mean = norm['delta_mean']  # np.ndarray [output_var]
     delta_std = norm['delta_std']    # np.ndarray [output_var]
-    # Multiscale coarse edge normalization stats (present only when trained with use_multiscale=True)
-    coarse_edge_mean = norm.get('coarse_edge_mean', edge_mean)  # fallback to fine edge stats
-    coarse_edge_std  = norm.get('coarse_edge_std',  edge_std)
+    # Multiscale coarse edge normalization stats (per-level lists)
+    if 'coarse_edge_means' in norm:
+        # New format: list of arrays per level
+        coarse_edge_means = norm['coarse_edge_means']
+        coarse_edge_stds  = norm['coarse_edge_stds']
+    elif 'coarse_edge_mean' in norm:
+        # Legacy format: single array → wrap in list
+        coarse_edge_means = [norm['coarse_edge_mean']]
+        coarse_edge_stds  = [norm['coarse_edge_std']]
+    else:
+        coarse_edge_means = [edge_mean]
+        coarse_edge_stds  = [edge_std]
 
     print(f"  Normalization stats loaded from checkpoint")
     print(f"    node_mean:  {node_mean}")
@@ -214,21 +223,22 @@ def run_rollout(config, config_filename='config.txt'):
         # Make edges bidirectional
         edge_index = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)  # [2, 2M]
 
-        # Pre-compute coarsening topology (topology is static — same for all rollout steps)
+        # Pre-compute per-level coarsening topology (static — same for all rollout steps)
         use_multiscale = config.get('use_multiscale', False)
         multiscale_levels = int(config.get('multiscale_levels', 1))
-        coarse_cache = None  # set below if multiscale enabled
+        coarse_cache = None  # dict of {level: {'ftc':..., 'c_ei':..., 'n_c':...}}
         if use_multiscale:
             if not HAS_COARSENING:
                 raise ImportError("use_multiscale=True but model/coarsening.py could not be imported")
-            ftc, c_ei, n_c = bfs_bistride_coarsen(edge_index, num_nodes)
-            if multiscale_levels >= 2 and n_c > 1 and c_ei.shape[1] > 0:
-                ftc2, c_ei2, n_c2 = bfs_bistride_coarsen(c_ei, n_c)
-                ftc = ftc2[ftc]
-                c_ei = c_ei2
-                n_c = n_c2
-            coarse_cache = {'ftc': ftc, 'c_ei': c_ei, 'n_c': n_c}
-            print(f"  Coarsening: {num_nodes} fine nodes → {n_c} coarse nodes ({n_c/num_nodes*100:.1f}%)")
+            coarse_cache = {}
+            current_ei, current_n = edge_index, num_nodes
+            for level in range(multiscale_levels):
+                ftc, c_ei, n_c = bfs_bistride_coarsen(current_ei, current_n)
+                coarse_cache[level] = {'ftc': ftc, 'c_ei': c_ei, 'n_c': n_c}
+                print(f"  Coarsening level {level}: {current_n} → {n_c} nodes ({n_c/current_n*100:.1f}%)")
+                if n_c <= 1 or c_ei.shape[1] == 0:
+                    break
+                current_ei, current_n = c_ei, n_c
 
         print(f"  Reference positions: {ref_pos.shape}")
         print(f"  Initial state: {initial_state.shape}")
@@ -297,20 +307,31 @@ def run_rollout(config, config_filename='config.txt'):
                     graph.world_edge_index = torch.zeros((2, 0), dtype=torch.long, device=device)
                     graph.world_edge_attr = torch.zeros((0, EDGE_FEATURE_DIM), dtype=torch.float32, device=device)
 
-                # --- h2. Attach coarse graph data if multiscale ---
+                # --- h2. Attach per-level coarse graph data if multiscale ---
                 if use_multiscale and coarse_cache is not None:
-                    ftc_np = coarse_cache['ftc']
-                    c_ei_np = coarse_cache['c_ei']
-                    n_c = coarse_cache['n_c']
-                    c_ea_raw = compute_coarse_edge_attr(ref_pos, deformed_pos, ftc_np, c_ei_np, n_c)
-                    if c_ea_raw.shape[0] > 0:
-                        c_ea_norm = (c_ea_raw - coarse_edge_mean) / coarse_edge_std
-                    else:
-                        c_ea_norm = c_ea_raw
-                    graph.fine_to_coarse    = torch.from_numpy(ftc_np.astype(np.int64)).to(device)
-                    graph.coarse_edge_index = torch.from_numpy(c_ei_np).to(device)
-                    graph.coarse_edge_attr  = torch.from_numpy(c_ea_norm.astype(np.float32)).to(device)
-                    graph.num_coarse        = torch.tensor([n_c], dtype=torch.long, device=device)
+                    cur_ref = ref_pos.astype(np.float32)
+                    cur_def = deformed_pos.astype(np.float32)
+                    for level in range(len(coarse_cache)):
+                        cc = coarse_cache[level]
+                        coarse_ref = compute_coarse_centroids(cur_ref, cc['ftc'], cc['n_c'])
+                        coarse_def = compute_coarse_centroids(cur_def, cc['ftc'], cc['n_c'])
+                        if cc['c_ei'].shape[1] > 0:
+                            c_ea_raw = compute_edge_attr(
+                                coarse_ref.astype(np.float32),
+                                coarse_def.astype(np.float32),
+                                cc['c_ei']
+                            )
+                        else:
+                            c_ea_raw = np.zeros((0, EDGE_FEATURE_DIM), dtype=np.float32)
+                        if c_ea_raw.shape[0] > 0 and level < len(coarse_edge_means):
+                            c_ea_norm = (c_ea_raw - coarse_edge_means[level]) / coarse_edge_stds[level]
+                        else:
+                            c_ea_norm = c_ea_raw
+                        graph[f'fine_to_coarse_{level}']    = torch.from_numpy(cc['ftc'].astype(np.int64)).to(device)
+                        graph[f'coarse_edge_index_{level}'] = torch.from_numpy(cc['c_ei']).to(device)
+                        graph[f'coarse_edge_attr_{level}']  = torch.from_numpy(c_ea_norm.astype(np.float32)).to(device)
+                        graph[f'num_coarse_{level}']        = torch.tensor([cc['n_c']], dtype=torch.long, device=device)
+                        cur_ref, cur_def = coarse_ref, coarse_def
 
                 # --- i. Forward pass ---
                 predicted_delta_norm, _ = model(graph)  # [N, output_var]

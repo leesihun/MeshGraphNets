@@ -19,7 +19,14 @@ Typical coarsening ratio:
   3D tet mesh         : M ≈ N/2   (avg degree ~15-25)
   3D hex mesh         : M ≈ N/2   (avg degree ~20-30)
 Use multiscale_levels=2 for 3D meshes to achieve ~N/4 reduction.
+
+Multi-level support (levels > 2):
+  BFS coarsening is applied iteratively: level 0 → level 1 → level 2 → ...
+  Each level stores its own fine_to_coarse mapping (NOT composed).
+  The model uses a V-cycle / U-Net architecture with per-level GnBlocks.
 """
+
+import re
 
 import numpy as np
 import torch
@@ -171,6 +178,29 @@ def compute_coarse_edge_attr(
     return compute_edge_attr(coarse_ref_pos, coarse_def_pos, coarse_edge_index)
 
 
+def compute_coarse_centroids(
+    positions: np.ndarray,
+    fine_to_coarse: np.ndarray,
+    num_coarse: int,
+) -> np.ndarray:
+    """
+    Compute mean centroid positions for coarse clusters.
+
+    Args:
+        positions:      [N, 3] float array — positions of fine/current-level nodes.
+        fine_to_coarse: [N] int32 array — coarse cluster index for each node.
+        num_coarse:     int M — number of coarse nodes.
+
+    Returns:
+        coarse_pos: [M, 3] float64 array — centroid positions.
+    """
+    coarse_pos = np.zeros((num_coarse, 3), dtype=np.float64)
+    np.add.at(coarse_pos, fine_to_coarse, positions.astype(np.float64))
+    counts = np.bincount(fine_to_coarse, minlength=num_coarse).reshape(-1, 1)
+    coarse_pos /= np.maximum(counts, 1)
+    return coarse_pos
+
+
 # ---------------------------------------------------------------------------
 # Pool / Unpool Operators
 # ---------------------------------------------------------------------------
@@ -216,34 +246,42 @@ def unpool_features(
 # Custom Data class for proper PyG batching of multiscale attributes
 # ---------------------------------------------------------------------------
 
+# Regex to extract level index from attribute names like "fine_to_coarse_0"
+_LEVEL_RE = re.compile(r'^(fine_to_coarse|coarse_edge_index|coarse_edge_attr|num_coarse)_(\d+)$')
+
+
 class MultiscaleData(Data):
     """
-    PyTorch Geometric Data subclass that handles correct batching of multiscale
-    coarsening attributes (fine_to_coarse and coarse_edge_index need index offsets).
+    PyTorch Geometric Data subclass that handles correct batching of N-level
+    multiscale coarsening attributes.
 
-    fine_to_coarse[i]   ∈ [0, M-1] — coarse cluster index for fine node i.
-    coarse_edge_index   ∈ [0, M-1] — coarse graph edge indices.
-    num_coarse          = M (stored as [1] long tensor so batching gives [B] tensor).
+    Per-level attributes (for level i = 0 .. L-1):
+        fine_to_coarse_{i}   [N_i] long  — mapping from level i to level i+1
+        coarse_edge_index_{i} [2, E_i]   — edge topology at level i+1
+        coarse_edge_attr_{i}  [E_i, 8]   — edge features at level i+1
+        num_coarse_{i}        [1] long    — node count at level i+1
 
     When Batch.from_data_list combines multiple MultiscaleData objects:
-    - fine_to_coarse values are offset by cumulative M counts (via __inc__)
-    - coarse_edge_index values are offset by cumulative M counts (via __inc__)
-    - coarse_edge_attr is concatenated along dim 0 (fine: no offset needed)
-    - num_coarse values are concatenated → [B] tensor for total-coarse computation
+    - fine_to_coarse_{i} values are offset by cumulative num_coarse_{i} counts
+    - coarse_edge_index_{i} values are offset by cumulative num_coarse_{i} counts
+    - coarse_edge_attr_{i} is concatenated along dim 0 (no offset needed)
+    - num_coarse_{i} values are concatenated → [B] tensor
     """
 
     def __inc__(self, key: str, value, *args, **kwargs):
-        if key == 'fine_to_coarse':
-            # fine_to_coarse holds coarse node indices; increment by this sample's M
-            return int(self.num_coarse)
-        if key == 'coarse_edge_index':
-            # coarse_edge_index holds coarse node indices; increment by this sample's M
-            return int(self.num_coarse)
+        m = _LEVEL_RE.match(key)
+        if m:
+            prefix, level = m.group(1), m.group(2)
+            if prefix in ('fine_to_coarse', 'coarse_edge_index'):
+                return int(self[f'num_coarse_{level}'])
         return super().__inc__(key, value, *args, **kwargs)
 
     def __cat_dim__(self, key: str, value, *args, **kwargs):
-        if key == 'coarse_edge_index':
-            return 1   # [2, E_c] — concatenate along edge dimension (like edge_index)
-        if key in ('fine_to_coarse', 'coarse_edge_attr'):
-            return 0   # [N] and [E_c, 8] — concatenate along node/edge dim
+        m = _LEVEL_RE.match(key)
+        if m:
+            prefix = m.group(1)
+            if prefix == 'coarse_edge_index':
+                return 1   # [2, E_c] — concatenate along edge dimension
+            if prefix in ('fine_to_coarse', 'coarse_edge_attr'):
+                return 0   # [N] and [E_c, 8] — concatenate along node/edge dim
         return super().__cat_dim__(key, value, *args, **kwargs)

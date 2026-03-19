@@ -42,7 +42,10 @@
       "Bash(grep -n \"model.train\\(\\)\\\\|model.eval\\(\\)\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/training_profiles/*.py)",
       "Bash(curl -s https://api.github.com/repos/google-deepmind/deepmind-research/contents/meshgraphnets)",
       "Bash(xargs grep -l \"multiscale\\\\|fine_mp\\\\|coarse_mp\")",
-      "Bash(grep -h \"use_multiscale\\\\|fine_mp_pre\\\\|coarse_mp_num\\\\|fine_mp_post\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/_flag_input/config_flag_*.txt /c/Users/Lee/Desktop/Huni/MeshGraphNets/_warpage_input/config_*.txt)"
+      "Bash(grep -h \"use_multiscale\\\\|fine_mp_pre\\\\|coarse_mp_num\\\\|fine_mp_post\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/_flag_input/config_flag_*.txt /c/Users/Lee/Desktop/Huni/MeshGraphNets/_warpage_input/config_*.txt)",
+      "Bash(grep -n \"import numpy as np\" training_profiles/*.py)",
+      "Bash(grep -n \"reduce_dataset\\\\|old\\\\|deprecated\\\\|unused\\\\|TODO\\\\|FIXME\\\\|XXX\\\\|HACK\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/*.py)",
+      "Bash(grep -l \"^#\\\\|^[[:space:]]*#\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/**/*.py)"
     ]
   }
 }

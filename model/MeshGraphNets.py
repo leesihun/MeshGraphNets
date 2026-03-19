@@ -115,31 +115,71 @@ class EncoderProcessorDecoder(nn.Module):
                 processer_list.append(GnBlock(config, self.latent_dim, use_world_edges=self.use_world_edges))
             self.processer_list = nn.ModuleList(processer_list)
         else:
-            # ── Hierarchical U-Net processor ─────────────────────────────────
-            fine_mp_pre  = int(config.get('fine_mp_pre', 5))
-            coarse_mp    = int(config.get('coarse_mp_num', 5))
-            fine_mp_post = int(config.get('fine_mp_post', 5))
-            print(f"  Multiscale: fine_pre={fine_mp_pre}, coarse={coarse_mp}, fine_post={fine_mp_post}")
+            # ── Hierarchical N-level V-cycle processor ───────────────────────
+            L = int(config.get('multiscale_levels', 1))
+            self.multiscale_levels = L
 
-            # Fine GnBlocks before pooling (support world edges same as flat)
-            self.fine_pre_blocks = nn.ModuleList([
-                GnBlock(config, self.latent_dim, use_world_edges=self.use_world_edges)
-                for _ in range(fine_mp_pre)
-            ])
-            # Coarse-level edge encoder + GnBlocks (no world edges at coarse level)
-            self.coarse_eb_encoder = build_mlp(self.edge_input_size, self.latent_dim, self.latent_dim)
+            # Parse mp_per_level or construct from legacy keys
+            mp_per_level = config.get('mp_per_level', None)
+            if mp_per_level is None:
+                fine_pre = int(config.get('fine_mp_pre', 5))
+                coarse_mp = int(config.get('coarse_mp_num', 5))
+                fine_post = int(config.get('fine_mp_post', 5))
+                mp_per_level = [fine_pre] + [coarse_mp] + [fine_post]
+            if not isinstance(mp_per_level, list):
+                mp_per_level = [int(mp_per_level)]
+            else:
+                mp_per_level = [int(x) for x in mp_per_level]
+
+            expected_len = 2 * L + 1
+            if len(mp_per_level) != expected_len:
+                raise ValueError(
+                    f"mp_per_level must have {expected_len} entries for {L} levels, "
+                    f"got {len(mp_per_level)}: {mp_per_level}"
+                )
+
+            # Print V-cycle structure
+            parts = []
+            for i in range(L):
+                parts.append(f"pre[{i}]={mp_per_level[i]}")
+            parts.append(f"coarsest={mp_per_level[L]}")
+            for i in range(L - 1, -1, -1):
+                parts.append(f"post[{i}]={mp_per_level[2 * L - i]}")
+            print(f"  Multiscale V-cycle ({L} levels): {', '.join(parts)}")
+
             coarse_config = dict(config)
             coarse_config['use_world_edges'] = False
-            self.coarse_blocks = nn.ModuleList([
+
+            # Build per-level pre-blocks, post-blocks, edge encoders, skip projections
+            self.pre_blocks = nn.ModuleList()
+            self.post_blocks = nn.ModuleList()
+            self.coarse_eb_encoders = nn.ModuleList()
+            self.skip_projs = nn.ModuleList()
+
+            for i in range(L):
+                pre_count = mp_per_level[i]
+                post_count = mp_per_level[2 * L - i]
+                use_we = self.use_world_edges if i == 0 else False
+                cfg = config if i == 0 else coarse_config
+
+                self.pre_blocks.append(nn.ModuleList([
+                    GnBlock(cfg, self.latent_dim, use_world_edges=use_we)
+                    for _ in range(pre_count)
+                ]))
+                self.post_blocks.append(nn.ModuleList([
+                    GnBlock(cfg, self.latent_dim, use_world_edges=use_we)
+                    for _ in range(post_count)
+                ]))
+                self.coarse_eb_encoders.append(
+                    build_mlp(self.edge_input_size, self.latent_dim, self.latent_dim)
+                )
+                self.skip_projs.append(nn.Linear(2 * self.latent_dim, self.latent_dim))
+
+            # Coarsest level blocks
+            coarsest_count = mp_per_level[L]
+            self.coarsest_blocks = nn.ModuleList([
                 GnBlock(coarse_config, self.latent_dim, use_world_edges=False)
-                for _ in range(coarse_mp)
-            ])
-            # Skip connection projection: concat(fine_skip, unpool) → latent_dim
-            self.skip_proj = nn.Linear(2 * self.latent_dim, self.latent_dim)
-            # Fine GnBlocks after unpooling (support world edges)
-            self.fine_post_blocks = nn.ModuleList([
-                GnBlock(config, self.latent_dim, use_world_edges=self.use_world_edges)
-                for _ in range(fine_mp_post)
+                for _ in range(coarsest_count)
             ])
 
         self.decoder = Decoder(self.latent_dim, self.node_output_size)
@@ -162,68 +202,100 @@ class EncoderProcessorDecoder(nn.Module):
                 print(f"  After Decoder: out std={output.std().item():.4f}, mean={output.mean().item():.4f}")
             return output
 
-        # ── Hierarchical U-Net path ───────────────────────────────────────────
-        # Extract multiscale topology BEFORE encoder (encoder drops custom attrs)
-        fine_to_coarse    = graph.fine_to_coarse     # [N_total] long — already offset for batch
-        coarse_edge_index = graph.coarse_edge_index  # [2, E_c] — already offset for batch
-        coarse_edge_attr_raw = graph.coarse_edge_attr  # [E_c, 8] normalized coarse edge features
-        num_coarse = int(graph.num_coarse.sum())        # total coarse nodes in batch
+        # ── Hierarchical N-level V-cycle path ─────────────────────────────────
+        L = self.multiscale_levels
 
-        # Step 1: Encode fine graph
+        # Extract per-level topology BEFORE encoder (encoder drops custom attrs)
+        level_data = {}
+        for i in range(L):
+            ftc_key = f'fine_to_coarse_{i}'
+            if not hasattr(graph, ftc_key):
+                # Graph has fewer levels than model (degeneracy) — stop here
+                break
+            level_data[i] = {
+                'ftc': graph[ftc_key],
+                'c_ei': graph[f'coarse_edge_index_{i}'],
+                'c_ea': graph[f'coarse_edge_attr_{i}'],
+                'n_c': int(graph[f'num_coarse_{i}'].sum()),
+            }
+        actual_levels = len(level_data)
+
+        # Encode fine graph
         graph = self.encoder(graph)
         if debug:
             print(f"  [MS] After Encoder: x std={graph.x.std().item():.4f}")
 
-        # Step 2: Fine pre-pool GnBlocks
-        for block in self.fine_pre_blocks:
-            graph = block(graph)
+        # ── DESCENDING ARM (fine → coarse) ───────────────────────────────────
+        skip_states = []
+        current_graph = graph
 
-        # Save fine state for skip connection
-        h_fine_skip  = graph.x           # [N_total, D]
-        fine_e_attr  = graph.edge_attr   # [2E, D]
-        fine_e_idx   = graph.edge_index  # [2, 2E]
-        fine_w_attr  = graph.world_edge_attr  if self.use_world_edges and hasattr(graph, 'world_edge_attr')  else None
-        fine_w_idx   = graph.world_edge_index if self.use_world_edges and hasattr(graph, 'world_edge_index') else None
+        for i in range(actual_levels):
+            # Run pre-blocks at level i
+            if self.use_checkpointing and self.training:
+                current_graph = process_with_checkpointing(self.pre_blocks[i], current_graph)
+            else:
+                for block in self.pre_blocks[i]:
+                    current_graph = block(current_graph)
 
-        if debug:
-            print(f"  [MS] After fine_pre ({len(self.fine_pre_blocks)} blocks): x std={h_fine_skip.std().item():.4f}")
+            if debug:
+                print(f"  [MS] After pre[{i}] ({len(self.pre_blocks[i])} blocks): x std={current_graph.x.std().item():.4f}")
 
-        # Step 3: Pool fine → coarse node features (mean aggregation)
-        h_coarse = pool_features(h_fine_skip, fine_to_coarse, num_coarse)   # [M, D]
-        e_coarse = self.coarse_eb_encoder(coarse_edge_attr_raw)              # [E_c, D]
+            # Save skip connection state
+            skip_states.append({
+                'x': current_graph.x,
+                'edge_attr': current_graph.edge_attr,
+                'edge_index': current_graph.edge_index,
+                'w_attr': getattr(current_graph, 'world_edge_attr', None) if i == 0 and self.use_world_edges else None,
+                'w_idx': getattr(current_graph, 'world_edge_index', None) if i == 0 and self.use_world_edges else None,
+            })
 
-        if debug:
-            print(f"  [MS] After pool: h_coarse {h_coarse.shape}, e_coarse {e_coarse.shape}")
+            # Pool: level i → level i+1
+            ld = level_data[i]
+            h_coarse = pool_features(current_graph.x, ld['ftc'], ld['n_c'])
+            e_coarse = self.coarse_eb_encoders[i](ld['c_ea'])
+            current_graph = Data(x=h_coarse, edge_attr=e_coarse, edge_index=ld['c_ei'])
 
-        # Step 4: Coarse GnBlocks
-        coarse_graph = Data(x=h_coarse, edge_attr=e_coarse, edge_index=coarse_edge_index)
-        for block in self.coarse_blocks:
-            coarse_graph = block(coarse_graph)
+            if debug:
+                print(f"  [MS] After pool[{i}]: {skip_states[-1]['x'].shape[0]} → {h_coarse.shape[0]} nodes")
 
-        if debug:
-            print(f"  [MS] After coarse ({len(self.coarse_blocks)} blocks): x std={coarse_graph.x.std().item():.4f}")
-
-        # Step 5: Unpool coarse → fine (broadcast each coarse feature to its fine cluster)
-        h_up = unpool_features(coarse_graph.x, fine_to_coarse)  # [N_total, D]
-
-        # Step 6: Skip connection — merge pre-pool fine features with upsampled coarse
-        h_merged = self.skip_proj(torch.cat([h_fine_skip, h_up], dim=-1))  # [N_total, D]
-
-        # Step 7: Reconstruct fine graph with merged node features + original fine edges
-        fine_graph = Data(x=h_merged, edge_attr=fine_e_attr, edge_index=fine_e_idx)
-        if self.use_world_edges and fine_w_attr is not None:
-            fine_graph.world_edge_attr  = fine_w_attr
-            fine_graph.world_edge_index = fine_w_idx
-
-        # Step 8: Fine post-pool GnBlocks
-        for block in self.fine_post_blocks:
-            fine_graph = block(fine_graph)
+        # ── COARSEST LEVEL ────────────────────────────────────────────────────
+        if self.use_checkpointing and self.training:
+            current_graph = process_with_checkpointing(self.coarsest_blocks, current_graph)
+        else:
+            for block in self.coarsest_blocks:
+                current_graph = block(current_graph)
 
         if debug:
-            print(f"  [MS] After fine_post ({len(self.fine_post_blocks)} blocks): x std={fine_graph.x.std().item():.4f}")
+            print(f"  [MS] After coarsest ({len(self.coarsest_blocks)} blocks): x std={current_graph.x.std().item():.4f}")
 
-        # Step 9: Decode
-        output = self.decoder(fine_graph)
+        # ── ASCENDING ARM (coarse → fine) ─────────────────────────────────────
+        for i in range(actual_levels - 1, -1, -1):
+            # Unpool: level i+1 → level i
+            ld = level_data[i]
+            h_up = unpool_features(current_graph.x, ld['ftc'])
+
+            # Skip connection merge
+            skip = skip_states[i]
+            h_merged = self.skip_projs[i](torch.cat([skip['x'], h_up], dim=-1))
+
+            # Reconstruct graph at level i with saved edge topology
+            current_graph = Data(x=h_merged, edge_attr=skip['edge_attr'], edge_index=skip['edge_index'])
+            if i == 0 and self.use_world_edges and skip['w_attr'] is not None:
+                current_graph.world_edge_attr = skip['w_attr']
+                current_graph.world_edge_index = skip['w_idx']
+
+            # Run post-blocks at level i
+            if self.use_checkpointing and self.training:
+                current_graph = process_with_checkpointing(self.post_blocks[i], current_graph)
+            else:
+                for block in self.post_blocks[i]:
+                    current_graph = block(current_graph)
+
+            if debug:
+                print(f"  [MS] After post[{i}] ({len(self.post_blocks[i])} blocks): x std={current_graph.x.std().item():.4f}")
+
+        # Decode
+        output = self.decoder(current_graph)
         if debug:
             print(f"  [MS] After Decoder: out std={output.std().item():.4f}")
         return output
