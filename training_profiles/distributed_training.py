@@ -154,7 +154,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         pin_memory=True
     )
     if rank == 0:
-        train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 16)))
+        train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 128)))
         train_eval_rng = np.random.default_rng(split_seed)
         train_eval_indices = train_eval_rng.choice(
             len(train_dataset), size=train_eval_subset_size, replace=False

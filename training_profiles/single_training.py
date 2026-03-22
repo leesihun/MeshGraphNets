@@ -85,7 +85,7 @@ def single_worker(config, config_filename='config.txt'):
         pin_memory=True
     )
 
-    train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 16)))
+    train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 128)))
     train_eval_rng = np.random.default_rng(split_seed)
     train_eval_indices = train_eval_rng.choice(
         len(train_dataset), size=train_eval_subset_size, replace=False
