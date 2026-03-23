@@ -15,12 +15,12 @@ edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	10
+Training_epochs	30
 Batch_size  2
 LearningR	0.0001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
 Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 8
-std_noise   0.001
+std_noise   0.02
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 verbose     False
 monitor_gradients  False
