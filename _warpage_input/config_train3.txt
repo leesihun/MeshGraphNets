@@ -16,8 +16,8 @@ edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
 %   Network parameters
 message_passing_num 15
 Training_epochs	10
-Batch_size  8
-LearningR	0.0005  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
+Batch_size  2
+LearningR	0.0001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
 Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 8
 std_noise   0.001
@@ -26,7 +26,7 @@ verbose     False
 monitor_gradients  False
 '
 % Memory Optimization
-use_checkpointing   True
+use_checkpointing   False
 '
 % Performance Optimization
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
