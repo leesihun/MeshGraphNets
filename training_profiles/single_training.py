@@ -6,7 +6,6 @@ import numpy as np
 import torch
 
 from general_modules.data_loader import load_data
-from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, test_model, log_training_config
@@ -85,8 +84,6 @@ def single_worker(config, config_filename='config.txt'):
         pin_memory=True
     )
 
-    train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 128)))
-    train_eval_rng = np.random.default_rng(split_seed)
 
     if torch.cuda.is_available():
         print(f'After dataloader creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
@@ -171,18 +168,7 @@ def single_worker(config, config_filename='config.txt'):
 
             train_metrics = train_epoch(model, train_loader, optimizer, device, config, epoch)
 
-            # Resample train_eval subset each epoch for an unbiased training loss estimate
-            train_eval_indices = train_eval_rng.choice(
-                len(train_dataset), size=train_eval_subset_size, replace=False
-            ).tolist()
-            train_eval_loader = DataLoader(
-                Subset(train_dataset, train_eval_indices),
-                batch_size=config['batch_size'],
-                shuffle=False,
-                num_workers=num_workers,
-                pin_memory=True,
-            )
-            train_eval_metrics = validate_epoch(model, train_eval_loader, device, config, epoch)
+            train_eval_metrics = validate_epoch(model, train_loader, device, config, epoch)
             valid_metrics = validate_epoch(model, val_loader, device, config, epoch)
             train_loss = train_metrics['mean']
             train_eval_loss = train_eval_metrics['mean']
