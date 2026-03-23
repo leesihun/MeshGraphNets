@@ -4,7 +4,7 @@ gpu_ids 0,1    # -1 for CPU, GPU ids for multi-GPU training (DDP with both H200s
 log_file_dir    train3.log
 modelpath   ./outputs/warpage3.pth
 %   Datasets
-dataset_dir ./dataset/warpage_half.h5
+dataset_dir ./dataset/warpage_all_new.h5
 infer_dataset   ./dataset/warpage_infer.h5
 infer_timesteps 34
 %   Common params
