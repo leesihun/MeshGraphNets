@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from general_modules.data_loader import load_data
+from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
 from training_profiles.training_loop import train_epoch, validate_epoch, test_model, log_training_config

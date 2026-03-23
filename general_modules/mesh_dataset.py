@@ -873,6 +873,15 @@ class MeshGraphDataset(Dataset):
             self._h5_handle = h5py.File(self.h5_file, 'r', swmr=True)
         return self._h5_handle
 
+    def __getstate__(self):
+        """Exclude unpicklable HDF5 handle when pickling (for DataLoader workers)."""
+        state = self.__dict__.copy()
+        state['_h5_handle'] = None
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+
     def __del__(self):
         """Close persistent HDF5 handle on cleanup."""
         if hasattr(self, '_h5_handle') and self._h5_handle is not None:
