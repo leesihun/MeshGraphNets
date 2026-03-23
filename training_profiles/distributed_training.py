@@ -156,20 +156,9 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
     if rank == 0:
         train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 128)))
         train_eval_rng = np.random.default_rng(split_seed)
-        train_eval_indices = train_eval_rng.choice(
-            len(train_dataset), size=train_eval_subset_size, replace=False
-        ).tolist()
-        train_eval_loader = DataLoader(
-            Subset(train_dataset, train_eval_indices),
-            batch_size=config['batch_size'],
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=num_workers > 0,
-            prefetch_factor=8 if num_workers > 0 else None,
-        )
     else:
-        train_eval_loader = None
+        train_eval_subset_size = None
+        train_eval_rng = None
     if torch.cuda.is_available() and rank == 0:
         print(f'After dataloader creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')
 
@@ -303,6 +292,17 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         train_loss = (train_totals[0] / train_totals[1]).item()
 
         if rank == 0:
+            # Resample train_eval subset each epoch for an unbiased training loss estimate
+            train_eval_indices = train_eval_rng.choice(
+                len(train_dataset), size=train_eval_subset_size, replace=False
+            ).tolist()
+            train_eval_loader = DataLoader(
+                Subset(train_dataset, train_eval_indices),
+                batch_size=config['batch_size'],
+                shuffle=False,
+                num_workers=num_workers,
+                pin_memory=True,
+            )
             train_eval_metrics = validate_epoch(model, train_eval_loader, device, config, epoch)
             valid_metrics = validate_epoch(model, val_loader, device, config, epoch)
             train_eval_loss = train_eval_metrics['mean']
