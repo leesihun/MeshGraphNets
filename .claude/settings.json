@@ -49,7 +49,8 @@
       "Bash(conda run -n mgn python -c \":*)",
       "Bash(pip list)",
       "Bash(findstr -i \"geometric pyg\")",
-      "WebFetch(domain:disco.ethz.ch)"
+      "WebFetch(domain:disco.ethz.ch)",
+      "Bash(grep -h \"^import\\\\|^from\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/model/*.py)"
     ]
   }
 }
