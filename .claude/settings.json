@@ -48,7 +48,8 @@
       "Bash(grep -l \"^#\\\\|^[[:space:]]*#\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/**/*.py)",
       "Bash(conda run -n mgn python -c \":*)",
       "Bash(pip list)",
-      "Bash(findstr -i \"geometric pyg\")"
+      "Bash(findstr -i \"geometric pyg\")",
+      "WebFetch(domain:disco.ethz.ch)"
     ]
   }
 }

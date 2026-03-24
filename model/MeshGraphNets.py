@@ -50,25 +50,27 @@ class MeshGraphNets(nn.Module):
             predicted: predicted normalized delta [N, output_var]
             target: normalized target delta [N, output_var]
         """
-        # Noise injection during training (matches DeepMind: noise on input + target correction)
+        # Noise injection during training (node + edge noise for regularization)
         if self.training:
             noise_std = self.config.get('std_noise', 0.0)
             if noise_std > 0:
                 output_var = self.config['output_var']
-                # Generate noise only for physical features (not node type one-hot)
+                # Node noise: physical features only (not node type one-hot)
                 noise = torch.randn(graph.x.shape[0], output_var,
                                     device=graph.x.device, dtype=graph.x.dtype) * noise_std
-                # Add noise to physical features only
                 noise_padded = torch.zeros_like(graph.x)
                 noise_padded[:, :output_var] = noise
                 graph.x = graph.x + noise_padded
-                # Adjust target to account for noisy input (DeepMind: delta -= gamma * noise)
+                # Target correction (DeepMind: delta -= gamma * noise)
                 noise_gamma = self.config.get('noise_gamma', 0.1)
                 noise_std_ratio = self.config.get('noise_std_ratio', None)
                 if noise_std_ratio is not None:
                     ratio = torch.tensor(noise_std_ratio, device=graph.x.device,
                                          dtype=graph.x.dtype)
                     graph.y = graph.y - noise_gamma * noise * ratio
+                # Edge noise: same std on all edge features (normalized space)
+                edge_noise = torch.randn_like(graph.edge_attr) * noise_std
+                graph.edge_attr = graph.edge_attr + edge_noise
         # Forward through encoder-processor-decoder
         predicted = self.model(graph, debug=debug)
 
