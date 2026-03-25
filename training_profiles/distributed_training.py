@@ -219,13 +219,24 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
     if rank == 0:
         print(f"Optimizer: Adam (fused={use_fused})")
 
-    # Initialize learning rate scheduler (single cosine decay over full training, no restarts)
+    # Initialize learning rate scheduler: linear warmup + cosine warm restarts
     total_epochs = config.get('training_epochs')
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_epochs, eta_min=1e-8,
+    warmup_epochs = 3
+    remaining_epochs = max(total_epochs - warmup_epochs, 1)
+    # T_0 sized so 2 full cosine cycles fit in remaining epochs (T_0 + 2*T_0 = 3*T_0)
+    cosine_T0 = max(remaining_epochs // 3, 1)
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, total_iters=warmup_epochs
+    )
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=cosine_T0, T_mult=2, eta_min=1e-8
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_epochs]
     )
     if rank == 0:
-        print(f"Learning rate scheduler: CosineAnnealingLR (T_max={total_epochs}, eta_min=1e-8)")
+        print(f"Learning rate scheduler: LinearLR warmup ({warmup_epochs} epochs, start=0.01x) -> "
+              f"CosineAnnealingWarmRestarts (T_0={cosine_T0}, T_mult=2, eta_min=1e-8)")
 
     if torch.cuda.is_available() and rank == 0:
         print(f'After optimizer creation: {torch.cuda.memory_allocated()/1e9:.2f}GB')

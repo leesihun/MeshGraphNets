@@ -224,6 +224,8 @@ class MeshGraphDataset(Dataset):
             self.edge_mean = None
             self.edge_std = None
             self._h5_handle = None
+            self.is_training = False
+            self.augment_geometry = False
 
         print(f"Found {len(self.sample_ids)} samples")
         print(f"  num_timesteps: {self.num_timesteps}")
@@ -423,7 +425,7 @@ class MeshGraphDataset(Dataset):
             norm_group.attrs['normalization_source'] = 'train_split'
             norm_group.attrs['split_seed'] = int(split_seed)
 
-    def _create_subset(self, sample_ids: List[int]):
+    def _create_subset(self, sample_ids: List[int], is_training: bool = False):
         subset = MeshGraphDataset.__new__(MeshGraphDataset)
         subset.h5_file = self.h5_file
         subset.config = self.config
@@ -453,6 +455,8 @@ class MeshGraphDataset(Dataset):
         subset.coarse_edge_stds = []
         subset._coarse_cache = {}
         subset._h5_handle = None
+        subset.is_training = is_training
+        subset.augment_geometry = self.config.get('augment_geometry', False) and is_training
         return subset
 
     def _resolve_split_ids(self, train_ratio: float, val_ratio: float, test_ratio: float, seed: int):
@@ -891,6 +895,22 @@ class MeshGraphDataset(Dataset):
                 pass
             self._h5_handle = None
 
+    def _random_augmentation_matrix(self) -> np.ndarray:
+        """Generate a random Z-axis rotation + optional x/y reflection matrix [3, 3].
+
+        Gravity-independent: full Z-rotation (0-360) and axis reflections are valid.
+        Translation is skipped because edge features use relative positions only.
+        """
+        theta = np.random.uniform(0, 2 * np.pi)
+        c, s = np.cos(theta), np.sin(theta)
+        R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
+        # Independent 50% chance of x-reflection and y-reflection
+        if np.random.random() < 0.5:
+            R[0, :] *= -1
+        if np.random.random() < 0.5:
+            R[1, :] *= -1
+        return R
+
     def __getitem__(self, idx: int) -> Data:
         """
         Load a single graph sample with optional temporal prediction.
@@ -963,6 +983,14 @@ class MeshGraphDataset(Dataset):
             y_raw = data_t1[:, 3:3+self.output_dim]  # [N, 4]
             # Target delta: difference between next and current state
             target_delta = y_raw - x_raw  # [N, 4]
+
+        # Geometric augmentation: Z-axis rotation + reflection (training only)
+        if getattr(self, 'augment_geometry', False):
+            R = self._random_augmentation_matrix()  # [3, 3]
+            pos = pos @ R.T                          # rotate reference positions
+            x_raw[:, :3] = x_raw[:, :3] @ R.T       # rotate displacement components
+            target_delta[:, :3] = target_delta[:, :3] @ R.T  # rotate delta displacement
+            # Scalar features (e.g. stress at index 3+) are rotation-invariant, unchanged
 
         displacement = x_raw[:, :3]  # [N, 3] - extract displacement components (x_disp, y_disp, z_disp)
         deformed_pos = pos + displacement  # [N, 3] - actual mesh position at time t
@@ -1126,9 +1154,9 @@ class MeshGraphDataset(Dataset):
 
         train_ids, val_ids, test_ids = self._resolve_split_ids(train_ratio, val_ratio, test_ratio, seed)
 
-        train_dataset = self._create_subset(train_ids)
-        val_dataset = self._create_subset(val_ids)
-        test_dataset = self._create_subset(test_ids)
+        train_dataset = self._create_subset(train_ids, is_training=True)
+        val_dataset = self._create_subset(val_ids, is_training=False)
+        test_dataset = self._create_subset(test_ids, is_training=False)
 
         print(f"Dataset split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test")
         print("Fitting preprocessing on train split only...")

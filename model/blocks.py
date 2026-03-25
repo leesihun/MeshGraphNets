@@ -47,7 +47,7 @@ class NodeBlock(nn.Module):
         # Decompose graph
         edge_attr = graph.edge_attr # [E, 4] (3D)
         nodes_to_collect = []
-        
+
         _, receivers_idx = graph.edge_index # [E, 2] (sender, receiver)
         num_nodes = graph.num_nodes
         # Use sum aggregation (matches NVIDIA PhysicsNeMo deforming_plate implementation)
@@ -57,7 +57,7 @@ class NodeBlock(nn.Module):
         nodes_to_collect.append(graph.x)
         nodes_to_collect.append(agg_received_edges)
         collected_nodes = torch.cat(nodes_to_collect, dim=-1)
-        
+
         x = self.net(collected_nodes)
         return Data(x=x, edge_attr=edge_attr, edge_index=graph.edge_index)
 

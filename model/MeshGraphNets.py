@@ -186,10 +186,17 @@ class EncoderProcessorDecoder(nn.Module):
 
         self.decoder = Decoder(self.latent_dim, self.node_output_size)
 
+        # Gated encoder→decoder skip connection: learns when to use encoder features
+        self.skip_gate = nn.Sequential(
+            nn.Linear(self.latent_dim * 2, self.latent_dim),
+            nn.Sigmoid()
+        )
+
     def forward(self, graph, debug=False):
         if not self.use_multiscale:
-            # ── Original flat path (unchanged) ───────────────────────────────
+            # ── Original flat path ────────────────────────────────────────────
             graph = self.encoder(graph)
+            encoder_x = graph.x  # save encoder output for skip connection
             if debug:
                 print(f"  After Encoder: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
             if self.use_checkpointing and self.training:
@@ -199,6 +206,9 @@ class EncoderProcessorDecoder(nn.Module):
                     graph = model(graph)
                     if debug and i == len(self.processer_list) - 1:
                         print(f"  After MP block {i}: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
+            # Gated skip: blend encoder features back into processed output
+            gate = self.skip_gate(torch.cat([graph.x, encoder_x], dim=-1))
+            graph = Data(x=graph.x + gate * encoder_x, edge_attr=graph.edge_attr, edge_index=graph.edge_index)
             output = self.decoder(graph)
             if debug:
                 print(f"  After Decoder: out std={output.std().item():.4f}, mean={output.mean().item():.4f}")
@@ -224,6 +234,7 @@ class EncoderProcessorDecoder(nn.Module):
 
         # Encode fine graph
         graph = self.encoder(graph)
+        encoder_x = graph.x  # save encoder output for skip connection
         if debug:
             print(f"  [MS] After Encoder: x std={graph.x.std().item():.4f}")
 
@@ -296,6 +307,9 @@ class EncoderProcessorDecoder(nn.Module):
             if debug:
                 print(f"  [MS] After post[{i}] ({len(self.post_blocks[i])} blocks): x std={current_graph.x.std().item():.4f}")
 
+        # Gated skip: blend encoder features back into processed output
+        gate = self.skip_gate(torch.cat([current_graph.x, encoder_x], dim=-1))
+        current_graph = Data(x=current_graph.x + gate * encoder_x, edge_attr=current_graph.edge_attr, edge_index=current_graph.edge_index)
         # Decode
         output = self.decoder(current_graph)
         if debug:
@@ -392,6 +406,7 @@ class GnBlock(nn.Module):
 
         self.use_world_edges = use_world_edges
         self.residual_scale = config.get('residual_scale', 1.0)
+        self.use_pairnorm = config.get('use_pairnorm', False)
         # Residual connections applied to both nodes and edges (matches DeepMind original)
 
         eb_input_dim = 3 * latent_dim  # Sender, Receiver, edge latent dim
@@ -447,6 +462,14 @@ class GnBlock(nn.Module):
 
         # Apply all residuals AFTER node update (matches DeepMind original)
         x = x_input + self.residual_scale * node_graph.x
+
+        # PairNorm: center and rescale node features AFTER residual to prevent over-smoothing
+        # Applied between layers (not on aggregation) to avoid scale mismatch at depth
+        if self.use_pairnorm:
+            x_centered = x - x.mean(dim=0, keepdim=True)
+            rms = (x_centered.norm(p=2) / (x.shape[0] ** 0.5)) + 1e-8
+            x = x_centered / rms
+
         edge_attr = graph.edge_attr + self.residual_scale * edge_mlp_out  # Edge residual
         updated_world_edge_attr = (world_edge_attr + self.residual_scale * world_edge_mlp_out) if world_edge_mlp_out is not None else world_edge_attr
 

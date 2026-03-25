@@ -1,10 +1,10 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 0    # -1 for CPU, GPU ids for multi-GPU training (DDP with both H200s)
+gpu_ids 0,1    # -1 for CPU, GPU ids for multi-GPU training (DDP with both H200s)
 log_file_dir    train4.log
 modelpath   ./outputs/warpage4.pth
 %   Datasets
-dataset_dir ./dataset/warpage_half.h5
+dataset_dir ./dataset/warpage_random_100.h5
 infer_dataset   ./dataset/warpage_infer.h5
 infer_timesteps 34
 %   Common params
@@ -15,18 +15,20 @@ edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
 '
 %   Network parameters
 message_passing_num 3
-Training_epochs	20
-Batch_size	4
-LearningR	0.0001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
-Latent_dim	32	# MeshGraphNets latent dimension
+Training_epochs	100
+Batch_size  2
+LearningR	0.001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
+Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 8
-std_noise   0
+std_noise   0.003
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
+use_pairnorm    True    # PairNorm on aggregated messages to prevent over-smoothing in deep GNNs
+augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
 verbose     False
 monitor_gradients  False
 '
 % Memory Optimization
-use_checkpointing   False
+use_checkpointing   True
 '
 % Performance Optimization
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
@@ -46,13 +48,13 @@ world_edge_backend      scipy_kdtree   # Backend: torch_cluster (GPU, fast) or s
 % Test set control
 display_testset True
 display_trainset True   # Also save train reconstruction .h5 + plots (uses test_batch_idx samples)
-test_batch_idx  0, 1, 2, 3
+test_batch_idx  0, 1, 2, 3, 15, 16, 33, 34
 plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature, i.e., stress)
 '
 % Multi-Scale / Hierarchical Parameters (BFS Bi-Stride, ICML 2023)
-use_multiscale      True
+use_multiscale      False
 multiscale_levels   1
-mp_per_level        1, 3, 1     # [pre_0, coarsest, post_0] for L=1
-fine_mp_pre         1           # legacy (ignored when mp_per_level is set)
-coarse_mp_num       3
-fine_mp_post        1
+mp_per_level        2, 10, 2    # [pre_0, coarsest, post_0] for L=1
+fine_mp_pre         2           # legacy (ignored when mp_per_level is set)
+coarse_mp_num       10
+fine_mp_post        2

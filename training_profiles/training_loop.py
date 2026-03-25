@@ -141,7 +141,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                     log_dir = config.get('log_dir', '.')
                     save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
 
-            errors = ((predicted_acc - target_acc) ** 2)
+            errors = torch.nn.functional.huber_loss(predicted_acc, target_acc, reduction='none', delta=1.0)
             loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
             # Scale loss so accumulated gradients equal the mean within each accumulation window.
             scaled_loss = loss / _accum_window_size(batch_idx, total_batches, actual_accum)
@@ -167,7 +167,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
         # Step optimizer at end of accumulation window or final batch
         is_last_batch = (batch_idx == total_batches - 1)
         if (batch_idx + 1) % actual_accum == 0 or is_last_batch:
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
             if monitor_gradients:
                 total_grad_norm += grad_norm.item()
                 num_steps += 1
@@ -246,7 +246,7 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
             graph = graph.to(device)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
-                errors = ((predicted - target) ** 2)
+                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
                 loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             # Accumulate per-feature losses
@@ -340,7 +340,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             graph = graph.to(device)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
-                errors = ((predicted - target) ** 2)
+                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
                 loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             # Accumulate per-feature losses

@@ -22,6 +22,8 @@ Latent_dim	32	# MeshGraphNets latent dimension
 num_workers 8
 std_noise   0
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
+use_pairnorm    True    # PairNorm on aggregated messages to prevent over-smoothing in deep GNNs
+augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
 verbose     False
 monitor_gradients  False
 '
