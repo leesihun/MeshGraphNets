@@ -52,9 +52,6 @@ test_batch_idx  0, 1, 2, 3, 15, 16, 33, 34
 plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature, i.e., stress)
 '
 % Multi-Scale / Hierarchical Parameters (BFS Bi-Stride, ICML 2023)
-use_multiscale      False
+use_multiscale      True
 multiscale_levels   1
 mp_per_level        2, 10, 2    # [pre_0, coarsest, post_0] for L=1
-fine_mp_pre         2           # legacy (ignored when mp_per_level is set)
-coarse_mp_num       10
-fine_mp_post        2
