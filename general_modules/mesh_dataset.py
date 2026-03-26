@@ -1276,7 +1276,7 @@ class MeshGraphDataset(Dataset):
             actual_levels = cache['levels']
 
             # Chain centroid computation through levels for edge attr
-            ref_np = pos.astype(np.float32)
+            ref_np = pos.numpy()
             deformed_np = deformed_pos.astype(np.float32)
             cur_ref, cur_def = ref_np, deformed_np
 
