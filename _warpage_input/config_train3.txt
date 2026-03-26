@@ -13,13 +13,14 @@ output_var  3   # number of output variables: x_disp, y_disp, z_disp, stress (ex
 feature_loss_weights  0.1, 0.1, 1.0  # Per-feature loss weights for [x_disp, y_disp, z_disp]
 edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
 positional_features  7
+positional_encoding  lpe # rwpe (random walk), lpe (Laplacian eigenvectors), or rwpe+lpe (both)
 '
 %   Network parameters
 message_passing_num 10
 Training_epochs	100
 Batch_size  1
 LearningR	0.001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
-Latent_dim	256	# MeshGraphNets latent dimension
+Latent_dim	200	# MeshGraphNets latent dimension
 num_workers 8
 std_noise   0.003
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
@@ -35,6 +36,8 @@ use_checkpointing   True
 use_parallel_stats  True    # Enable parallel processing for computing dataset statistics (speeds up initialization for large datasets, requires >=100 samples)
 use_amp             True    # Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs)
 use_compile         False   # torch.compile with dynamic shapes (enable after verifying AMP works)
+use_ema             True    # EMA shadow model for validation/inference (smooths SGD noise, ~free precision)
+ema_decay           0.999   # EMA decay factor (0.999 = ~1000-step averaging window)
 test_interval       1      # Run test/visualization every N epochs (1 = every epoch, 10 = every 10th)
 '
 % Node Type Parameters
