@@ -95,15 +95,19 @@ class EncoderProcessorDecoder(nn.Module):
         self.use_world_edges = config.get('use_world_edges', False)
         self.use_multiscale = config.get('use_multiscale', False)
 
-        # Compute actual node input size (physical features + optional node types)
+        # Compute actual node input size (physical + positional + optional node types)
         base_input_size = config['input_var']
+        num_pos_features = int(config.get('positional_features', 0))
+        base_input_size += num_pos_features
         use_node_types = config.get('use_node_types', False)
         num_node_types = config.get('num_node_types', 0)
         if use_node_types and num_node_types > 0:
             self.node_input_size = base_input_size + num_node_types
-            print(f"  Model input: {base_input_size} physical + {num_node_types} node types = {self.node_input_size}")
+            print(f"  Model input: {config['input_var']} physical + {num_pos_features} positional + {num_node_types} node types = {self.node_input_size}")
         else:
             self.node_input_size = base_input_size
+            if num_pos_features > 0:
+                print(f"  Model input: {config['input_var']} physical + {num_pos_features} positional = {self.node_input_size}")
 
         # Output is always physical features only (node types don't change)
         self.node_output_size = config['output_var']

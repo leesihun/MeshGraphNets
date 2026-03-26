@@ -12,6 +12,7 @@ input_var   3   # number of input variables: x_disp, y_disp, z_disp, stress (exc
 output_var  3   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 feature_loss_weights  0.1, 0.1, 1.0  # Per-feature loss weights for [x_disp, y_disp, z_disp]
 edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
+positional_features  3   # Rotation-invariant node features: [centroid_dist, mean_edge_len, RWPE_k2]
 '
 %   Network parameters
 message_passing_num 15

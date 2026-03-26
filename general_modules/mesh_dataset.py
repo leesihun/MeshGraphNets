@@ -23,11 +23,11 @@ try:
 except ImportError:
     HAS_TORCH_CLUSTER = False
 
-def _compute_static_node_features(pos, edge_index, num_features):
-    """Compute rotation-invariant node features for static (T=1) prediction.
+def _compute_positional_features(pos, edge_index, num_features):
+    """Compute rotation-invariant positional node features.
 
-    Replaces the all-zeros input with per-node features that give each node
-    a unique identity while preserving rotation/translation invariance.
+    Appended to physical node features to give each node a unique identity
+    while preserving rotation/translation invariance. Used for both T=1 and T>1.
 
     Features (in priority order):
         1. Distance from centroid     — global position context
@@ -93,7 +93,8 @@ def _finalize_moments(feature_sum, feature_sumsq, count):
 
 
 def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
-                          output_dim: int, num_timesteps: int) -> Dict:
+                          output_dim: int, num_timesteps: int,
+                          num_pos_features: int = 0) -> Dict:
     """
     Worker function to process a chunk of samples.
 
@@ -107,13 +108,15 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
         input_dim: Number of input features (typically 4)
         output_dim: Number of output features (typically 4)
         num_timesteps: Number of timesteps in the dataset
+        num_pos_features: Number of positional features to append (0 = none)
 
     Returns:
         Dictionary with element-wise sums for node/edge/delta features plus
         delta min/max.
     """
-    node_sum = np.zeros(input_dim, dtype=np.float64)
-    node_sumsq = np.zeros(input_dim, dtype=np.float64)
+    total_node_dim = input_dim + num_pos_features
+    node_sum = np.zeros(total_node_dim, dtype=np.float64)
+    node_sumsq = np.zeros(total_node_dim, dtype=np.float64)
     node_count = 0
 
     edge_sum = np.zeros(EDGE_FEATURE_DIM, dtype=np.float64)
@@ -142,17 +145,26 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
 
                     edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
 
+                    # Positional features depend on topology only — compute once per sample
+                    pos_feat = None
+                    if num_pos_features > 0:
+                        ref_pos_0 = data[:3, 0, :].T
+                        pos_feat = _compute_positional_features(ref_pos_0, edge_idx, num_pos_features)
+
                     for t in timesteps:
                         ref_pos = data[:3, t, :].T  # [N, 3]
 
                         if num_timesteps == 1:
-                            # Static: node features are rotation-invariant geometry+topology
-                            node_feat = _compute_static_node_features(ref_pos, edge_idx, input_dim)
-                            # Static: deformed == reference (no displacement)
-                            deformed_pos = ref_pos
+                            # Static: physical features are zeros (model sees zeros)
+                            node_feat = np.zeros((data.shape[2], input_dim), dtype=np.float64)
+                            deformed_pos = ref_pos  # no displacement
                         else:
                             node_feat = data[3:3+input_dim, t, :].T  # [N, input_dim]
                             deformed_pos = ref_pos + data[3:6, t, :].T
+
+                        # Append positional features
+                        if pos_feat is not None:
+                            node_feat = np.concatenate([node_feat, pos_feat], axis=1)
 
                         node_sum += np.sum(node_feat, axis=0)
                         node_sumsq += np.sum(node_feat ** 2, axis=0)
@@ -223,6 +235,7 @@ class MeshGraphDataset(Dataset):
         # Graph and feature parameters
         self.input_dim = config.get('input_var')  # Physical features only (4)
         self.output_dim = config.get('output_var')  # Physical features only (4)
+        self.num_pos_features = int(config.get('positional_features', 0))
         configured_edge_dim = int(config.get('edge_var', EDGE_FEATURE_DIM))
         if configured_edge_dim != EDGE_FEATURE_DIM:
             raise ValueError(
@@ -497,6 +510,7 @@ class MeshGraphDataset(Dataset):
         subset.config = self.config
         subset.input_dim = self.input_dim
         subset.output_dim = self.output_dim
+        subset.num_pos_features = self.num_pos_features
         subset.edge_dim = self.edge_dim
         subset.sample_ids = list(sample_ids)
         subset.num_timesteps = self.num_timesteps
@@ -625,6 +639,7 @@ class MeshGraphDataset(Dataset):
             self.input_dim,
             self.output_dim,
             self.num_timesteps,
+            self.num_pos_features,
         )
 
     def _compute_stats_parallel(self, num_workers: int, num_samples: int) -> Dict:
@@ -637,7 +652,8 @@ class MeshGraphDataset(Dataset):
         try:
             with mp.Pool(num_workers) as pool:
                 worker_args = [
-                    (self.h5_file, chunk, self.input_dim, self.output_dim, self.num_timesteps)
+                    (self.h5_file, chunk, self.input_dim, self.output_dim, self.num_timesteps,
+                     self.num_pos_features)
                     for chunk in sample_chunks
                 ]
                 results = pool.starmap(_process_sample_chunk, worker_args)
@@ -1032,14 +1048,10 @@ class MeshGraphDataset(Dataset):
         # Data shape: [nodes, time, features]
 
         # Extract data based on timesteps
-        is_static = (self.num_timesteps == 1)
-
-        if is_static:
-            # Single timestep: geometry → final displacement
+        if self.num_timesteps == 1:  # Static case
             data_t = data[:, 0, :]  # [N, 7]
             pos = data_t[:, :3]  # [N, 3]
-            # Rotation-invariant node features (geometry + topology, NOT zeros)
-            x_raw = _compute_static_node_features(pos, edge_index, self.input_dim)  # [N, input_var]
+            x_phys = np.zeros((data_t.shape[0], self.input_dim), dtype=np.float32)  # [N, input_var] zeros
             y_raw = data_t[:, 3:3+self.output_dim]  # [N, output_var]
             target_delta = y_raw.copy()  # Predict final displacement directly
         else:
@@ -1047,26 +1059,27 @@ class MeshGraphDataset(Dataset):
             data_t = data[:, time_idx, :]  # [N, 7]
             data_t1 = data[:, time_idx + 1, :]  # [N, 7]
             pos = data_t[:, :3]  # [N, 3]
-            x_raw = data_t[:, 3:3+self.input_dim]  # [N, 4]
-            y_raw = data_t1[:, 3:3+self.output_dim]  # [N, 4]
-            # Target delta: difference between next and current state
-            target_delta = y_raw - x_raw  # [N, 4]
+            x_phys = data_t[:, 3:3+self.input_dim]  # [N, input_var]
+            y_raw = data_t1[:, 3:3+self.output_dim]  # [N, output_var]
+            target_delta = y_raw - x_phys  # [N, output_var]
+
+        # Append rotation-invariant positional features (geometry + topology)
+        if self.num_pos_features > 0:
+            x_pos = _compute_positional_features(pos, edge_index, self.num_pos_features)
+            x_raw = np.concatenate([x_phys, x_pos], axis=1)  # [N, input_var + pos_features]
+        else:
+            x_raw = x_phys
 
         # Geometric augmentation: Z-axis rotation + reflection (training only)
         if getattr(self, 'augment_geometry', False):
             R = self._random_augmentation_matrix()  # [3, 3]
             pos = pos @ R.T                          # rotate reference positions
-            if not is_static:
-                x_raw[:, :3] = x_raw[:, :3] @ R.T   # rotate displacement vectors (T>1 only)
-            # x_raw for static contains rotation-invariant scalars — no rotation needed
+            x_raw[:, :3] = x_raw[:, :3] @ R.T       # rotate displacement components (zeros for T=1, no-op)
             target_delta[:, :3] = target_delta[:, :3] @ R.T  # rotate delta displacement
-            # Scalar features (e.g. stress at index 3+) are rotation-invariant, unchanged
+            # Scalar features (stress) and positional features are rotation-invariant, unchanged
 
-        if is_static:
-            deformed_pos = pos.copy()  # Static: no displacement, deformed == reference
-        else:
-            displacement = x_raw[:, :3]  # [N, 3] - displacement components
-            deformed_pos = pos + displacement  # [N, 3] - actual mesh position at time t
+        displacement = x_raw[:, :3]  # [N, 3] - displacement (zeros for T=1)
+        deformed_pos = pos + displacement  # [N, 3] - actual mesh position at time t
 
         # Compute 8-D edge features from current and reference geometry.
         edge_attr_raw = compute_edge_attr(pos, deformed_pos, edge_index)
