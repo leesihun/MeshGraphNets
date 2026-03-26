@@ -52,6 +52,7 @@ world_edge_backend      scipy_kdtree   # Backend: torch_cluster (GPU, fast) or s
 '
 % Test set control
 display_testset True
+display_trainset True   # Also save train reconstruction .h5 + plots (uses test_batch_idx samples)
 test_batch_idx  0, 1, 2, 3, 15, 16, 33, 34
 plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature, i.e., stress)
 '
