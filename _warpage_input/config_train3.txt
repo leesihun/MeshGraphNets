@@ -12,18 +12,18 @@ input_var   3   # number of input variables: x_disp, y_disp, z_disp, stress (exc
 output_var  3   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 feature_loss_weights  0.1, 0.1, 1.0  # Per-feature loss weights for [x_disp, y_disp, z_disp]
 edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
-positional_features  3
+positional_features  7
 '
 %   Network parameters
 message_passing_num 10
 Training_epochs	100
-Batch_size  2
+Batch_size  1
 LearningR	0.001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
 Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 8
 std_noise   0.003
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
-use_pairnorm    True    # PairNorm on aggregated messages to prevent over-smoothing in deep GNNs
+use_pairnorm    False    # PairNorm on aggregated messages to prevent over-smoothing in deep GNNs
 augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
 verbose     False
 monitor_gradients  False
