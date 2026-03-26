@@ -25,11 +25,14 @@ class MeshGraphNets(nn.Module):
         self.model = EncoderProcessorDecoder(config).to(device)
         self.model.apply(init_weights)
 
-        # Scale decoder's last layer to near-zero so initial predictions ≈ 0
-        # (good prior for delta prediction: "predict no change" at start)
-        with torch.no_grad():
-            last_layer = self.model.decoder.decode_module[-1]
-            last_layer.weight.mul_(0.01)
+        # Scale decoder's last layer for better initial predictions.
+        # T>1 (delta prediction): scale to ~0 ("predict no change" prior)
+        # T=1 (static prediction): keep Kaiming init (targets are full displacements, not small deltas)
+        num_timesteps = config.get('num_timesteps', None)
+        if num_timesteps is None or num_timesteps > 1:
+            with torch.no_grad():
+                last_layer = self.model.decoder.decode_module[-1]
+                last_layer.weight.mul_(0.01)
 
         print('MeshGraphNets model created successfully')
 

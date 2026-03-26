@@ -103,7 +103,8 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         train_dataset.write_preprocessing_to_hdf5(split_seed)
     dist.barrier()
 
-    # Pass num_node_types to config for model to compute input dimension
+    # Pass dataset metadata to config for model construction
+    config['num_timesteps'] = train_dataset.num_timesteps
     if config.get('use_node_types', False) and train_dataset.num_node_types is not None:
         config['num_node_types'] = train_dataset.num_node_types
         if rank == 0:
