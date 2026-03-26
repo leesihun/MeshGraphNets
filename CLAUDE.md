@@ -72,6 +72,7 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | ema_decay | 0.999 | EMA decay factor. `0.999`=~1000-step window, `0.9999`=~10000-step window |
 | test_interval | 10 | Run test/visualization every N epochs. Previous default was 1 (every epoch) |
 | test_max_batches | 200 | Max test samples per evaluation. Caps test_model runtime to avoid NCCL timeout in DDP |
+| positional_encoding | `rwpe` | Encoding for features 3+: `rwpe` (random walk), `lpe` (Laplacian eigenvectors), `rwpe+lpe` |
 | use_node_types | False | One-hot encode node types from HDF5 metadata |
 | use_world_edges | False | Radius-based collision detection edges |
 | use_parallel_stats | True | Parallel normalization stat computation |

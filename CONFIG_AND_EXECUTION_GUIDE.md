@@ -182,7 +182,8 @@ Values are auto-parsed in this order by `general_modules/load_config.py`:
 | `input_var` | int | - | Node input features (excluding node types). Typically `4`: [x_disp, y_disp, z_disp, stress]. |
 | `output_var` | int | - | Node output features. Typically `4`: [x_disp, y_disp, z_disp, stress]. |
 | `edge_var` | int | - | Edge features. Always `8`: [deformed_dx, deformed_dy, deformed_dz, deformed_dist, ref_dx, ref_dy, ref_dz, ref_dist]. |
-| `positional_features` | int | None | Number of rotation-invariant positional node features to compute and concatenate. Example: `3` for [centroid_dist, mean_edge_len, RWPE_k2]. When set, concatenated to normalized features **after** node type encoding (if enabled). |
+| `positional_features` | int | None | Number of rotation-invariant positional node features to compute and concatenate. Example: `7` for [centroid_dist, mean_edge_len, + 5 encoding features]. When set, concatenated to normalized features **after** node type encoding (if enabled). |
+| `positional_encoding` | str | `rwpe` | Encoding method for positional features 3+. `rwpe` = random walk return probabilities (local topology), `lpe` = Laplacian eigenvectors (global structure, Dwivedi & Bresson 2021), `rwpe+lpe` = both (split evenly). |
 | `Latent_dim` | int | 128 | Hidden dimension of all MLPs. VRAM scales **quadratically** with this. |
 | `message_passing_num` | int | 15 | Number of GNN message passing blocks. More = larger receptive field, linear VRAM scaling. |
 

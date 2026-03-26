@@ -327,7 +327,7 @@ class EncoderProcessorDecoder(nn.Module):
         """Enable or disable gradient checkpointing."""
         self.use_checkpointing = enabled
 
-def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='relu', decoder=False):
+def build_mlp(in_size, hidden_size, out_size, layer_norm=True, activation='silu', decoder=False):
     """
     Build a multi-layer perceptron following the original DeepMind MeshGraphNets architecture.
 

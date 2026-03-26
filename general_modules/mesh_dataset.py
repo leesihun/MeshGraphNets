@@ -23,7 +23,93 @@ try:
 except ImportError:
     HAS_TORCH_CLUSTER = False
 
-def _compute_positional_features(pos, edge_index, num_features):
+def _compute_rwpe(edge_index, N, num_rwpe):
+    """RWPE: random walk return probabilities (purely topological).
+
+    Returns diagonals of RW^k for k = 2, 4, 8, 16, 32.
+    """
+    from scipy import sparse
+
+    src, dst = edge_index[0], edge_index[1]
+    degree = np.zeros(N, dtype=np.float64)
+    np.add.at(degree, src, 1)
+    degree_inv = 1.0 / np.maximum(degree, 1)
+
+    vals = degree_inv[src].astype(np.float64)
+    RW = sparse.csr_matrix((vals, (src, dst)), shape=(N, N))
+
+    features = []
+    k_schedule = [2, 4, 8, 16, 32]
+    RW_power = RW @ RW  # start at k=2
+    prev_k = 2
+    for k in k_schedule:
+        if len(features) >= num_rwpe:
+            break
+        for _ in range(k - prev_k):
+            RW_power = RW_power @ RW
+        prev_k = k
+        diag = np.array(RW_power.diagonal()).flatten()
+        features.append(diag.astype(np.float32))
+
+    return features
+
+
+def _compute_lpe(edge_index, N, num_lpe):
+    """LPE: Laplacian Positional Encoding (Dwivedi & Bresson, 2021).
+
+    Computes the k smallest non-trivial eigenvectors of the symmetric
+    normalized graph Laplacian: L_sym = I - D^{-1/2} A D^{-1/2}.
+
+    More expressive than RWPE for global structure — tells each node
+    "where am I in the graph" rather than just "how loopy is my neighborhood".
+
+    Sign ambiguity is resolved by making the largest-magnitude component positive.
+    """
+    from scipy import sparse
+    from scipy.sparse.linalg import eigsh
+
+    src, dst = edge_index[0], edge_index[1]
+
+    # Adjacency matrix (bidirectional edges already present)
+    data = np.ones(len(src), dtype=np.float64)
+    A = sparse.csr_matrix((data, (src, dst)), shape=(N, N))
+
+    # Symmetric normalized Laplacian: L_sym = I - D^{-1/2} A D^{-1/2}
+    degree = np.array(A.sum(axis=1)).flatten()
+    d_inv_sqrt = 1.0 / np.sqrt(np.maximum(degree, 1e-12))
+    D_inv_sqrt = sparse.diags(d_inv_sqrt)
+    L_sym = sparse.eye(N) - D_inv_sqrt @ A @ D_inv_sqrt
+
+    # Compute k+1 smallest eigenvectors, then drop the trivial constant one
+    k = min(num_lpe + 1, N - 2)
+    try:
+        eigenvalues, eigenvectors = eigsh(L_sym, k=k, which='SM')
+        # Sort by eigenvalue (eigsh doesn't guarantee order)
+        order = np.argsort(eigenvalues)
+        eigenvectors = eigenvectors[:, order]
+        # Skip the first eigenvector (constant, eigenvalue ~0)
+        eigenvectors = eigenvectors[:, 1:]
+    except Exception:
+        # Fallback for degenerate graphs
+        eigenvectors = np.zeros((N, num_lpe), dtype=np.float32)
+
+    # Deterministic sign: make largest-magnitude component positive per eigenvector
+    for i in range(eigenvectors.shape[1]):
+        max_idx = np.argmax(np.abs(eigenvectors[:, i]))
+        if eigenvectors[max_idx, i] < 0:
+            eigenvectors[:, i] *= -1
+
+    # Pad if fewer eigenvectors than requested (small/disconnected graphs)
+    if eigenvectors.shape[1] < num_lpe:
+        pad = np.zeros((N, num_lpe - eigenvectors.shape[1]), dtype=np.float32)
+        eigenvectors = np.hstack([eigenvectors, pad])
+    else:
+        eigenvectors = eigenvectors[:, :num_lpe]
+
+    return [eigenvectors[:, i].astype(np.float32) for i in range(eigenvectors.shape[1])]
+
+
+def _compute_positional_features(pos, edge_index, num_features, encoding='rwpe'):
     """Compute rotation-invariant positional node features.
 
     Appended to physical node features to give each node a unique identity
@@ -32,10 +118,13 @@ def _compute_positional_features(pos, edge_index, num_features):
     Features (in priority order):
         1. Distance from centroid     — global position context
         2. Mean neighbor edge length  — local mesh density / feature size
-        3+ RWPE k=2,4,8,...           — random walk return probabilities (topological)
-    """
-    from scipy import sparse
+        3+ Encoding-dependent:
+           - 'rwpe': Random walk return probabilities (k=2,4,8,16,32)
+           - 'lpe':  Laplacian eigenvectors (global graph structure)
 
+    Args:
+        encoding: 'rwpe' (default), 'lpe', or 'rwpe+lpe' (both, split evenly)
+    """
     N = pos.shape[0]
     src, dst = edge_index[0], edge_index[1]
     features = []
@@ -56,27 +145,18 @@ def _compute_positional_features(pos, edge_index, num_features):
         features.append(mean_edge_len.astype(np.float32))
 
     if num_features >= 3:
-        # 3+ RWPE: random walk return probabilities (purely topological — fully invariant)
-        degree = np.zeros(N, dtype=np.float64)
-        np.add.at(degree, src, 1)
-        degree_inv = 1.0 / np.maximum(degree, 1)
+        remaining = num_features - len(features)
+        encoding = encoding.lower().strip()
 
-        # Random walk transition matrix: RW[i,j] = A[i,j] / degree(i)
-        vals = degree_inv[src].astype(np.float64)
-        RW = sparse.csr_matrix((vals, (src, dst)), shape=(N, N))
-
-        # Compute RW^k diagonals for k = 2, 4, 8, 16, 32
-        k_schedule = [2, 4, 8, 16, 32]
-        RW_power = RW @ RW  # start at k=2
-        prev_k = 2
-        for k in k_schedule:
-            if len(features) >= num_features:
-                break
-            for _ in range(k - prev_k):
-                RW_power = RW_power @ RW
-            prev_k = k
-            diag = np.array(RW_power.diagonal()).flatten()
-            features.append(diag.astype(np.float32))
+        if encoding == 'lpe':
+            features.extend(_compute_lpe(edge_index, N, remaining))
+        elif encoding == 'rwpe+lpe':
+            n_rwpe = remaining // 2
+            n_lpe = remaining - n_rwpe
+            features.extend(_compute_rwpe(edge_index, N, n_rwpe))
+            features.extend(_compute_lpe(edge_index, N, n_lpe))
+        else:  # 'rwpe' (default)
+            features.extend(_compute_rwpe(edge_index, N, remaining))
 
     return np.column_stack(features[:num_features]).astype(np.float32)
 
@@ -94,7 +174,8 @@ def _finalize_moments(feature_sum, feature_sumsq, count):
 
 def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
                           output_dim: int, num_timesteps: int,
-                          num_pos_features: int = 0) -> Dict:
+                          num_pos_features: int = 0,
+                          positional_encoding: str = 'rwpe') -> Dict:
     """
     Worker function to process a chunk of samples.
 
@@ -149,7 +230,7 @@ def _process_sample_chunk(h5_file: str, sample_ids: List[int], input_dim: int,
                     pos_feat = None
                     if num_pos_features > 0:
                         ref_pos_0 = data[:3, 0, :].T
-                        pos_feat = _compute_positional_features(ref_pos_0, edge_idx, num_pos_features)
+                        pos_feat = _compute_positional_features(ref_pos_0, edge_idx, num_pos_features, positional_encoding)
 
                     for t in timesteps:
                         ref_pos = data[:3, t, :].T  # [N, 3]
@@ -236,6 +317,7 @@ class MeshGraphDataset(Dataset):
         self.input_dim = config.get('input_var')  # Physical features only (4)
         self.output_dim = config.get('output_var')  # Physical features only (4)
         self.num_pos_features = int(config.get('positional_features', 0))
+        self.positional_encoding = str(config.get('positional_encoding', 'rwpe')).lower().strip()
         configured_edge_dim = int(config.get('edge_var', EDGE_FEATURE_DIM))
         if configured_edge_dim != EDGE_FEATURE_DIM:
             raise ValueError(
@@ -511,6 +593,7 @@ class MeshGraphDataset(Dataset):
         subset.input_dim = self.input_dim
         subset.output_dim = self.output_dim
         subset.num_pos_features = self.num_pos_features
+        subset.positional_encoding = self.positional_encoding
         subset.edge_dim = self.edge_dim
         subset.sample_ids = list(sample_ids)
         subset.num_timesteps = self.num_timesteps
@@ -640,6 +723,7 @@ class MeshGraphDataset(Dataset):
             self.output_dim,
             self.num_timesteps,
             self.num_pos_features,
+            self.positional_encoding,
         )
 
     def _compute_stats_parallel(self, num_workers: int, num_samples: int) -> Dict:
@@ -653,7 +737,7 @@ class MeshGraphDataset(Dataset):
             with mp.Pool(num_workers) as pool:
                 worker_args = [
                     (self.h5_file, chunk, self.input_dim, self.output_dim, self.num_timesteps,
-                     self.num_pos_features)
+                     self.num_pos_features, self.positional_encoding)
                     for chunk in sample_chunks
                 ]
                 results = pool.starmap(_process_sample_chunk, worker_args)
@@ -1065,7 +1149,7 @@ class MeshGraphDataset(Dataset):
 
         # Append rotation-invariant positional features (geometry + topology)
         if self.num_pos_features > 0:
-            x_pos = _compute_positional_features(pos, edge_index, self.num_pos_features)
+            x_pos = _compute_positional_features(pos, edge_index, self.num_pos_features, self.positional_encoding)
             x_raw = np.concatenate([x_phys, x_pos], axis=1)  # [N, input_var + pos_features]
         else:
             x_raw = x_phys
