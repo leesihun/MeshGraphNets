@@ -63,7 +63,7 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | Training_epochs | 500 | |
 | std_noise | 0.001 | Gaussian noise augmentation (training only). Applied to physical features only, with target correction |
 | noise_gamma | 1.0 | Noise target correction factor. 1.0=full correction, 0.0=no correction, 0.1=DeepMind cloth default |
-| feature_loss_weights | None | Per-feature loss weights (comma-separated). Example: `1.0, 1.0, 5.0` emphasizes z_disp. Auto-normalized. |
+| feature_loss_weights | None | Per-feature loss weights (comma-separated). Example: `1.0, 1.0, 5.0` emphasizes z_disp. Normalized to sum to 1 |
 | use_checkpointing | False | Gradient checkpointing (saves ~60-70% VRAM) |
 | grad_accum_steps | 1 | Gradient accumulation: `1`=per-batch (default), `0`=full epoch (1 step/epoch), `N`=every N batches |
 | use_amp | False | Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs). Uses bfloat16 not float16 due to scatter_add overflow issues in GNNs |
@@ -72,7 +72,8 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | ema_decay | 0.999 | EMA decay factor. `0.999`=~1000-step window, `0.9999`=~10000-step window |
 | test_interval | 10 | Run test/visualization every N epochs. Previous default was 1 (every epoch) |
 | test_max_batches | 200 | Max test samples per evaluation. Caps test_model runtime to avoid NCCL timeout in DDP |
-| positional_encoding | `rwpe` | Encoding for features 3+: `rwpe` (random walk), `lpe` (Laplacian eigenvectors), `rwpe+lpe` |
+| positional_features | 0 | Number of rotation-invariant positional features: [centroid_dist, mean_edge_len, + encoding dims] |
+| positional_encoding | `rwpe` | Encoding for positional features: `rwpe` (random walk), `lpe` (Laplacian eigenvectors), `rwpe+lpe` |
 | use_node_types | False | One-hot encode node types from HDF5 metadata |
 | use_world_edges | False | Radius-based collision detection edges |
 | use_parallel_stats | True | Parallel normalization stat computation |
@@ -87,6 +88,13 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | world_edge_backend | `torch_cluster` | `torch_cluster` (GPU) or `scipy_kdtree` (CPU). **Required in every config** — rollout.py has no default and crashes if absent |
 | world_radius_multiplier | - | `r_world = multiplier * min_mesh_edge_length` (auto-computed from dataset) |
 | world_max_num_neighbors | 64 | Max neighbors per node in world edge radius query |
+| use_pairnorm | False | PairNorm after residuals (prevents over-smoothing in deep GNNs) |
+| augment_geometry | False | Random Z-rotation + X/Y reflection augmentation (training only) |
+| use_multiscale | False | Enable hierarchical V-cycle with BFS Bi-Stride coarsening |
+| multiscale_levels | 1 | Number of coarsening levels (L) |
+| mp_per_level | None | Message passing per level: `2*L+1` entries. E.g. `2, 10, 2` for L=1. Falls back to `fine_mp_pre, coarse_mp_num, fine_mp_post` |
+| split_seed | 42 | Deterministic dataset split seed |
+| inference_output_dir | `outputs/rollout` | Output directory for rollout results |
 
 Full reference: [CONFIG_AND_EXECUTION_GUIDE.md](CONFIG_AND_EXECUTION_GUIDE.md)
 
@@ -103,18 +111,36 @@ MeshGraphNets_main.py (entry point, --config flag)
 
 ### Model: EncoderProcessorDecoder ([model/MeshGraphNets.py](model/MeshGraphNets.py))
 
+**Flat path** (default, `use_multiscale=False`):
 ```
-Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
+Input → Encoder → [GnBlock × message_passing_num] → Gated Skip → Decoder → Output
 ```
 
-- **Encoder**: Projects node features and edge features to `latent_dim` via MLPs
+**Hierarchical V-cycle** (`use_multiscale=True`, BFS Bi-Stride, Cao et al. ICML 2023):
+```
+Input → Encoder → Pre-blocks[0] → Pool → ... → Coarsest blocks → ... → Unpool → Post-blocks[0] → Gated Skip → Decoder
+```
+
+- **Encoder**: Projects node features and edge features to `latent_dim` via MLPs. World edges encoded by separate `world_eb_encoder`
 - **GnBlock** ([model/blocks.py](model/blocks.py)): EdgeBlock updates edges, NodeBlock aggregates edges to nodes
   - **Residual connections on both nodes and edges, applied after the node update** (matches DeepMind: NodeBlock receives raw edge MLP output, then `edge_out = edge_in + edge_mlp`, `node_out = node_in + node_mlp`)
   - With `use_world_edges`: HybridNodeBlock aggregates mesh + world edges separately then concatenates
-- **Decoder**: Projects `latent_dim` to `output_var` (no LayerNorm on output)
-- **MLP**: 2 hidden layers, ReLU, LayerNorm on output (except decoder)
-- **Initialization**: Kaiming/He uniform
+  - Optional **PairNorm** after residuals: centers features, rescales by RMS/sqrt(N) (prevents over-smoothing in deep GNNs)
+- **Gated skip connection**: `gate = sigmoid(Linear(cat[processed, encoder_out]))`, `x = x + gate * encoder_out`. Present in both flat and V-cycle paths
+- **Decoder**: Projects `latent_dim` to `output_var` (no LayerNorm on output). Last-layer weight scaled by 0.01 for T>1 datasets ("predict no change" prior); T=1 keeps full Kaiming init
+- **MLP**: 2 hidden layers, **SiLU** activation, LayerNorm on output (except decoder). Hardcoded — not configurable from config
+- **Initialization**: Kaiming/He uniform (biases zeroed)
 - **Aggregation**: Sum (forces/stresses accumulate at nodes)
+
+#### Multiscale Details ([model/coarsening.py](model/coarsening.py))
+
+- **Coarsening**: BFS bi-stride — even-depth nodes become coarse, odd-depth map to BFS parent. Handles disconnected components (multi-part FEA)
+- **Pool**: Mean aggregation of fine node features per coarse cluster
+- **Unpool**: Broadcast coarse features to fine nodes (no learned weights)
+- **Skip projections**: At each level, skip state merged with unpooled features via `Linear(2*latent_dim, latent_dim)`
+- **World edges only at finest level** — coarser levels disable world edges
+- **Per-level coarse edge stats** stored in checkpoint: `coarse_edge_means`, `coarse_edge_stds`
+- Graceful degradation: stops at available levels if graph has fewer than model expects
 
 ### Data Pipeline ([general_modules/](general_modules/))
 
@@ -125,18 +151,21 @@ Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
 ### Training
 
 - **Optimizer**: Adam with `fused=True` on CUDA (no weight decay, matches DeepMind original)
-- **LR Scheduler**: CosineAnnealingLR(T_max=training_epochs, eta_min=1e-8) for both single-GPU and DDP. Single cosine decay over full training.
+- **LR Scheduler**: SequentialLR — LinearLR warmup (3 epochs, 0.01x→1.0x) then CosineAnnealingWarmRestarts(T_0=remaining_epochs//3, T_mult=2, eta_min=1e-8). Scheduler steps after each optimizer step (inside accumulation loop)
 - **AMP**: Optional bfloat16 mixed precision via `use_amp` config (bfloat16 preferred over float16 for GNN scatter_add safety)
-- **DataLoader**: Uses `persistent_workers=True` and `prefetch_factor=2` to avoid worker respawn overhead
-- **Loss**: Sum-over-features then mean-over-nodes on normalized deltas (matches DeepMind), with optional per-feature weighting (via `feature_loss_weights` config)
-- **Gradient clipping**: max_norm=5.0
+- **DataLoader**: Uses `persistent_workers=True` and `prefetch_factor=8` to avoid worker respawn overhead
+- **Loss**: Huber loss (delta=0.1, per-element) with optional per-feature weighting (via `feature_loss_weights` config). Weights normalized to sum to 1 (weighted mean). Loss reduced: sum over features, mean over nodes
+- **Gradient clipping**: max_norm=3.0
+- **Noise augmentation** (training only): Gaussian noise on physical node features AND edge features with std=`std_noise`. Target correction: `y -= noise_gamma * noise * noise_std_ratio`
+- **Geometry augmentation** (training only): Random Z-axis rotation (0-360°) + independent X/Y reflection (50% each). Applied to positions, displacements, and delta displacements. Stress and positional features unchanged (rotation-invariant)
 - **EMA**: Optional shadow model via `use_ema` config. Updated after each `optimizer.step()` with `AveragedModel(get_ema_multi_avg_fn)`. EMA model used for validation, test, and inference. Created before `torch.compile`/DDP wrapping
-- **Checkpoint path**: single-GPU uses `modelpath` from config; DDP always saves to `outputs/best_model.pth` regardless of `modelpath`
-- **Checkpoint contents**: model_state_dict, optimizer, scheduler, normalization stats, model_config, ema_state_dict (if EMA enabled)
+- **Checkpoint path**: Both single-GPU and DDP save to `modelpath` from config (rank 0 only in DDP)
+- **Checkpoint contents**: model_state_dict, optimizer, scheduler, normalization stats (including coarse_edge_means/stds if multiscale), model_config (including multiscale params), ema_state_dict (if EMA enabled)
+- **Dataset split**: Deterministic via `split_seed` (default 42): 80% train / 10% val / 10% test
 
 ### Inference ([inference_profiles/rollout.py](inference_profiles/rollout.py))
 
-Autoregressive rollout: normalize state → build graph → forward pass → denormalize delta → update state → repeat. Outputs HDF5 with predicted trajectories.
+Autoregressive rollout: normalize state → build graph → forward pass → denormalize delta → update state → repeat. Outputs HDF5 with predicted trajectories. **Prefers EMA weights** from checkpoint if available (falls back to training weights).
 
 ## Critical Invariants
 
@@ -155,8 +184,15 @@ These are easy to break if you don't know them:
 11. **`world_edge_backend` is required in all configs** — `rollout.py` calls `.get('world_edge_backend').lower()` with no default; omitting it crashes inference with `AttributeError`
 12. **For T=1 (static) datasets**, the model input `x` is all-zeros and the target delta equals the feature values themselves
 13. **`num_node_types` is assigned to config by code** (not from config file) after dataset load; do not set it manually
-14. **Per-feature loss weights are auto-normalized** — specified weights are scaled so they sum to `output_var`, preserving loss magnitude comparability across configs
+14. **Per-feature loss weights are auto-normalized** — specified weights are normalized to sum to 1 (weighted mean over features)
 15. **Loss weights apply to all three phases** (train, validation, test) for consistent optimization and reporting
+16. **Activation is SiLU throughout** — hardcoded in `build_mlp()`, not configurable from config
+17. **Decoder last-layer weight scaled by 0.01** for T>1 datasets ("predict no change" prior); T=1 keeps full Kaiming init
+18. **Gated skip connection** from encoder output to post-processor output (learnable sigmoid gate)
+19. **Noise augmentation applies to both nodes AND edges** — node noise only on physical features (not node types); edge noise on all features
+20. **Geometry augmentation** is training-only — Z-rotation + X/Y reflection applied to positions, displacements, delta; stress/positional features unchanged
+21. **Multiscale `mp_per_level` must have exactly `2*L+1` entries** — e.g. `[pre_0, coarsest, post_0]` for L=1
+22. **Inference prefers EMA weights** from checkpoint if `ema_state_dict` exists (falls back to `model_state_dict`)
 
 ## HDF5 Dataset Format
 
@@ -171,7 +207,7 @@ Z-score per feature, computed separately for three domains:
 - **Edge**: from deformed and reference edge positions `[deformed_dx, deformed_dy, deformed_dz, deformed_dist, ref_dx, ref_dy, ref_dz, ref_dist]`
 - **Delta**: from actual `state_{t+1} - state_t` transitions (for T=1 datasets, delta = feature value itself)
 
-Stored in checkpoint: `checkpoint['normalization']` dict with `node_mean`, `node_std`, `edge_mean`, `edge_std`, `delta_mean`, `delta_std`, plus `node_type_to_idx` and `world_edge_radius` if applicable.
+Stored in checkpoint: `checkpoint['normalization']` dict with `node_mean`, `node_std`, `edge_mean`, `edge_std`, `delta_mean`, `delta_std`, plus `node_type_to_idx` and `world_edge_radius` if applicable, plus `coarse_edge_means` and `coarse_edge_stds` (per-level lists) if multiscale.
 
 ## Additional Documentation
 
