@@ -182,11 +182,13 @@ Values are auto-parsed in this order by `general_modules/load_config.py`:
 | `input_var` | int | - | Node input features (excluding node types). Typically `4`: [x_disp, y_disp, z_disp, stress]. |
 | `output_var` | int | - | Node output features. Typically `4`: [x_disp, y_disp, z_disp, stress]. |
 | `edge_var` | int | - | Edge features. Always `8`: [deformed_dx, deformed_dy, deformed_dz, deformed_dist, ref_dx, ref_dy, ref_dz, ref_dist]. |
+| `positional_features` | int | None | Number of rotation-invariant positional node features to compute and concatenate. Example: `3` for [centroid_dist, mean_edge_len, RWPE_k2]. When set, concatenated to normalized features **after** node type encoding (if enabled). |
 | `Latent_dim` | int | 128 | Hidden dimension of all MLPs. VRAM scales **quadratically** with this. |
 | `message_passing_num` | int | 15 | Number of GNN message passing blocks. More = larger receptive field, linear VRAM scaling. |
 
 **Architecture notes:**
-- Actual model input dim = `input_var + num_node_types` when `use_node_types=True`
+- Actual model input dim = `input_var + num_node_types + positional_features` (when applicable)
+  - Concatenation order: normalized features → node type encoding (if enabled) → positional features (if enabled)
 - All MLPs: 2 hidden layers, ReLU, LayerNorm (except decoder has no LayerNorm)
 - Residual connections on **nodes only** (not edges)
 - Aggregation: **sum** (forces/stresses accumulate at nodes)
@@ -255,6 +257,8 @@ When enabled:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `use_parallel_stats` | bool | True | Parallel processing for normalization stat computation. Uses ~45% of CPU cores (max 64 workers). Auto-disabled for <10 samples. |
+| `use_ema` | bool | False | Maintain EMA shadow model for validation/inference. Smooths SGD noise for better generalization at ~9 MB extra memory. |
+| `ema_decay` | float | 0.999 | EMA decay factor. Higher = longer averaging window (`1/(1-decay)` steps). Typical: 0.999-0.9999. |
 
 ---
 
@@ -301,12 +305,18 @@ These are set by the code during execution. **Do not set them in config files.**
 
 ### Train (single or multi-GPU)
 
+**Required:**
 ```
 model, mode, gpu_ids, modelpath, dataset_dir,
 input_var, output_var, edge_var,
 Latent_dim, message_passing_num,
 Training_epochs, Batch_size, LearningR, num_workers,
 world_edge_backend
+```
+
+**Optional (recommended):**
+```
+positional_features    # For rotation-invariant geometric features
 ```
 
 ### Inference
@@ -384,20 +394,25 @@ python MeshGraphNets_main.py --config _warpage_input/config_infer1.txt
 
 ### Warpage Configs (`_warpage_input/`)
 
-Static (T=1) warpage simulation. Dataset: `./dataset/warpage_all.h5`.
+Static (T=1) warpage simulation. Primary dataset: `./dataset/warpage_all.h5`. Additional datasets: `warpage_static_half.h5`, `warpage_random_100.h5`, `warpage_infer.h5`.
 
-All warpage configs share: `input_var=4`, `output_var=4`, `edge_var=4`, `LearningR=0.001`, `std_noise=0.02`, `use_node_types=False`, `use_world_edges=False`.
+**Config families:**
+- **config_train1-4**: Multi-variant sweep (input_var=4, output_var=4)
+- **config_train5**: Positional features experiment (input_var=3, output_var=3, positional_features=3)
 
 #### Training Configs
 
-| File | GPU | MP | Batch | Latent | Modelpath | Run command |
-|------|-----|-----|-------|--------|-----------|-------------|
-| `config_train1.txt` | 0 | 15 | 1 | 128 | `./outputs/warpage1.pth` | `python MeshGraphNets_main.py --config _warpage_input/config_train1.txt` |
-| `config_train2.txt` | 1 | 5 | 1 | 128 | `./outputs/warpage2.pth` | `python MeshGraphNets_main.py --config _warpage_input/config_train2.txt` |
-| `config_train3.txt` | 1 | 15 | 10 | 128 | `./outputs/warpage3.pth` | `python MeshGraphNets_main.py --config _warpage_input/config_train3.txt` |
-| `config_train4.txt` | 0 | 5 | 10 | 128 | `./outputs/warpage2.pth` | `python MeshGraphNets_main.py --config _warpage_input/config_train4.txt` |
+| File | GPU | Dataset | Input/Output | MP | Batch | Latent | Special | Modelpath |
+|------|-----|---------|--------------|-----|-------|--------|---------|-----------|
+| `config_train1.txt` | 0 | warpage_all | 4/4 | 15 | 1 | 128 | - | `./outputs/warpage1.pth` |
+| `config_train2.txt` | 1 | warpage_all | 4/4 | 5 | 1 | 128 | - | `./outputs/warpage2.pth` |
+| `config_train3.txt` | 0,1 | warpage_all_new | 3/3 | 10 | 2 | 256 | use_pairnorm | `./outputs/warpage3.pth` |
+| `config_train4.txt` | 0 | warpage_random_100 | 3/3 | 15 | 2 | 256 | use_pairnorm | `./outputs/warpage4.pth` |
+| `config_train5.txt` | 1 | warpage_static_half | 3/3 | 15 | 1 | 256 | **positional_features=3** | `./outputs/warpage5.pth` |
 
-These form a hyperparameter grid over **message_passing_num** (5 vs 15) and **Batch_size** (1 vs 10). Train1+Train4 run on GPU 0, Train2+Train3 run on GPU 1 -- they can run in parallel on a 2-GPU machine.
+**Train1-2**: Original hyperparameter grid over **message_passing_num** (5 vs 15) and **Batch_size** (1 vs 10). Train on GPU 0 and GPU 1 in parallel.
+
+**Train3-5**: Newer variants with 3 input/output variables, PairNorm/positional features experiments.
 
 #### Inference Configs
 
@@ -411,11 +426,14 @@ Both point to the same model (`warpage1.pth`). `config_infer2.txt` has `message_
 **Typical workflow:**
 
 ```bash
-# 1. Train two variants in parallel (on separate GPUs)
+# 1. Train original sweep in parallel (on separate GPUs)
 python MeshGraphNets_main.py --config _warpage_input/config_train1.txt   # terminal 1, GPU 0
 python MeshGraphNets_main.py --config _warpage_input/config_train2.txt   # terminal 2, GPU 1
 
-# 2. Run inference on the best model
+# 2. Or train newer variants with positional features
+python MeshGraphNets_main.py --config _warpage_input/config_train5.txt   # GPU 1, uses positional_features=3
+
+# 3. Run inference on the best model
 python MeshGraphNets_main.py --config _warpage_input/config_infer1.txt
 ```
 
@@ -498,6 +516,7 @@ infer_timesteps 100
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
+positional_features     # optional: number of rotation-invariant positional features (e.g., 3)
 '
 %   Network parameters
 message_passing_num 15
@@ -549,6 +568,7 @@ infer_timesteps 100
 input_var   4
 output_var  4
 edge_var    8
+positional_features     # optional
 '
 %   Network parameters (overridden by checkpoint, but must be present for parsing)
 message_passing_num 15
@@ -880,4 +900,4 @@ Tune in this order (most to least impactful):
 
 ---
 
-*Last updated: 2026-03-03*
+*Last updated: 2026-03-26*

@@ -153,7 +153,20 @@ def run_rollout(config, config_filename='config.txt'):
     # -------------------------------------------------------------------------
     print("\nInitializing model...")
     model = MeshGraphNets(config, str(device)).to(device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+
+    # Prefer EMA weights (better generalization), fall back to training weights
+    if 'ema_state_dict' in checkpoint:
+        from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+        ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=0.999))
+        ema_model.load_state_dict(checkpoint['ema_state_dict'])
+        # Copy averaged weights into the base model for inference
+        model.load_state_dict(
+            {k: v for k, v in ema_model.module.state_dict().items()}
+        )
+        print("  Loaded EMA weights from checkpoint")
+    else:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print("  Loaded training weights from checkpoint (no EMA available)")
     model.eval()
 
     total_params = sum(p.numel() for p in model.parameters())

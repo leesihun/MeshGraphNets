@@ -68,6 +68,8 @@ Example configs in [_flag_input/](\_flag_input/) and [_warpage_input/](\_warpage
 | grad_accum_steps | 1 | Gradient accumulation: `1`=per-batch (default), `0`=full epoch (1 step/epoch), `N`=every N batches |
 | use_amp | False | Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs). Uses bfloat16 not float16 due to scatter_add overflow issues in GNNs |
 | use_compile | False | `torch.compile(dynamic=True)` for kernel fusion (10-30% speedup). First epoch slower due to JIT warmup |
+| use_ema | False | EMA shadow model for validation/inference. Smooths SGD noise, ~9 MB extra memory |
+| ema_decay | 0.999 | EMA decay factor. `0.999`=~1000-step window, `0.9999`=~10000-step window |
 | test_interval | 10 | Run test/visualization every N epochs. Previous default was 1 (every epoch) |
 | test_max_batches | 200 | Max test samples per evaluation. Caps test_model runtime to avoid NCCL timeout in DDP |
 | use_node_types | False | One-hot encode node types from HDF5 metadata |
@@ -127,8 +129,9 @@ Input → Encoder → [GnBlock × message_passing_num] → Decoder → Output
 - **DataLoader**: Uses `persistent_workers=True` and `prefetch_factor=2` to avoid worker respawn overhead
 - **Loss**: Sum-over-features then mean-over-nodes on normalized deltas (matches DeepMind), with optional per-feature weighting (via `feature_loss_weights` config)
 - **Gradient clipping**: max_norm=5.0
+- **EMA**: Optional shadow model via `use_ema` config. Updated after each `optimizer.step()` with `AveragedModel(get_ema_multi_avg_fn)`. EMA model used for validation, test, and inference. Created before `torch.compile`/DDP wrapping
 - **Checkpoint path**: single-GPU uses `modelpath` from config; DDP always saves to `outputs/best_model.pth` regardless of `modelpath`
-- **Checkpoint contents**: model_state_dict, optimizer, scheduler, normalization stats, model_config
+- **Checkpoint contents**: model_state_dict, optimizer, scheduler, normalization stats, model_config, ema_state_dict (if EMA enabled)
 
 ### Inference ([inference_profiles/rollout.py](inference_profiles/rollout.py))
 

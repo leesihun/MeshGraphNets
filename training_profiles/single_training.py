@@ -9,7 +9,7 @@ from general_modules.data_loader import load_data
 from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
-from training_profiles.training_loop import train_epoch, validate_epoch, test_model, log_training_config
+from training_profiles.training_loop import train_epoch, validate_epoch, test_model, log_training_config, build_ema_model
 
 # Disable HDF5 file locking for persistent SWMR handles with multiple DataLoader workers
 os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
@@ -96,6 +96,11 @@ def single_worker(config, config_filename='config.txt'):
     if torch.cuda.is_available():
         print(f'After model initialization: {torch.cuda.memory_allocated()/1e9:.2f}GB')
 
+    # EMA shadow model (created before torch.compile so it holds the raw Module)
+    ema_model = build_ema_model(model, config)
+    if ema_model is not None:
+        ema_model = ema_model.to(device)
+
     # Optional torch.compile for kernel fusion (10-30% speedup, requires PyTorch 2.0+)
     if config.get('use_compile', False):
         print("Compiling model with torch.compile(dynamic=True)...")
@@ -109,6 +114,8 @@ def single_worker(config, config_filename='config.txt'):
         print("Mixed precision (AMP): ENABLED (bfloat16)")
     if config.get('use_compile', False):
         print("torch.compile: ENABLED (dynamic=True)")
+    if ema_model is not None:
+        print(f"EMA: ENABLED (decay={config.get('ema_decay', 0.999)})")
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total_params:,}")
@@ -179,10 +186,12 @@ def single_worker(config, config_filename='config.txt'):
     try:
         for epoch in range(config.get('training_epochs')):
 
-            train_metrics = train_epoch(model, train_loader, optimizer, device, config, epoch)
+            train_metrics = train_epoch(model, train_loader, optimizer, device, config, epoch, ema_model=ema_model)
 
-            train_eval_metrics = validate_epoch(model, train_loader, device, config, epoch)
-            valid_metrics = validate_epoch(model, val_loader, device, config, epoch)
+            # Use EMA model for evaluation when available (better generalization)
+            eval_model = ema_model.module if ema_model is not None else model
+            train_eval_metrics = validate_epoch(eval_model, train_loader, device, config, epoch)
+            valid_metrics = validate_epoch(eval_model, val_loader, device, config, epoch)
             train_loss = train_metrics['mean']
             train_eval_loss = train_eval_metrics['mean']
             valid_loss = valid_metrics['mean']
@@ -235,7 +244,7 @@ def single_worker(config, config_filename='config.txt'):
                     'coarse_mp_num': config.get('coarse_mp_num', 5),
                     'fine_mp_post': config.get('fine_mp_post', 5),
                 }
-                torch.save({
+                save_dict = {
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
@@ -244,7 +253,10 @@ def single_worker(config, config_filename='config.txt'):
                     'valid_loss': valid_loss,
                     'normalization': normalization,
                     'model_config': model_config,
-                }, checkpoint_path)
+                }
+                if ema_model is not None:
+                    save_dict['ema_state_dict'] = ema_model.state_dict()
+                torch.save(save_dict, checkpoint_path)
                 print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
 
             if log_file_dir:
@@ -260,7 +272,7 @@ def single_worker(config, config_filename='config.txt'):
             test_interval = int(config.get('test_interval', 10))
             last_epoch = epoch == config.get('training_epochs') - 1
             if epoch % test_interval == 0 or last_epoch:
-                test_loss = test_model(model, test_loader, device, config, epoch, train_dataset)
+                test_loss = test_model(eval_model, test_loader, device, config, epoch, train_dataset)
                 print(f"  Test loss: {test_loss:.2e}")
 
                 # Optionally visualize training set reconstruction (same batch indices)
@@ -276,7 +288,7 @@ def single_worker(config, config_filename='config.txt'):
                         # Map batch indices to 0..N so all subset samples get visualized
                         viz_config = dict(config)
                         viz_config['test_batch_idx'] = list(range(len(train_viz_indices)))
-                        train_viz_loss = test_model(model, train_viz_loader, device, viz_config, epoch, train_dataset, output_prefix='train')
+                        train_viz_loss = test_model(eval_model, train_viz_loader, device, viz_config, epoch, train_dataset, output_prefix='train')
                         print(f"  Train reconstruction loss: {train_viz_loss:.2e}")
 
         print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")

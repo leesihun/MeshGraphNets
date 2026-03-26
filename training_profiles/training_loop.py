@@ -2,12 +2,30 @@ import os
 import tqdm
 import torch
 import numpy as np
+from copy import deepcopy
+from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from general_modules.mesh_utils_fast import (
     save_inference_results_fast,
     render_plot_data,
     edges_to_triangles_gpu,
     edges_to_triangles_optimized,
 )
+
+
+def build_ema_model(model, config):
+    """Create an EMA shadow model if use_ema is enabled.
+
+    Returns the AveragedModel or None if EMA is disabled.
+    The source model should be the raw nn.Module (before torch.compile or DDP wrapping).
+    """
+    if not config.get('use_ema', False):
+        return None
+    decay = float(config.get('ema_decay', 0.999))
+    ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=decay))
+    # Disable gradients on shadow parameters
+    for p in ema_model.parameters():
+        p.requires_grad_(False)
+    return ema_model
 
 def save_debug_batch(epoch, batch_idx, graph, predicted, target, log_dir):
     """Save actual input/output values to debug file for inspection."""
@@ -98,7 +116,7 @@ def log_training_config(config):
         print(f"Multi-Scale: disabled (flat GNN, message_passing_num={config.get('message_passing_num')})")
 
 
-def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None):
+def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None, ema_model=None):
     model.train()
     total_loss_sum = 0.0
     total_loss_count = 0
@@ -141,7 +159,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                     log_dir = config.get('log_dir', '.')
                     save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
 
-            errors = torch.nn.functional.huber_loss(predicted_acc, target_acc, reduction='none', delta=1.0)
+            errors = torch.nn.functional.huber_loss(predicted_acc, target_acc, reduction='none', delta=0.1)
             loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
             # Scale loss so accumulated gradients equal the mean within each accumulation window.
             scaled_loss = loss / _accum_window_size(batch_idx, total_batches, actual_accum)
@@ -189,6 +207,8 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                         tqdm.tqdm.write("")
 
             optimizer.step()
+            if ema_model is not None:
+                ema_model.update_parameters(model)
             if scheduler is not None:
                 scheduler.step()
             optimizer.zero_grad(set_to_none=True)
@@ -246,7 +266,7 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
             graph = graph.to(device)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
-                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
+                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=0.1)
                 loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             # Accumulate per-feature losses
@@ -340,7 +360,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             graph = graph.to(device)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
-                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
+                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=0.1)
                 loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             # Accumulate per-feature losses

@@ -50,7 +50,13 @@
       "Bash(pip list)",
       "Bash(findstr -i \"geometric pyg\")",
       "WebFetch(domain:disco.ethz.ch)",
-      "Bash(grep -h \"^import\\\\|^from\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/model/*.py)"
+      "Bash(grep -h \"^import\\\\|^from\" /c/Users/Lee/Desktop/Huni/MeshGraphNets/model/*.py)",
+      "WebFetch(domain:apxml.com)",
+      "WebFetch(domain:docs.pytorch.org)",
+      "WebFetch(domain:developer.nvidia.com)",
+      "WebFetch(domain:www.zijianhu.com)",
+      "WebFetch(domain:leimao.github.io)",
+      "Bash(wc -l /tmp/modulus/physicsnemo/models/meshgraphnet/meshgraphnet.py /tmp/modulus/physicsnemo/models/meshgraphnet/hybrid_meshgraphnet.py /tmp/modulus/physicsnemo/models/meshgraphnet/meshgraphkan.py /tmp/modulus/physicsnemo/models/meshgraphnet/bsms_mgn.py /tmp/modulus/physicsnemo/nn/module/gnn_layers/*.py)"
     ]
   }
 }

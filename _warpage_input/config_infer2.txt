@@ -11,6 +11,7 @@ infer_timesteps 34
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
 edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
+positional_features  3
 '
 %   Network parameters
 message_passing_num 5

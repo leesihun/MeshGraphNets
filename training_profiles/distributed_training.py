@@ -16,7 +16,7 @@ from general_modules.data_loader import load_data
 from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 from model.MeshGraphNets import MeshGraphNets
-from training_profiles.training_loop import train_epoch, validate_epoch, test_model, log_training_config
+from training_profiles.training_loop import train_epoch, validate_epoch, test_model, log_training_config, build_ema_model
 
 # Per-process shutdown flag, set by signal handler
 _stop_event = threading.Event()
@@ -168,6 +168,11 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         print("\nInitializing model...")
     model = MeshGraphNets(config, str(device)).to(device)
 
+    # EMA shadow model (created before torch.compile/DDP so it holds the raw Module)
+    ema_model = build_ema_model(model, config)
+    if ema_model is not None:
+        ema_model = ema_model.to(device)
+
     # Optional torch.compile for kernel fusion (10-30% speedup, requires PyTorch 2.0+)
     if config.get('use_compile', False):
         if rank == 0:
@@ -203,6 +208,8 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
             print("Mixed precision (AMP): ENABLED (bfloat16)")
         if config.get('use_compile', False):
             print("torch.compile: ENABLED (dynamic=True)")
+        if ema_model is not None:
+            print(f"EMA: ENABLED (decay={config.get('ema_decay', 0.999)})")
         total_params = sum(p.numel() for p in ddp_model.parameters())
         trainable_params = sum(p.numel() for p in ddp_model.parameters() if p.requires_grad)
         print(f"Total parameters: {total_params:,}")
@@ -283,7 +290,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         # Set epoch for distributed sampler (important for shuffling)
         train_sampler.set_epoch(epoch)
 
-        train_metrics = train_epoch(ddp_model, train_loader, optimizer, device, config, epoch)
+        train_metrics = train_epoch(ddp_model, train_loader, optimizer, device, config, epoch, ema_model=ema_model)
 
         # Synchronize stop decision across all ranks — if ANY rank wants to stop,
         # ALL ranks must stop together to avoid NCCL collective mismatches.
@@ -304,6 +311,9 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         train_loss = (train_totals[0] / train_totals[1]).item()
 
         if rank == 0:
+            # Use EMA model for evaluation when available (better generalization)
+            eval_model = ema_model.module if ema_model is not None else model
+
             # Resample train_eval subset each epoch for an unbiased training loss estimate
             train_eval_indices = train_eval_rng.choice(
                 len(train_dataset), size=train_eval_subset_size, replace=False
@@ -315,8 +325,8 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 num_workers=num_workers,
                 pin_memory=True,
             )
-            train_eval_metrics = validate_epoch(model, train_eval_loader, device, config, epoch)
-            valid_metrics = validate_epoch(model, val_loader, device, config, epoch)
+            train_eval_metrics = validate_epoch(eval_model, train_eval_loader, device, config, epoch)
+            valid_metrics = validate_epoch(eval_model, val_loader, device, config, epoch)
             train_eval_loss = train_eval_metrics['mean']
             valid_loss = valid_metrics['mean']
         else:
@@ -389,7 +399,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 'coarse_mp_num': config.get('coarse_mp_num', 5),
                 'fine_mp_post': config.get('fine_mp_post', 5),
             }
-            torch.save({
+            save_dict = {
                 'epoch': epoch,
                 'model_state_dict': ddp_model.module.state_dict(),  # Save unwrapped model
                 'optimizer_state_dict': optimizer.state_dict(),
@@ -398,7 +408,10 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 'valid_loss': valid_loss,
                 'normalization': normalization,
                 'model_config': model_config,
-            }, checkpoint_path)
+            }
+            if ema_model is not None:
+                save_dict['ema_state_dict'] = ema_model.state_dict()
+            torch.save(save_dict, checkpoint_path)
             print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
 
         if log_file_dir and rank == 0:
@@ -419,7 +432,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         if epoch % test_interval == 0 or last_epoch:
             if rank == 0:
                 _test_start = time.time()
-                test_loss = test_model(model, test_loader, device, config, epoch, train_dataset)
+                test_loss = test_model(eval_model, test_loader, device, config, epoch, train_dataset)
                 print(f"  Test completed in {time.time() - _test_start:.1f}s")
 
                 # Optionally visualize training set reconstruction (same batch indices)
@@ -433,7 +446,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                         )
                         viz_config = dict(config)
                         viz_config['test_batch_idx'] = list(range(len(train_viz_indices)))
-                        train_viz_loss = test_model(model, train_viz_loader, device, viz_config, epoch, train_dataset, output_prefix='train')
+                        train_viz_loss = test_model(eval_model, train_viz_loader, device, viz_config, epoch, train_dataset, output_prefix='train')
                         print(f"  Train reconstruction loss: {train_viz_loss:.2e}")
             dist.barrier(device_ids=[gpu_id])
 
