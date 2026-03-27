@@ -266,7 +266,7 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
             graph = graph.to(device)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
-                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
+                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0000)
                 loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             # Accumulate per-feature losses
