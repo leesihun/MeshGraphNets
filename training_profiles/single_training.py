@@ -136,7 +136,7 @@ def single_worker(config, config_filename='config.txt'):
     warmup_epochs = 3
     remaining_epochs = max(total_epochs - warmup_epochs, 1)
     # T_0 sized so 2 full cosine cycles fit in remaining epochs (T_0 + 2*T_0 = 3*T_0)
-    cosine_T0 = max(remaining_epochs // 3, 1)
+    cosine_T0 = max(remaining_epochs // 2, 1)
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer, start_factor=0.01, total_iters=warmup_epochs
     )
