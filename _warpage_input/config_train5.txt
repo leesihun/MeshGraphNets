@@ -47,5 +47,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 '
 % Multi-Scale / Hierarchical Parameters (BFS Bi-Stride, ICML 2023)
 use_multiscale      True
+% Pure BFS (existing behavior, unchanged)
+coarsening_type     bfs
 multiscale_levels   1
-mp_per_level        2, 10, 2    # [pre_0, coarsest, post_0] for L=1
+mp_per_level        2, 10, 2

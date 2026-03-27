@@ -399,6 +399,8 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 'fine_mp_pre': config.get('fine_mp_pre', 5),
                 'coarse_mp_num': config.get('coarse_mp_num', 5),
                 'fine_mp_post': config.get('fine_mp_post', 5),
+                'coarsening_type': config.get('coarsening_type', 'bfs'),
+                'voronoi_clusters': config.get('voronoi_clusters', None),
             }
             save_dict = {
                 'epoch': epoch,

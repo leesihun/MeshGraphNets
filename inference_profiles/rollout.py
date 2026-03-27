@@ -12,7 +12,7 @@ from model.MeshGraphNets import MeshGraphNets
 
 # Multiscale coarsening (only needed when use_multiscale=True)
 try:
-    from model.coarsening import bfs_bistride_coarsen, compute_coarse_edge_attr, compute_coarse_centroids, MultiscaleData
+    from model.coarsening import bfs_bistride_coarsen, coarsen_graph, compute_coarse_edge_attr, compute_coarse_centroids, MultiscaleData
     HAS_COARSENING = True
 except ImportError:
     HAS_COARSENING = False
@@ -239,18 +239,43 @@ def run_rollout(config, config_filename='config.txt'):
         # Pre-compute per-level coarsening topology (static — same for all rollout steps)
         use_multiscale = config.get('use_multiscale', False)
         multiscale_levels = int(config.get('multiscale_levels', 1))
+        # Per-level coarsening config (from checkpoint model_config or config file)
+        raw_ct = config.get('coarsening_type', 'bfs')
+        if isinstance(raw_ct, list):
+            coarsening_types = [str(t).strip().lower() for t in raw_ct]
+        else:
+            coarsening_types = [str(raw_ct).strip().lower()] * multiscale_levels
+        if len(coarsening_types) == 1 and multiscale_levels > 1:
+            coarsening_types = coarsening_types * multiscale_levels
+        raw_vc = config.get('voronoi_clusters', None)
+        if raw_vc is None:
+            voronoi_clusters = [0] * multiscale_levels
+        elif isinstance(raw_vc, list):
+            voronoi_clusters = [int(v) for v in raw_vc]
+        else:
+            voronoi_clusters = [int(raw_vc)] * multiscale_levels
+        if len(voronoi_clusters) == 1 and multiscale_levels > 1:
+            voronoi_clusters = voronoi_clusters * multiscale_levels
+
         coarse_cache = None  # dict of {level: {'ftc':..., 'c_ei':..., 'n_c':...}}
         if use_multiscale:
             if not HAS_COARSENING:
                 raise ImportError("use_multiscale=True but model/coarsening.py could not be imported")
             coarse_cache = {}
             current_ei, current_n = edge_index, num_nodes
+            level_ref_pos = ref_pos.astype(np.float32)
             for level in range(multiscale_levels):
-                ftc, c_ei, n_c = bfs_bistride_coarsen(current_ei, current_n)
+                method = coarsening_types[level] if level < len(coarsening_types) else 'bfs'
+                n_clusters = voronoi_clusters[level] if level < len(voronoi_clusters) else 0
+                ftc, c_ei, n_c = coarsen_graph(
+                    current_ei, current_n, method=method,
+                    num_clusters=n_clusters, ref_pos=level_ref_pos,
+                )
                 coarse_cache[level] = {'ftc': ftc, 'c_ei': c_ei, 'n_c': n_c}
-                print(f"  Coarsening level {level}: {current_n} → {n_c} nodes ({n_c/current_n*100:.1f}%)")
+                print(f"  Coarsening level {level} ({method}): {current_n} → {n_c} nodes ({n_c/current_n*100:.1f}%)")
                 if n_c <= 1 or c_ei.shape[1] == 0:
                     break
+                level_ref_pos = compute_coarse_centroids(level_ref_pos, ftc, n_c).astype(np.float32)
                 current_ei, current_n = c_ei, n_c
 
         print(f"  Reference positions: {ref_pos.shape}")

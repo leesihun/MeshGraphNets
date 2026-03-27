@@ -1,32 +1,33 @@
 """
-BFS Bi-Stride Multi-Scale Coarsening for MeshGraphNets.
+Multi-Scale Coarsening for MeshGraphNets.
 
-Implements the pooling strategy from:
-  "Efficient Learning of Mesh-Based Physical Simulation with
-   Bi-Stride Multi-Scale Graph Neural Network" (Cao et al., ICML 2023)
-  https://arxiv.org/abs/2210.02573
+Supports two coarsening methods:
 
-Key ideas:
-- BFS assigns each node a depth (hops from seed). Even-depth → coarse; odd-depth → fine-only.
-- Each fine-only node is assigned to its BFS parent (always even-depth by construction).
-- Coarse edges built via 2nd-order adjacency: for every fine edge (u, v) that bridges two
-  different coarse clusters, add a coarse edge between those clusters.
-- Multi-source BFS handles disconnected meshes (multi-part FEA) correctly.
-- Topology-based (not spatial) → no cross-boundary false edges across part interfaces.
+1. **BFS Bi-Stride** (Cao et al., ICML 2023):
+   - BFS assigns each node a depth. Even-depth → coarse; odd-depth → fine-only.
+   - ~4x reduction per level on triangular meshes.
+   - Topology-based → no cross-boundary false edges.
 
-Typical coarsening ratio:
-  2D triangular mesh  : M ≈ N/4   (avg degree ~6)
-  3D tet mesh         : M ≈ N/2   (avg degree ~15-25)
-  3D hex mesh         : M ≈ N/2   (avg degree ~20-30)
-Use multiscale_levels=2 for 3D meshes to achieve ~N/4 reduction.
+2. **FPS-Voronoi** (new):
+   - Farthest Point Sampling selects k seed nodes maximally spread across the mesh.
+   - Multi-source BFS assigns each node to its nearest seed (Voronoi partition).
+   - Configurable reduction ratio (e.g., 20k → 200 in one level).
 
-Multi-level support (levels > 2):
-  BFS coarsening is applied iteratively: level 0 → level 1 → level 2 → ...
+Both methods produce the same output signature:
+  (fine_to_coarse [N], coarse_edge_index [2, E_c], num_coarse int)
+
+Methods can be mixed per level via ``coarsening_type`` config (e.g., ``bfs, voronoi``).
+Coarse edges are always boundary edges: two coarse nodes connect iff any of their
+fine members share a fine edge.
+
+Multi-level support:
+  Coarsening is applied iteratively: level 0 → level 1 → level 2 → ...
   Each level stores its own fine_to_coarse mapping (NOT composed).
-  The model uses a V-cycle / U-Net architecture with per-level GnBlocks.
+  The model uses a V-cycle architecture with per-level GnBlocks.
 """
 
 import re
+from collections import deque
 
 import numpy as np
 import torch
@@ -36,6 +37,47 @@ from torch_geometric.data import Data
 from torch_geometric.utils import scatter
 
 from general_modules.edge_features import compute_edge_attr
+
+
+# ---------------------------------------------------------------------------
+# Shared Helpers
+# ---------------------------------------------------------------------------
+
+def _build_coarse_edges(
+    fine_to_coarse: np.ndarray,
+    edge_index_np: np.ndarray,
+    num_coarse: int,
+) -> np.ndarray:
+    """
+    Build bidirectional coarse edges from fine mesh adjacency.
+
+    Two coarse nodes are connected if any fine node in one cluster is adjacent
+    to any fine node in the other cluster (boundary edge construction).
+
+    Args:
+        fine_to_coarse: [N] int32 array — coarse cluster index per fine node.
+        edge_index_np:  [2, E] int array — bidirectional fine mesh edges.
+        num_coarse:     int M — number of coarse nodes.
+
+    Returns:
+        coarse_edge_index: [2, E_c] int64 array — bidirectional coarse edges.
+    """
+    cu = fine_to_coarse[edge_index_np[0]].astype(np.int64)
+    cv = fine_to_coarse[edge_index_np[1]].astype(np.int64)
+    cross_mask = cu != cv
+    if cross_mask.any():
+        a = np.minimum(cu[cross_mask], cv[cross_mask])
+        b = np.maximum(cu[cross_mask], cv[cross_mask])
+        pairs_encoded = a * (num_coarse + 1) + b
+        unique_encoded = np.unique(pairs_encoded)
+        a_uniq = unique_encoded // (num_coarse + 1)
+        b_uniq = unique_encoded % (num_coarse + 1)
+        src = np.concatenate([a_uniq, b_uniq])
+        dst = np.concatenate([b_uniq, a_uniq])
+        coarse_edge_index = np.stack([src, dst], axis=0)
+    else:
+        coarse_edge_index = np.zeros((2, 0), dtype=np.int64)
+    return coarse_edge_index
 
 
 # ---------------------------------------------------------------------------
@@ -110,27 +152,199 @@ def bfs_bistride_coarsen(edge_index_np: np.ndarray, num_nodes: int):
     parent_or_self = np.where(coarse_mask, np.arange(num_nodes, dtype=np.int32), bfs_parent)
     fine_to_coarse = coarse_idx_of[parent_or_self]  # [N] int32, values in [0, M-1]
 
-    # 5. Build coarse edges via 2nd-order adjacency (vectorized over all fine edges)
-    #    For every fine edge (u, v): if fine_to_coarse[u] != fine_to_coarse[v],
-    #    add a coarse edge between the two clusters.
-    cu = fine_to_coarse[edge_index_np[0]].astype(np.int64)  # [E]
-    cv = fine_to_coarse[edge_index_np[1]].astype(np.int64)  # [E]
-    cross_mask = cu != cv
-    if cross_mask.any():
-        # Canonicalize (min, max) to deduplicate, then make bidirectional
-        a = np.minimum(cu[cross_mask], cv[cross_mask])
-        b = np.maximum(cu[cross_mask], cv[cross_mask])
-        pairs_encoded = a * (num_coarse + 1) + b  # unique int per pair
-        unique_encoded = np.unique(pairs_encoded)
-        a_uniq = unique_encoded // (num_coarse + 1)
-        b_uniq = unique_encoded %  (num_coarse + 1)
-        src = np.concatenate([a_uniq, b_uniq])
-        dst = np.concatenate([b_uniq, a_uniq])
-        coarse_edge_index = np.stack([src, dst], axis=0)  # [2, E_c]
-    else:
-        coarse_edge_index = np.zeros((2, 0), dtype=np.int64)
+    # 5. Build coarse edges via boundary detection
+    coarse_edge_index = _build_coarse_edges(fine_to_coarse, edge_index_np, num_coarse)
 
     return fine_to_coarse, coarse_edge_index, num_coarse
+
+
+# ---------------------------------------------------------------------------
+# FPS-Voronoi Coarsening
+# ---------------------------------------------------------------------------
+
+def _fps_euclidean(pos: np.ndarray, k: int) -> list:
+    """
+    Farthest Point Sampling using Euclidean distance.  O(N·k) with numpy.
+
+    Greedily selects k points that are maximally spread apart.
+    """
+    N = pos.shape[0]
+    if k >= N:
+        return list(range(N))
+
+    pos = np.asarray(pos, dtype=np.float64)
+    seeds = np.empty(k, dtype=np.intp)
+    seeds[0] = np.random.randint(N)
+
+    min_sq_dists = np.full(N, np.inf, dtype=np.float64)
+
+    for i in range(k):
+        s = seeds[i]
+        diff = pos - pos[s]
+        sq_dists = np.einsum('ij,ij->i', diff, diff)
+        np.minimum(min_sq_dists, sq_dists, out=min_sq_dists)
+        min_sq_dists[s] = -1.0  # exclude selected
+        if i < k - 1:
+            seeds[i + 1] = np.argmax(min_sq_dists)
+
+    return seeds.tolist()
+
+
+def _bfs_distances(adj: csr_matrix, start: int, num_nodes: int) -> np.ndarray:
+    """BFS distance from *start* using scipy C-level BFS + Python depth pass."""
+    order, predecessors = breadth_first_order(adj, i_start=start, directed=False)
+    dists = np.full(num_nodes, np.iinfo(np.int32).max, dtype=np.int32)
+    dists[start] = 0
+    for i in range(1, len(order)):
+        node = order[i]
+        dists[node] = dists[predecessors[node]] + 1
+    return dists
+
+
+def _fps_geodesic(adj: csr_matrix, num_nodes: int, k: int) -> list:
+    """FPS using geodesic (hop) distance.  O(N·k) — slower fallback."""
+    if k >= num_nodes:
+        return list(range(num_nodes))
+
+    seeds = [np.random.randint(num_nodes)]
+    min_dists = _bfs_distances(adj, seeds[0], num_nodes)
+    min_dists[seeds[0]] = -1
+
+    for _ in range(k - 1):
+        new_seed = int(np.argmax(min_dists))
+        seeds.append(new_seed)
+        dists = _bfs_distances(adj, new_seed, num_nodes)
+        np.minimum(min_dists, dists, out=min_dists)
+        for s in seeds:
+            min_dists[s] = -1
+
+    return seeds
+
+
+def fps_voronoi_coarsen(
+    edge_index_np: np.ndarray,
+    num_nodes: int,
+    num_clusters: int,
+    ref_pos: np.ndarray | None = None,
+):
+    """
+    FPS-Voronoi coarsening: Farthest Point Sampling + Voronoi partition.
+
+    1. FPS selects *k* seed nodes maximally spread across the mesh.
+    2. Multi-source BFS from seeds assigns each node to its nearest seed.
+    3. Boundary edges connect clusters sharing fine-level adjacency.
+
+    Handles disconnected components by ensuring at least one seed per component.
+
+    Args:
+        edge_index_np: [2, E] int numpy array — bidirectional mesh edges.
+        num_nodes:     N — total number of fine nodes.
+        num_clusters:  k — desired number of coarse nodes.
+        ref_pos:       [N, 3] float array — reference positions (optional).
+                       If provided, Euclidean FPS is used (fast).
+                       Otherwise, geodesic BFS FPS (slower).
+
+    Returns:
+        fine_to_coarse:    [N] int32 numpy array.
+        coarse_edge_index: [2, E_c] int64 numpy array.
+        num_coarse:        int M.
+    """
+    k = min(num_clusters, num_nodes)
+    if k <= 0:
+        raise ValueError(f"num_clusters must be > 0, got {num_clusters}")
+
+    # Build CSR adjacency
+    row = edge_index_np[0].astype(np.int32)
+    col = edge_index_np[1].astype(np.int32)
+    data = np.ones(row.shape[0], dtype=np.int8)
+    adj = csr_matrix((data, (row, col)), shape=(num_nodes, num_nodes))
+
+    # --- Select seeds via FPS ---
+    if ref_pos is not None:
+        seeds = _fps_euclidean(ref_pos, k)
+    else:
+        seeds = _fps_geodesic(adj, num_nodes, k)
+
+    # --- Ensure every connected component has at least one seed ---
+    n_comp, comp_labels = connected_components(adj, directed=False)
+    comp_has_seed = set(int(comp_labels[s]) for s in seeds)
+    for comp_id in range(n_comp):
+        if comp_id not in comp_has_seed:
+            comp_node = int(np.argmax(comp_labels == comp_id))
+            seeds.append(comp_node)
+
+    k_actual = len(seeds)
+
+    # --- Multi-source BFS for Voronoi partition ---
+    fine_to_coarse = np.full(num_nodes, -1, dtype=np.int32)
+    dist = np.full(num_nodes, np.iinfo(np.int32).max, dtype=np.int32)
+
+    queue = deque()
+    for cluster_id, seed in enumerate(seeds):
+        fine_to_coarse[seed] = cluster_id
+        dist[seed] = 0
+        queue.append(seed)
+
+    while queue:
+        node = queue.popleft()
+        d = dist[node]
+        start, end = adj.indptr[node], adj.indptr[node + 1]
+        for i in range(start, end):
+            nbr = int(adj.indices[i])
+            if d + 1 < dist[nbr]:
+                dist[nbr] = d + 1
+                fine_to_coarse[nbr] = fine_to_coarse[node]
+                queue.append(nbr)
+
+    # --- Compact cluster IDs (remove any empty clusters) ---
+    unique_clusters = np.unique(fine_to_coarse)
+    if unique_clusters[0] == -1:
+        unique_clusters = unique_clusters[1:]
+    num_coarse = len(unique_clusters)
+    if num_coarse < k_actual:
+        remap = np.full(k_actual, -1, dtype=np.int32)
+        remap[unique_clusters] = np.arange(num_coarse, dtype=np.int32)
+        fine_to_coarse = remap[fine_to_coarse]
+
+    # --- Build boundary edges ---
+    coarse_edge_index = _build_coarse_edges(fine_to_coarse, edge_index_np, num_coarse)
+
+    return fine_to_coarse, coarse_edge_index, num_coarse
+
+
+# ---------------------------------------------------------------------------
+# Coarsening Dispatcher
+# ---------------------------------------------------------------------------
+
+def coarsen_graph(
+    edge_index_np: np.ndarray,
+    num_nodes: int,
+    method: str = 'bfs',
+    num_clusters: int | None = None,
+    ref_pos: np.ndarray | None = None,
+):
+    """
+    Dispatch to the appropriate coarsening method.
+
+    Args:
+        edge_index_np: [2, E] int numpy array — bidirectional mesh edges.
+        num_nodes:     N — total number of fine nodes.
+        method:        'bfs' or 'voronoi'.
+        num_clusters:  Required for voronoi — number of coarse nodes.
+        ref_pos:       [N, 3] positions — optional, used by voronoi for Euclidean FPS.
+
+    Returns:
+        (fine_to_coarse [N], coarse_edge_index [2, E_c], num_coarse int)
+    """
+    method = method.strip().lower()
+    if method == 'bfs':
+        return bfs_bistride_coarsen(edge_index_np, num_nodes)
+    elif method == 'voronoi':
+        if num_clusters is None:
+            raise ValueError("num_clusters is required for 'voronoi' coarsening")
+        return fps_voronoi_coarsen(edge_index_np, num_nodes, num_clusters, ref_pos)
+    else:
+        raise ValueError(f"Unknown coarsening method: '{method}'. Use 'bfs' or 'voronoi'.")
 
 
 # ---------------------------------------------------------------------------

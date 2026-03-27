@@ -11,7 +11,7 @@ from general_modules.edge_features import EDGE_FEATURE_DIM, compute_edge_attr
 
 # Multiscale coarsening (optional — only imported when use_multiscale=True)
 try:
-    from model.coarsening import bfs_bistride_coarsen, compute_coarse_edge_attr, compute_coarse_centroids, MultiscaleData
+    from model.coarsening import bfs_bistride_coarsen, coarsen_graph, compute_coarse_edge_attr, compute_coarse_centroids, MultiscaleData
     HAS_COARSENING = True
 except ImportError:
     HAS_COARSENING = False
@@ -357,11 +357,37 @@ class MeshGraphDataset(Dataset):
         self._coarse_cache: Dict = {}  # {sample_id: {'levels': L, 'fine_to_coarse_0':..., 'coarse_edge_index_0':..., 'num_coarse_0':..., ...}}
         self._pos_feat_cache: Dict = {}  # {sample_id: np.ndarray [N, num_pos_features]} — cached per worker, topology-invariant
 
+        # Per-level coarsening method ('bfs' or 'voronoi')
+        raw_ct = config.get('coarsening_type', 'bfs')
+        if isinstance(raw_ct, list):
+            self.coarsening_types = [str(t).strip().lower() for t in raw_ct]
+        else:
+            self.coarsening_types = [str(raw_ct).strip().lower()]
+        # Expand single value to all levels
+        if len(self.coarsening_types) == 1 and self.multiscale_levels > 1:
+            self.coarsening_types = self.coarsening_types * self.multiscale_levels
+
+        # Per-level cluster counts for voronoi levels
+        raw_vc = config.get('voronoi_clusters', None)
+        if raw_vc is None:
+            self.voronoi_clusters: List[int] = [0] * self.multiscale_levels
+        elif isinstance(raw_vc, list):
+            self.voronoi_clusters = [int(v) for v in raw_vc]
+        else:
+            self.voronoi_clusters = [int(raw_vc)]
+        # Expand single value to all levels
+        if len(self.voronoi_clusters) == 1 and self.multiscale_levels > 1:
+            self.voronoi_clusters = self.voronoi_clusters * self.multiscale_levels
+
         print(f"Loading MeshGraphDataset: {h5_file}")
         print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}, edge_dim: {self.edge_dim}")
         print(f"  use_node_types: {self.use_node_types}")
         print(f"  use_world_edges: {self.use_world_edges}")
         print(f"  use_multiscale: {self.use_multiscale}" + (f" (levels={self.multiscale_levels})" if self.use_multiscale else ""))
+        if self.use_multiscale:
+            print(f"  coarsening_types: {self.coarsening_types}")
+            if any(t == 'voronoi' for t in self.coarsening_types):
+                print(f"  voronoi_clusters: {self.voronoi_clusters}")
         if self.use_world_edges:
             print(f"  world_radius_multiplier: {self.world_radius_multiplier}")
             print(f"  world_max_num_neighbors: {self.world_max_num_neighbors}")
@@ -615,6 +641,8 @@ class MeshGraphDataset(Dataset):
         subset.edge_std = None
         subset.use_multiscale = self.use_multiscale
         subset.multiscale_levels = self.multiscale_levels
+        subset.coarsening_types = self.coarsening_types
+        subset.voronoi_clusters = self.voronoi_clusters
         subset.coarse_edge_means = []
         subset.coarse_edge_stds = []
         subset._coarse_cache = {}
@@ -829,18 +857,29 @@ class MeshGraphDataset(Dataset):
                 num_nodes = data_h5.shape[2]
                 edge_idx = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
 
-                # Iterative BFS coarsening: level 0 → 1 → 2 → ...
+                # Iterative coarsening: level 0 → 1 → 2 → ...
+                # Get reference positions for Euclidean FPS (voronoi levels)
+                first_pos_data = data_h5[:3, 0, :]  # [3, nodes] — ref xyz
+                level_ref_pos = first_pos_data.T     # [N, 3]
+
                 cache_entry = {}
                 current_ei, current_n = edge_idx, num_nodes
                 actual_levels = 0
                 for level in range(L):
-                    ftc, c_ei, n_c = bfs_bistride_coarsen(current_ei, current_n)
+                    method = self.coarsening_types[level] if level < len(self.coarsening_types) else 'bfs'
+                    n_clusters = self.voronoi_clusters[level] if level < len(self.voronoi_clusters) else 0
+                    ftc, c_ei, n_c = coarsen_graph(
+                        current_ei, current_n, method=method,
+                        num_clusters=n_clusters, ref_pos=level_ref_pos,
+                    )
                     cache_entry[f'fine_to_coarse_{level}'] = ftc
                     cache_entry[f'coarse_edge_index_{level}'] = c_ei
                     cache_entry[f'num_coarse_{level}'] = n_c
                     actual_levels += 1
                     if n_c <= 1 or c_ei.shape[1] == 0:
                         break
+                    # Chain centroids for next level
+                    level_ref_pos = compute_coarse_centroids(level_ref_pos, ftc, n_c).astype(np.float32)
                     current_ei, current_n = c_ei, n_c
                 cache_entry['levels'] = actual_levels
                 self._coarse_cache[sid] = cache_entry
@@ -1257,17 +1296,24 @@ class MeshGraphDataset(Dataset):
             if sample_id not in self._coarse_cache:
                 raw_edge_idx = edge_index.numpy()  # already bidirectional [2, 2M]
                 num_nodes_n = pos.shape[0]
+                level_ref_pos = pos.numpy()  # [N, 3] for Euclidean FPS
                 cache_entry = {}
                 current_ei, current_n = raw_edge_idx, num_nodes_n
                 actual_levels = 0
                 for level in range(self.multiscale_levels):
-                    ftc, c_ei, n_c = bfs_bistride_coarsen(current_ei, current_n)
+                    method = self.coarsening_types[level] if level < len(self.coarsening_types) else 'bfs'
+                    n_clusters = self.voronoi_clusters[level] if level < len(self.voronoi_clusters) else 0
+                    ftc, c_ei, n_c = coarsen_graph(
+                        current_ei, current_n, method=method,
+                        num_clusters=n_clusters, ref_pos=level_ref_pos,
+                    )
                     cache_entry[f'fine_to_coarse_{level}'] = ftc
                     cache_entry[f'coarse_edge_index_{level}'] = c_ei
                     cache_entry[f'num_coarse_{level}'] = n_c
                     actual_levels += 1
                     if n_c <= 1 or c_ei.shape[1] == 0:
                         break
+                    level_ref_pos = compute_coarse_centroids(level_ref_pos, ftc, n_c).astype(np.float32)
                     current_ei, current_n = c_ei, n_c
                 cache_entry['levels'] = actual_levels
                 self._coarse_cache[sample_id] = cache_entry
