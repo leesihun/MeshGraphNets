@@ -24,7 +24,7 @@ num_workers 8
 std_noise   0.0
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
-grad_accum_steps    0
+grad_accum_steps    1
 '
 % Memory Optimization
 use_checkpointing   False
@@ -32,7 +32,7 @@ use_checkpointing   False
 % Performance Optimization
 use_amp             True    # Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs)
 use_ema             True    # EMA shadow model for validation/inference (smooths SGD noise, ~free precision)
-ema_decay           0.999   # EMA decay factor (0.999 = ~1000-step averaging window)
+ema_decay           0.99   # EMA decay factor (0.999 = ~1000-step averaging window)
 test_interval       1      # Run test/visualization every N epochs (1 = every epoch, 10 = every 10th)
 '
 % Node Type Parameters
