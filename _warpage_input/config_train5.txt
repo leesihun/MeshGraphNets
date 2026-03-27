@@ -27,7 +27,7 @@ augment_geometry True   # Random Z-rotation + reflection augmentation (training 
 grad_accum_steps    1
 '
 % Memory Optimization
-use_checkpointing   False
+use_checkpointing   True
 '
 % Performance Optimization
 use_amp             True    # Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs)
