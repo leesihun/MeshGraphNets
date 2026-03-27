@@ -188,9 +188,10 @@ def single_worker(config, config_filename='config.txt'):
 
             train_metrics = train_epoch(model, train_loader, optimizer, device, config, epoch, ema_model=ema_model)
 
-            # Use EMA model for evaluation when available (better generalization)
+            # traineval uses the real model (sanity-check against trainopt);
+            # valid/test use EMA for smoother generalization estimates.
             eval_model = ema_model.module if ema_model is not None else model
-            train_eval_metrics = validate_epoch(eval_model, train_loader, device, config, epoch)
+            train_eval_metrics = validate_epoch(model, train_loader, device, config, epoch)
             valid_metrics = validate_epoch(eval_model, val_loader, device, config, epoch)
             train_loss = train_metrics['mean']
             train_eval_loss = train_eval_metrics['mean']

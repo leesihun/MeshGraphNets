@@ -311,7 +311,8 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         train_loss = (train_totals[0] / train_totals[1]).item()
 
         if rank == 0:
-            # Use EMA model for evaluation when available (better generalization)
+            # traineval uses the real model (sanity-check against trainopt);
+            # valid/test use EMA for smoother generalization estimates.
             eval_model = ema_model.module if ema_model is not None else model
 
             # Resample train_eval subset each epoch for an unbiased training loss estimate
@@ -325,7 +326,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 num_workers=num_workers,
                 pin_memory=True,
             )
-            train_eval_metrics = validate_epoch(eval_model, train_eval_loader, device, config, epoch)
+            train_eval_metrics = validate_epoch(model, train_eval_loader, device, config, epoch)
             valid_metrics = validate_epoch(eval_model, val_loader, device, config, epoch)
             train_eval_loss = train_eval_metrics['mean']
             valid_loss = valid_metrics['mean']
