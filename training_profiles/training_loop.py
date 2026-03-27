@@ -159,7 +159,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                     log_dir = config.get('log_dir', '.')
                     save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
 
-            errors = torch.nn.functional.huber_loss(predicted_acc, target_acc, reduction='none', delta=0.1)
+            errors = torch.nn.functional.huber_loss(predicted_acc, target_acc, reduction='none', delta=1.0)
             loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
             # Scale loss so accumulated gradients equal the mean within each accumulation window.
             scaled_loss = loss / _accum_window_size(batch_idx, total_batches, actual_accum)
@@ -266,7 +266,7 @@ def validate_epoch(model, dataloader, device, config, epoch=0):
             graph = graph.to(device)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
-                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=0.1)
+                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
                 loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             # Accumulate per-feature losses
@@ -360,7 +360,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             graph = graph.to(device)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
-                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=0.1)
+                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
                 loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             # Accumulate per-feature losses
@@ -380,7 +380,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             num_batches += 1
 
             # Save results with GPU-accelerated mesh reconstruction
-            if batch_idx in config.get('test_batch_idx', [0, 1, 2, 3, 4, 5, 6, 7]):
+            if batch_idx in config.get('test_batch_idx', [0, 1, 2, 3]):
                 gpu_ids = str(config.get('gpu_ids'))
 
                 # Build filename with sample_id and time_idx for clarity
