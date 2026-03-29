@@ -49,6 +49,6 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 use_multiscale      True
 % Multi-BFS + Voronoi
 coarsening_type     voronoi
-voronoi_clusters    0, 200
+voronoi_clusters    200
 multiscale_levels   1
 mp_per_level        2, 12, 2
