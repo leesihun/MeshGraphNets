@@ -16,12 +16,12 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	500
+Training_epochs	200
 Batch_size	2
 LearningR	0.0001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
 Latent_dim	256	# MeshGraphNets latent dimension
 num_workers 8
-std_noise   0.0
+std_noise   0.01
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
 grad_accum_steps    1
@@ -42,12 +42,13 @@ use_node_types  False    # Add one-hot encoded node types to node features
 use_world_edges         False
 '
 % Test set control
-test_batch_idx  0, 1, 2, 3, 15, 16, 33, 34
+test_batch_idx  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 33, 34
 plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature, i.e., stress)
 '
 % Multi-Scale / Hierarchical Parameters (BFS Bi-Stride, ICML 2023)
 use_multiscale      True
-% Pure BFS (existing behavior, unchanged)
-coarsening_type     bfs
+% Multi-BFS + Voronoi
+coarsening_type     voronoi
+voronoi_clusters    0, 200
 multiscale_levels   1
-mp_per_level        2, 10, 2
+mp_per_level        2, 12, 2
