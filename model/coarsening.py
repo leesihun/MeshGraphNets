@@ -456,12 +456,68 @@ def unpool_features(
     return h_coarse[fine_to_coarse]
 
 
+def build_unpool_edges(
+    fine_to_coarse: np.ndarray,
+    coarse_edge_index: np.ndarray,
+    num_coarse: int,
+) -> np.ndarray:
+    """
+    Build bipartite edge_index [2, E_up] from coarse→fine for unpool message passing.
+
+    Each fine node connects to: own cluster + all coarse neighbors of own cluster.
+    Row 0 = coarse src indices, Row 1 = fine dst indices.
+
+    Args:
+        fine_to_coarse:    [N] int — cluster assignment per fine node.
+        coarse_edge_index: [2, E_c] int — coarse-level edges (bidirectional).
+        num_coarse:        int M — number of coarse nodes.
+
+    Returns:
+        [2, E_up] int64 array — bipartite edge index.
+    """
+    # Build coarse adjacency list
+    adj = [set() for _ in range(num_coarse)]
+    src, dst = coarse_edge_index[0], coarse_edge_index[1]
+    for s, d in zip(src, dst):
+        adj[int(s)].add(int(d))
+        adj[int(d)].add(int(s))
+
+    # For each cluster c: coarse targets = {c} ∪ neighbors(c)
+    coarse_targets = [sorted({c} | adj[c]) for c in range(num_coarse)]
+
+    # Build fine→coarse member lists
+    members = [[] for _ in range(num_coarse)]
+    for fine_i, coarse_c in enumerate(fine_to_coarse):
+        members[int(coarse_c)].append(fine_i)
+
+    # Build bipartite edges: for each fine node, connect to all coarse targets of its cluster
+    src_list = []
+    dst_list = []
+    for c in range(num_coarse):
+        targets = coarse_targets[c]
+        fine_nodes = members[c]
+        if len(fine_nodes) == 0:
+            continue
+        fine_arr = np.array(fine_nodes, dtype=np.int64)
+        for t in targets:
+            src_list.append(np.full(len(fine_arr), t, dtype=np.int64))
+            dst_list.append(fine_arr)
+
+    if len(src_list) == 0:
+        return np.zeros((2, 0), dtype=np.int64)
+
+    return np.stack([np.concatenate(src_list), np.concatenate(dst_list)], axis=0)
+
+
 # ---------------------------------------------------------------------------
 # Custom Data class for proper PyG batching of multiscale attributes
 # ---------------------------------------------------------------------------
 
 # Regex to extract level index from attribute names like "fine_to_coarse_0"
-_LEVEL_RE = re.compile(r'^(fine_to_coarse|coarse_edge_index|coarse_edge_attr|num_coarse)_(\d+)$')
+_LEVEL_RE = re.compile(
+    r'^(fine_to_coarse|coarse_edge_index|coarse_edge_attr|coarse_centroid'
+    r'|unpool_edge_index|num_coarse)_(\d+)$'
+)
 
 
 class MultiscaleData(Data):
@@ -488,14 +544,19 @@ class MultiscaleData(Data):
             prefix, level = m.group(1), m.group(2)
             if prefix in ('fine_to_coarse', 'coarse_edge_index'):
                 return int(self[f'num_coarse_{level}'])
+            if prefix == 'unpool_edge_index':
+                # Row 0 = coarse src (offset by num_coarse), Row 1 = fine dst (offset by fine node count)
+                coarse_inc = int(self[f'num_coarse_{level}'])
+                fine_inc = self.num_nodes if int(level) == 0 else int(self[f'num_coarse_{int(level) - 1}'])
+                return torch.tensor([[coarse_inc], [fine_inc]])
         return super().__inc__(key, value, *args, **kwargs)
 
     def __cat_dim__(self, key: str, value, *args, **kwargs):
         m = _LEVEL_RE.match(key)
         if m:
             prefix = m.group(1)
-            if prefix == 'coarse_edge_index':
-                return 1   # [2, E_c] — concatenate along edge dimension
-            if prefix in ('fine_to_coarse', 'coarse_edge_attr'):
-                return 0   # [N] and [E_c, 8] — concatenate along node/edge dim
+            if prefix in ('coarse_edge_index', 'unpool_edge_index'):
+                return 1   # [2, E] — concatenate along edge dimension
+            if prefix in ('fine_to_coarse', 'coarse_edge_attr', 'coarse_centroid'):
+                return 0   # [N, ...] — concatenate along node/edge dim
         return super().__cat_dim__(key, value, *args, **kwargs)

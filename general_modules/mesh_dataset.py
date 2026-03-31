@@ -379,6 +379,8 @@ class MeshGraphDataset(Dataset):
         if len(self.voronoi_clusters) == 1 and self.multiscale_levels > 1:
             self.voronoi_clusters = self.voronoi_clusters * self.multiscale_levels
 
+        self.bipartite_unpool = config.get('bipartite_unpool', False)
+
         print(f"Loading MeshGraphDataset: {h5_file}")
         print(f"  input_dim: {self.input_dim}, output_dim: {self.output_dim}, edge_dim: {self.edge_dim}")
         print(f"  use_node_types: {self.use_node_types}")
@@ -643,6 +645,7 @@ class MeshGraphDataset(Dataset):
         subset.multiscale_levels = self.multiscale_levels
         subset.coarsening_types = self.coarsening_types
         subset.voronoi_clusters = self.voronoi_clusters
+        subset.bipartite_unpool = self.bipartite_unpool
         subset.coarse_edge_means = []
         subset.coarse_edge_stds = []
         subset._coarse_cache = {}
@@ -875,6 +878,9 @@ class MeshGraphDataset(Dataset):
                     cache_entry[f'fine_to_coarse_{level}'] = ftc
                     cache_entry[f'coarse_edge_index_{level}'] = c_ei
                     cache_entry[f'num_coarse_{level}'] = n_c
+                    if self.bipartite_unpool:
+                        from model.coarsening import build_unpool_edges
+                        cache_entry[f'unpool_edge_index_{level}'] = build_unpool_edges(ftc, c_ei, n_c)
                     actual_levels += 1
                     if n_c <= 1 or c_ei.shape[1] == 0:
                         break
@@ -1310,6 +1316,9 @@ class MeshGraphDataset(Dataset):
                     cache_entry[f'fine_to_coarse_{level}'] = ftc
                     cache_entry[f'coarse_edge_index_{level}'] = c_ei
                     cache_entry[f'num_coarse_{level}'] = n_c
+                    if self.bipartite_unpool:
+                        from model.coarsening import build_unpool_edges
+                        cache_entry[f'unpool_edge_index_{level}'] = build_unpool_edges(ftc, c_ei, n_c)
                     actual_levels += 1
                     if n_c <= 1 or c_ei.shape[1] == 0:
                         break
@@ -1354,6 +1363,14 @@ class MeshGraphDataset(Dataset):
                 graph_data[f'coarse_edge_index_{level}'] = torch.from_numpy(c_ei_np)
                 graph_data[f'coarse_edge_attr_{level}'] = torch.from_numpy(c_edge_attr_norm.astype(np.float32))
                 graph_data[f'num_coarse_{level}'] = torch.tensor([n_coarse], dtype=torch.long)
+
+                # Store coarse centroids for rel_pos computation at runtime
+                graph_data[f'coarse_centroid_{level}'] = torch.from_numpy(coarse_ref.astype(np.float32))
+
+                # Store bipartite unpool edges (topology from cache — augmentation-invariant)
+                if self.bipartite_unpool:
+                    up_ei = cache[f'unpool_edge_index_{level}']
+                    graph_data[f'unpool_edge_index_{level}'] = torch.from_numpy(up_ei)
 
                 cur_ref, cur_def = coarse_ref, coarse_def
 

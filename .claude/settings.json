@@ -56,7 +56,11 @@
       "WebFetch(domain:developer.nvidia.com)",
       "WebFetch(domain:www.zijianhu.com)",
       "WebFetch(domain:leimao.github.io)",
-      "Bash(wc -l /tmp/modulus/physicsnemo/models/meshgraphnet/meshgraphnet.py /tmp/modulus/physicsnemo/models/meshgraphnet/hybrid_meshgraphnet.py /tmp/modulus/physicsnemo/models/meshgraphnet/meshgraphkan.py /tmp/modulus/physicsnemo/models/meshgraphnet/bsms_mgn.py /tmp/modulus/physicsnemo/nn/module/gnn_layers/*.py)"
+      "Bash(wc -l /tmp/modulus/physicsnemo/models/meshgraphnet/meshgraphnet.py /tmp/modulus/physicsnemo/models/meshgraphnet/hybrid_meshgraphnet.py /tmp/modulus/physicsnemo/models/meshgraphnet/meshgraphkan.py /tmp/modulus/physicsnemo/models/meshgraphnet/bsms_mgn.py /tmp/modulus/physicsnemo/nn/module/gnn_layers/*.py)",
+      "Bash(curl -s \"https://api.search.brave.com/res/v1/web/search?q=PointNet%2B%2B+feature+propagation+inverse+distance+interpolation+upsampling&count=10\" -H \"Accept: application/json\" -H \"X-Subscription-Token: $BRAVE_SEARCH_API_KEY\")",
+      "Bash(curl -s \"https://api.search.brave.com/res/v1/web/search?q=Graph+U-Net+Gao+Ji+2019+gUnpool+unpooling+mechanism&count=10\" -H \"Accept: application/json\" -H \"X-Subscription-Token: $BRAVE_SEARCH_API_KEY\")",
+      "Bash(curl -s \"https://api.search.brave.com/res/v1/web/search?q=DiffPool+Ying+2018+soft+assignment+matrix+unpooling+reverse&count=10\" -H \"Accept: application/json\" -H \"X-Subscription-Token: $BRAVE_SEARCH_API_KEY\")",
+      "WebFetch(domain:www.semanticscholar.org)"
     ]
   }
 }

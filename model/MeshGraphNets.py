@@ -184,6 +184,15 @@ class EncoderProcessorDecoder(nn.Module):
                 )
                 self.skip_projs.append(nn.Linear(2 * self.latent_dim, self.latent_dim))
 
+            # Bipartite message passing unpool (learned coarse→fine)
+            self.bipartite_unpool = config.get('bipartite_unpool', False)
+            if self.bipartite_unpool:
+                from model.blocks import UnpoolBlock
+                self.unpool_blocks = nn.ModuleList([
+                    UnpoolBlock(self.latent_dim, build_mlp)
+                    for _ in range(L)
+                ])
+
             # Coarsest level blocks
             coarsest_count = mp_per_level[L]
             self.coarsest_blocks = nn.ModuleList([
@@ -231,12 +240,17 @@ class EncoderProcessorDecoder(nn.Module):
             if not hasattr(graph, ftc_key):
                 # Graph has fewer levels than model (degeneracy) — stop here
                 break
-            level_data[i] = {
+            ld = {
                 'ftc': graph[ftc_key],
                 'c_ei': graph[f'coarse_edge_index_{i}'],
                 'c_ea': graph[f'coarse_edge_attr_{i}'],
                 'n_c': int(graph[f'num_coarse_{i}'].sum()),
             }
+            if self.use_multiscale and getattr(self, 'bipartite_unpool', False):
+                ld['up_ei'] = graph[f'unpool_edge_index_{i}']
+                ld['coarse_centroid'] = graph[f'coarse_centroid_{i}']
+                ld['fine_pos'] = graph.pos if i == 0 else graph[f'coarse_centroid_{i - 1}']
+            level_data[i] = ld
         actual_levels = len(level_data)
 
         # Encode fine graph
@@ -292,7 +306,17 @@ class EncoderProcessorDecoder(nn.Module):
         for i in range(actual_levels - 1, -1, -1):
             # Unpool: level i+1 → level i
             ld = level_data[i]
-            h_up = unpool_features(current_graph.x, ld['ftc'])
+            if getattr(self, 'bipartite_unpool', False):
+                src, dst = ld['up_ei']
+                rel_pos = ld['fine_pos'][dst] - ld['coarse_centroid'][src]
+                h_up = self.unpool_blocks[i](
+                    h_coarse=current_graph.x,
+                    h_fine_skip=skip_states[i]['x'],
+                    unpool_edge_index=ld['up_ei'],
+                    rel_pos=rel_pos,
+                )
+            else:
+                h_up = unpool_features(current_graph.x, ld['ftc'])
 
             # Skip connection merge
             skip = skip_states[i]

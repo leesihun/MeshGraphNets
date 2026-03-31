@@ -257,6 +257,8 @@ def run_rollout(config, config_filename='config.txt'):
         if len(voronoi_clusters) == 1 and multiscale_levels > 1:
             voronoi_clusters = voronoi_clusters * multiscale_levels
 
+        bipartite_unpool = config.get('bipartite_unpool', False)
+
         coarse_cache = None  # dict of {level: {'ftc':..., 'c_ei':..., 'n_c':...}}
         if use_multiscale:
             if not HAS_COARSENING:
@@ -271,7 +273,11 @@ def run_rollout(config, config_filename='config.txt'):
                     current_ei, current_n, method=method,
                     num_clusters=n_clusters, ref_pos=level_ref_pos,
                 )
-                coarse_cache[level] = {'ftc': ftc, 'c_ei': c_ei, 'n_c': n_c}
+                cache_entry = {'ftc': ftc, 'c_ei': c_ei, 'n_c': n_c}
+                if bipartite_unpool:
+                    from model.coarsening import build_unpool_edges
+                    cache_entry['up_ei'] = build_unpool_edges(ftc, c_ei, n_c)
+                coarse_cache[level] = cache_entry
                 print(f"  Coarsening level {level} ({method}): {current_n} → {n_c} nodes ({n_c/current_n*100:.1f}%)")
                 if n_c <= 1 or c_ei.shape[1] == 0:
                     break
@@ -369,6 +375,14 @@ def run_rollout(config, config_filename='config.txt'):
                         graph[f'coarse_edge_index_{level}'] = torch.from_numpy(cc['c_ei']).to(device)
                         graph[f'coarse_edge_attr_{level}']  = torch.from_numpy(c_ea_norm.astype(np.float32)).to(device)
                         graph[f'num_coarse_{level}']        = torch.tensor([cc['n_c']], dtype=torch.long, device=device)
+
+                        # Store coarse centroids for rel_pos computation
+                        graph[f'coarse_centroid_{level}'] = torch.from_numpy(coarse_ref.astype(np.float32)).to(device)
+
+                        # Store bipartite unpool edges
+                        if bipartite_unpool and 'up_ei' in cc:
+                            graph[f'unpool_edge_index_{level}'] = torch.from_numpy(cc['up_ei']).to(device)
+
                         cur_ref, cur_def = coarse_ref, coarse_def
 
                 # --- i. Forward pass ---
