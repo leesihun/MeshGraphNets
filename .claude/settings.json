@@ -60,7 +60,11 @@
       "Bash(curl -s \"https://api.search.brave.com/res/v1/web/search?q=PointNet%2B%2B+feature+propagation+inverse+distance+interpolation+upsampling&count=10\" -H \"Accept: application/json\" -H \"X-Subscription-Token: $BRAVE_SEARCH_API_KEY\")",
       "Bash(curl -s \"https://api.search.brave.com/res/v1/web/search?q=Graph+U-Net+Gao+Ji+2019+gUnpool+unpooling+mechanism&count=10\" -H \"Accept: application/json\" -H \"X-Subscription-Token: $BRAVE_SEARCH_API_KEY\")",
       "Bash(curl -s \"https://api.search.brave.com/res/v1/web/search?q=DiffPool+Ying+2018+soft+assignment+matrix+unpooling+reverse&count=10\" -H \"Accept: application/json\" -H \"X-Subscription-Token: $BRAVE_SEARCH_API_KEY\")",
-      "WebFetch(domain:www.semanticscholar.org)"
+      "WebFetch(domain:www.semanticscholar.org)",
+      "WebFetch(domain:tobiaspfaff.com)",
+      "WebFetch(domain:link.springer.com)",
+      "WebFetch(domain:www.alphaxiv.org)",
+      "WebFetch(domain:www.researchgate.net)"
     ]
   }
 }
