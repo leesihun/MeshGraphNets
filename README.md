@@ -10,14 +10,17 @@ Given a mesh at time *t* (node positions + physical state), the model predicts t
 
 ## Setup
 
-Requires PyTorch + PyTorch Geometric. Key optional dependencies:
+Requires PyTorch + PyTorch Geometric. Common extras:
 
 ```bash
-# For world edges (long-range connections)
+# HDF5 datasets + rollout I/O
+pip install h5py scipy
+
+# World edges (long-range connections)
 pip install torch-cluster
 
-# HDF5 datasets
-pip install h5py
+# GIF visualization utilities
+pip install matplotlib pillow
 ```
 
 Set `HDF5_USE_FILE_LOCKING=FALSE` in your environment if running on shared storage.
@@ -25,23 +28,30 @@ Set `HDF5_USE_FILE_LOCKING=FALSE` in your environment if running on shared stora
 ## Running
 
 ```bash
-# Training — single GPU
-python MeshGraphNets_main.py --config _warpage_input/config_train5.txt
+# Training example (flag_simple cloth dataset)
+python MeshGraphNets_main.py --config _warpage_input/config_train_flag_simple.txt
 
-# Training — multi-GPU DDP (set gpu_ids 0,1 in config)
-python MeshGraphNets_main.py --config _warpage_input/config_train3.txt
-
-# Inference / autoregressive rollout
-python MeshGraphNets_main.py --config <your_infer_config.txt>
+# Inference / autoregressive rollout example (ConcreteShellFEA)
+python MeshGraphNets_main.py --config _warpage_input/config_infer_concreteshellfea.txt
 ```
 
-The `--config` flag defaults to `config.txt`. Mode (`train` / `inference`) is set inside the config file. Single vs. multi-GPU is auto-detected from the number of IDs in `gpu_ids`.
+The same entry point handles single GPU, multi-GPU DDP, or CPU based on `gpu_ids`. Use `gpu_ids -1` to force CPU. The `--config` flag defaults to `config.txt`, and `mode` is set inside the config file.
+
+For inference, the checkpoint overrides overlapping model config keys. If `positional_features > 0`, rollout recomputes positional features from the reference mesh before normalization, so `positional_features`, `positional_encoding`, and `use_node_types` should stay aligned with the training run.
+
+New example configs:
+- `_warpage_input/config_train_flag_simple.txt` - multiscale `flag_simple` training with node types, world edges, AMP, and EMA
+- `_warpage_input/config_infer_concreteshellfea.txt` - ConcreteShellFEA rollout with multiscale inference and positional features
 
 See [config_run_docs.md](config_run_docs.md) for a full reference of all configuration keys.
 
 ## Dataset Format
 
-HDF5 files with a `nodal_data` dataset of shape **`[features, time, nodes]`**:
+HDF5 samples live under `data/<id>/` and store:
+- `nodal_data` with shape **`[features, time, nodes]`**
+- `mesh_edge` with shape **`[2, edges]`**
+
+`nodal_data` uses this channel layout:
 
 | Index | Feature |
 |---|---|
@@ -58,9 +68,29 @@ Training checkpoints are saved to the path specified by `modelpath`. Each checkp
 - Normalization statistics under `checkpoint['normalization']`
 - Per-level coarse edge stats if multiscale is enabled
 
-Inference outputs are saved as HDF5: `rollout_sample{id}_steps{N}.h5` with nodal_data shape `[8, timesteps, nodes]`.
+Inference outputs are written to `inference_output_dir` (default `outputs/rollout`) as `rollout_sample{id}_steps{N}.h5`.
+
+Saved rollout files keep the standard 8-row `nodal_data` layout:
+- Rows `0-2` store the reference coordinates for every timestep
+- Predicted outputs start at row `3`
+- Any unpredicted rows are copied from the input sample at `t=0`
+- Part IDs are preserved when present
 
 Loss and validation curves are written to the file specified by `log_file_dir`. Use `misc/plot_loss.py` or `misc/plot_loss_realtime.py` to visualize.
+
+## Utility Scripts
+
+The old root-level `animate_h5.py` now lives at `scripts/animate_h5.py`.
+
+```bash
+# Create GIF views from a rollout HDF5
+python scripts/animate_h5.py outputs/rollout/rollout_sample0_steps34.h5 --views 3d_iso xz --color-by displacement
+
+# Concatenate same-prefix *_3D_iso.gif clips into one timeline
+python scripts/append_prefix_gifs.py --prefix flag_simple sphere_simple
+```
+
+`scripts/animate_h5.py` supports `xz`, `xy`, `yz`, `3d_iso`, and `3d_top` views, plus `auto` or displacement-magnitude coloring. `scripts/append_prefix_gifs.py` combines matching GIF clips in the repo root.
 
 ## Architecture
 
@@ -79,11 +109,11 @@ Loss and validation curves are written to the file specified by `log_file_dir`. 
 | Section | Purpose |
 |---|---|
 | Mode / GPU | `mode`, `gpu_ids` |
-| Paths | `modelpath`, `dataset_dir`, `log_file_dir` |
+| Paths | `modelpath`, `dataset_dir`, `infer_dataset`, `log_file_dir`, `inference_output_dir` |
 | Model size | `Latent_dim`, `message_passing_num` |
 | Training | `LearningR`, `Training_epochs`, `Batch_size`, `use_amp`, `use_ema` |
-| Features | `input_var`, `output_var`, `edge_var`, `positional_features` |
+| Features | `input_var`, `output_var`, `edge_var`, `positional_features`, `positional_encoding`, `use_node_types` |
 | Multiscale | `use_multiscale`, `multiscale_levels`, `mp_per_level` |
-| Inference | `infer_dataset`, `infer_timesteps` |
+| Inference | `infer_timesteps` |
 
 Full documentation: [config_run_docs.md](config_run_docs.md)

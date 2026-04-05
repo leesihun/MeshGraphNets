@@ -8,6 +8,7 @@ from torch_geometric.data import Data
 from scipy.spatial import KDTree
 
 from general_modules.edge_features import EDGE_FEATURE_DIM, compute_edge_attr
+from general_modules.mesh_dataset import _compute_positional_features
 from model.MeshGraphNets import MeshGraphNets
 
 # Multiscale coarsening (only needed when use_multiscale=True)
@@ -306,9 +307,16 @@ def run_rollout(config, config_filename='config.txt'):
             for step in range(steps_this_sample):
                 step_start = time.time()
 
-                # Nodal feature
-                x_raw = current_state  # [N, input_dim]
-                x_norm = (x_raw - node_mean) / node_std  # [N, input_dim]
+                # Nodal features (same order as training: physical → positional, then normalize → node types)
+                x_raw = current_state.astype(np.float32)  # [N, input_dim]
+                num_pos = int(config.get('positional_features', 0))
+                if num_pos > 0:
+                    enc = str(config.get('positional_encoding', 'rwpe')).lower().strip()
+                    pos_feat = _compute_positional_features(
+                        ref_pos.astype(np.float64), edge_index, num_pos, enc
+                    ).astype(np.float32)
+                    x_raw = np.concatenate([x_raw, pos_feat], axis=1)
+                x_norm = (x_raw - node_mean) / node_std
 
                 # --- c. Add node type one-hot if enabled ---
                 if use_node_types and part_ids is not None and node_type_to_idx is not None:
@@ -437,30 +445,32 @@ def run_rollout(config, config_filename='config.txt'):
             data_grp = f.create_group('data')
             sample_grp = data_grp.create_group(str(sample_id))
 
-            # Build nodal_data: [8, timesteps, nodes]
-            # Features: [x, y, z, x_disp, y_disp, z_disp, stress, part_number]
-            nodal_data = np.zeros((8, steps_this_sample + 1, num_nodes), dtype=np.float32)
+            # out_nodal: [8, timesteps, nodes]. Channels not predicted keep t=0 values from input.
+            src_nodal = nodal_data
+            out_nodal = np.zeros((8, steps_this_sample + 1, num_nodes), dtype=np.float32)
 
-            # Reference position (constant across timesteps)
-            nodal_data[0, :, :] = ref_pos[:, 0]  # x_coord
-            nodal_data[1, :, :] = ref_pos[:, 1]  # y_coord
-            nodal_data[2, :, :] = ref_pos[:, 2]  # z_coord
+            out_nodal[0, :, :] = ref_pos[:, 0]
+            out_nodal[1, :, :] = ref_pos[:, 1]
+            out_nodal[2, :, :] = ref_pos[:, 2]
 
-            # Displacements and stress from predicted states
-            # all_states shape: [steps+1, nodes, output_dim] where output_dim=4
-            nodal_data[3, :, :] = all_states[:, :, 0]  # x_disp
-            nodal_data[4, :, :] = all_states[:, :, 1]  # y_disp
-            nodal_data[5, :, :] = all_states[:, :, 2]  # z_disp
-            nodal_data[6, :, :] = all_states[:, :, 3]  # stress
+            for ch in range(4):
+                fi = 3 + ch
+                if ch < output_dim:
+                    out_nodal[fi, :, :] = all_states[:, :, ch]
+                elif fi < src_nodal.shape[0]:
+                    out_nodal[fi, :, :] = src_nodal[fi, 0:1, :]
+                else:
+                    out_nodal[fi, :, :] = 0.0
 
-            # Part number (constant across timesteps)
             if part_ids is not None:
-                nodal_data[7, :, :] = part_ids[np.newaxis, :]
+                out_nodal[7, :, :] = part_ids[np.newaxis, :]
+            elif src_nodal.shape[0] > 7:
+                out_nodal[7, :, :] = src_nodal[7, 0:1, :]
             else:
-                nodal_data[7, :, :] = 0  # Default if no part info
+                out_nodal[7, :, :] = 0.0
 
             sample_grp.create_dataset(
-                'nodal_data', data=nodal_data,
+                'nodal_data', data=out_nodal,
                 compression='gzip', compression_opts=4
             )
 
@@ -487,10 +497,10 @@ def run_rollout(config, config_filename='config.txt'):
                 b'x_disp(mm)', b'y_disp(mm)', b'z_disp(mm)',
                 b'stress(MPa)', b'Part No.'
             ])
-            feature_min = np.array([nodal_data[i].min() for i in range(8)], dtype=np.float32)
-            feature_max = np.array([nodal_data[i].max() for i in range(8)], dtype=np.float32)
-            feature_mean = np.array([nodal_data[i].mean() for i in range(8)], dtype=np.float32)
-            feature_std = np.array([nodal_data[i].std() for i in range(8)], dtype=np.float32)
+            feature_min = np.array([out_nodal[i].min() for i in range(8)], dtype=np.float32)
+            feature_max = np.array([out_nodal[i].max() for i in range(8)], dtype=np.float32)
+            feature_mean = np.array([out_nodal[i].mean() for i in range(8)], dtype=np.float32)
+            feature_std = np.array([out_nodal[i].std() for i in range(8)], dtype=np.float32)
 
             meta_grp.create_dataset('feature_min', data=feature_min)
             meta_grp.create_dataset('feature_max', data=feature_max)
