@@ -98,10 +98,13 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         print("\nSplitting dataset...")
     split_seed = int(config.get('split_seed', 42))
     train_dataset, val_dataset, test_dataset = dataset.split(0.8, 0.1, 0.1, seed=split_seed)
+    del dataset  # Free parent dataset on all ranks; subsets are independent
     if rank == 0:
         print("Writing train-derived normalization stats to HDF5...")
         train_dataset.write_preprocessing_to_hdf5(split_seed)
     dist.barrier()
+    if rank != 0:
+        del val_dataset, test_dataset
 
     # Pass dataset metadata to config for model construction
     config['num_timesteps'] = train_dataset.num_timesteps
@@ -131,7 +134,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=8 if num_workers > 0 else None,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     if rank == 0:
@@ -142,22 +145,23 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
             num_workers=num_workers,
             pin_memory=True,
             persistent_workers=num_workers > 0,
-            prefetch_factor=8 if num_workers > 0 else None,
+            prefetch_factor=2 if num_workers > 0 else None,
         )
     else:
         val_loader = None
 
-    # Test loader only needed on rank 0 (no DDP forward, uses unwrapped model)
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=1,
-        shuffle=True,
-        pin_memory=True
-    )
+    # Test loader / eval helpers only needed on rank 0
     if rank == 0:
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=1,
+            shuffle=True,
+            pin_memory=True
+        )
         train_eval_subset_size = min(len(train_dataset), int(config.get('train_eval_subset_size', 128)))
         train_eval_rng = np.random.default_rng(split_seed)
     else:
+        test_loader = None
         train_eval_subset_size = None
         train_eval_rng = None
     if torch.cuda.is_available() and rank == 0:

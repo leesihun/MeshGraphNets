@@ -66,7 +66,7 @@ def single_worker(config, config_filename='config.txt'):
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=8 if num_workers > 0 else None,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     val_loader = DataLoader(
@@ -76,7 +76,7 @@ def single_worker(config, config_filename='config.txt'):
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=num_workers > 0,
-        prefetch_factor=8 if num_workers > 0 else None,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     test_loader = DataLoader(
