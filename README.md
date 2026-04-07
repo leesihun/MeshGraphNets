@@ -2,7 +2,7 @@
 
 A Graph Neural Network surrogate model for FEA (Finite Element Analysis) mesh simulations, based on the [DeepMind MeshGraphNets](https://arxiv.org/abs/2010.03409) architecture with extensions for multiscale processing, positional encoding, mixed-precision training, and distributed training.
 
-Developed by SiHun Lee, Ph.D., MX, SEC — Version 1.0.0 (2026-01-06).
+Implemented by SiHun Lee, MX, SE.
 
 ## What it does
 
