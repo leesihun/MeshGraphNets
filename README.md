@@ -1,119 +1,228 @@
-# MeshGraphNets
+# MeshGraphNets - Variational (Hi-MGN-V)
 
-A Graph Neural Network surrogate model for FEA (Finite Element Analysis) mesh simulations, based on the [DeepMind MeshGraphNets](https://arxiv.org/abs/2010.03409) architecture with extensions for multiscale processing, positional encoding, mixed-precision training, and distributed training.
+This repository implements Hi-MGN-V, a probabilistic surrogate for
+**manufacturing spread modeling**. The training dataset contains multiple
+manufactured objects that share the same mesh topology but produce different
+physical outputs (displacement, warpage, stress) due to real production
+variability. Hi-MGN-V learns the spread of that output distribution and
+generates realistic samples that follow the patterns of the training data.
+At inference time the number of generated samples can exceed the training
+set size, enabling extrapolation of spread structure across part variants.
 
 Implemented by SiHun Lee, MX, SEC.
 
-## What it does
+The architecture is a MeshGraphNets-style graph neural network with optional
+hierarchical V-cycle processing, optional world edges, and an MMD-VAE latent
+branch that injects a graph-level stochastic code `z` into every processor
+block. A mesh-conditioned post-hoc prior `p(z|graph)` maps each part type
+to its spread distribution at inference time.
 
-Given a mesh at time *t* (node positions + physical state), the model predicts the state at time *t+1* as a **delta**. At inference time it rolls out autoregressively over many timesteps. The primary application is warpage/deformation prediction in manufacturing FEA.
+The executable entry point is [MeshGraphNets_main.py](MeshGraphNets_main.py).
 
-## Setup
+## Current Runtime Truth
 
-Requires PyTorch + PyTorch Geometric. Common extras:
+The code has four modes, selected inside the config file:
 
-```bash
-# HDF5 datasets + rollout I/O
-pip install h5py scipy
+| Mode | What runs |
+|------|-----------|
+| `train` | Train the simulator. If `use_vae True` and `fit_latent_gmm True`, fit legacy GMM after training. If `train_conditional_prior True`, also train the conditional prior after training. |
+| `train_with_prior` | Same simulator training path as `train`, but the launcher sets `train_conditional_prior True` before training. |
+| `train_prior` | Load an existing VAE-MGN checkpoint and train only the mesh-conditioned prior into that checkpoint. |
+| `inference` | Run autoregressive rollout from an HDF5 initial-condition dataset. |
 
-# World edges (long-range connections)
-pip install torch-cluster
+Inference samples VAE latents in this priority order:
 
-# GIF visualization utilities
-pip install matplotlib pillow
-```
+1. Mesh-conditioned prior, only when `use_vae True`, `use_conditional_prior True`,
+   and the checkpoint contains `conditional_prior_state_dict`.
+2. Legacy checkpoint GMM, when present.
+3. Standard normal `N(0, I)`.
 
-Set `HDF5_USE_FILE_LOCKING=FALSE` in your environment if running on shared storage.
+Important caveat: rollout loads `checkpoint['model_config']` and lets those keys
+override the inference config before it decides whether `use_conditional_prior` is
+enabled. If the checkpoint was saved with `use_conditional_prior False`, setting it
+only in an inference config can be overwritten. The safest conditional-prior path is
+to train or refresh the checkpoint with the conditional-prior keys present.
 
-## Running
+## Quick Start
 
-```bash
-# Training example (flag_simple cloth dataset)
-python MeshGraphNets_main.py --config _warpage_input/config_train_flag_simple.txt
-
-# Inference / autoregressive rollout example (ConcreteShellFEA)
-python MeshGraphNets_main.py --config _warpage_input/config_infer_concreteshellfea.txt
-```
-
-The same entry point handles single GPU, multi-GPU DDP, or CPU based on `gpu_ids`. Use `gpu_ids -1` to force CPU. The `--config` flag defaults to `config.txt`, and `mode` is set inside the config file.
-
-For inference, the checkpoint overrides overlapping model config keys. If `positional_features > 0`, rollout recomputes positional features from the reference mesh before normalization, so `positional_features`, `positional_encoding`, and `use_node_types` should stay aligned with the training run.
-
-New example configs:
-- `_warpage_input/config_train_flag_simple.txt` - multiscale `flag_simple` training with node types, world edges, AMP, and EMA
-- `_warpage_input/config_infer_concreteshellfea.txt` - ConcreteShellFEA rollout with multiscale inference and positional features
-
-See [config_run_docs.md](config_run_docs.md) for a full reference of all configuration keys.
-
-## Dataset Format
-
-HDF5 samples live under `data/<id>/` and store:
-- `nodal_data` with shape **`[features, time, nodes]`**
-- `mesh_edge` with shape **`[2, edges]`**
-
-`nodal_data` uses this channel layout:
-
-| Index | Feature |
-|---|---|
-| 0–2 | x, y, z (reference coordinates) |
-| 3–5 | x\_disp, y\_disp, z\_disp |
-| 6 | stress (von Mises or equivalent) |
-| 7 | part\_number (optional) |
-
-## Outputs
-
-Training checkpoints are saved to the path specified by `modelpath`. Each checkpoint contains:
-- Model weights (and optionally `ema_state_dict`)
-- Optimizer state
-- Normalization statistics under `checkpoint['normalization']`
-- Per-level coarse edge stats if multiscale is enabled
-
-Inference outputs are written to `inference_output_dir` (default `outputs/rollout`) as `rollout_sample{id}_steps{N}.h5`.
-
-Saved rollout files keep the standard 8-row `nodal_data` layout:
-- Rows `0-2` store the reference coordinates for every timestep
-- Predicted outputs start at row `3`
-- Any unpredicted rows are copied from the input sample at `t=0`
-- Part IDs are preserved when present
-
-Loss and validation curves are written to the file specified by `log_file_dir`. Use `misc/plot_loss.py` or `misc/plot_loss_realtime.py` to visualize.
-
-## Utility Scripts
-
-The old root-level `animate_h5.py` now lives at `scripts/animate_h5.py`.
+Historical VAE/GMM workflow:
 
 ```bash
-# Create GIF views from a rollout HDF5
-python scripts/animate_h5.py outputs/rollout/rollout_sample0_steps34.h5 --views 3d_iso xz --color-by displacement
-
-# Concatenate same-prefix *_3D_iso.gif clips into one timeline
-python scripts/append_prefix_gifs.py --prefix flag_simple sphere_simple
+python MeshGraphNets_main.py --config _warpage_input/config_train5.txt
+python MeshGraphNets_main.py --config _warpage_input/config_infer4.txt
 ```
 
-`scripts/animate_h5.py` supports `xz`, `xy`, `yz`, `3d_iso`, and `3d_top` views, plus `auto` or displacement-magnitude coloring. `scripts/append_prefix_gifs.py` combines matching GIF clips in the repo root.
+Current B8 all-warpage inference configs request the mesh-conditioned prior:
+
+```bash
+python MeshGraphNets_main.py --config _b8_all_warpage_input/config_infer1.txt
+python MeshGraphNets_main.py --config _b8_all_warpage_input/config_infer2.txt
+```
+
+The paired `_b8_all_warpage_input/config_train1.txt` and `config_train2.txt` files
+are currently `mode train` and still contain legacy GMM keys. To produce a checkpoint
+that contains the conditional prior, use either `mode train_with_prior` for the
+simulator training run or run a separate `mode train_prior` config against a trained
+VAE checkpoint.
 
 ## Architecture
 
-**Encode–Process–Decode** GNN operating on FEA mesh graphs:
+The model is implemented in [model/MeshGraphNets.py](model/MeshGraphNets.py).
 
-- **Encoder:** Independent MLPs encode node features and edge features to a shared latent dimension.
-- **Processor:** Stack of GnBlocks (EdgeBlock → NodeBlock with residual connections). Supports a multiscale BFS Bi-Stride V-cycle (ICML 2023) for hierarchical processing.
-- **Decoder:** MLP from latent to predicted normalized state delta. No LayerNorm on the output layer.
+Node input features are:
 
-**Edge features** are 8D: `[deformed_dx/dy/dz/dist, ref_dx/dy/dz/dist]`. Edges are always bidirectional.
+```text
+physical state channels from nodal_data[3:3+input_var]
++ optional positional features
++ optional one-hot node types
+```
 
-**Prediction:** Normalized delta (`Δstate`). Denormalized and added to current state: `state_{t+1} = state_t + delta`.
+Edge features are always 8-D and validated against `edge_var 8`:
 
-## Key Config Sections
+```text
+[deformed_dx, deformed_dy, deformed_dz, deformed_dist,
+ ref_dx,      ref_dy,      ref_dz,      ref_dist]
+```
 
-| Section | Purpose |
-|---|---|
-| Mode / GPU | `mode`, `gpu_ids` |
-| Paths | `modelpath`, `dataset_dir`, `infer_dataset`, `log_file_dir`, `inference_output_dir` |
-| Model size | `Latent_dim`, `message_passing_num` |
-| Training | `LearningR`, `Training_epochs`, `Batch_size`, `use_amp`, `use_ema` |
-| Features | `input_var`, `output_var`, `edge_var`, `positional_features`, `positional_encoding`, `use_node_types` |
-| Multiscale | `use_multiscale`, `multiscale_levels`, `mp_per_level` |
-| Inference | `infer_timesteps` |
+The base model is:
 
-Full documentation: [config_run_docs.md](config_run_docs.md)
+```text
+Encoder: node MLP + mesh edge MLP (+ world edge MLP when enabled)
+Processor:
+  flat: message_passing_num GnBlocks
+  multiscale: pre blocks -> pool -> coarsest blocks -> unpool/skip -> post blocks
+Decoder: node MLP to normalized delta
+```
+
+MLPs are built by [model/mlp.py](model/mlp.py): `Linear -> SiLU -> Linear -> SiLU
+-> Linear`, with a final `LayerNorm` only when `layer_norm=True`. Decoder and prior
+heads omit final LayerNorm.
+
+When `use_vae True`, [model/vae.py](model/vae.py) encodes the training target
+delta `y` into a graph-level latent `z`. The sampled `z` is broadcast to nodes and
+fused into each processor block. Training uses reconstruction Huber loss plus MMD
+and auxiliary latent losses. Optional `free_bits` adds a KL floor as a collapse
+safeguard.
+
+For manufacturing spread modeling the key tuning levers are:
+- `lambda_mmd 0.1` — keep low; z must retain structured spread, not collapse to N(0,I).
+- `beta_aux 1.0` — anchors z to per-graph output statistics; prevents mode collapse.
+- `lambda_det 0.0` — deterministic auxiliary loss must be disabled for spread modeling.
+- `vae_graph_aware True` — posterior encoder sees graph inputs alongside target y,
+  enabling type-conditional spread encoding across part variants.
+
+The post-hoc conditional prior is [model/conditional_prior.py](model/conditional_prior.py):
+a graph encoder predicts mixture logits, means, and diagonal log-stds for
+`p(z | graph)`. [training_profiles/posthoc_prior.py](training_profiles/posthoc_prior.py)
+trains it from frozen VAE posterior samples and saves it into the same checkpoint.
+For spread modeling this prior is essential: it routes each part type to its own
+spread distribution at inference time rather than sampling from a global N(0,I).
+
+## Data
+
+HDF5 samples use:
+
+```text
+data/{sample_id}/nodal_data    float32 [features, timesteps, nodes]
+data/{sample_id}/mesh_edge     int64   [2, edges]
+```
+
+Default feature layout:
+
+| Index | Field | Used as |
+|-------|-------|---------|
+| `0:3` | reference `x,y,z` | Geometry only, never part of `input_var` |
+| `3:6` | displacement `x,y,z` | Default physical input and output |
+| `6` | stress | Used when `input_var/output_var` include it |
+| `7` | part number | One-hot node type source when `use_node_types True` |
+
+For multi-step data, each training item is `(sample_id, t)` and the target is
+`state[t+1] - state[t]`. For single-step data, the input physical state is zero and
+the target is the stored state.
+
+The dataset class always creates a deterministic 80/10/10 split from sample IDs
+using `split_seed`; it does not consume existing HDF5 split datasets. Training
+statistics are fit on the train split and saved to the checkpoint under
+`checkpoint['normalization']`.
+
+More detail: [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md).
+
+## Training
+
+Single-process training is in
+[training_profiles/single_training.py](training_profiles/single_training.py).
+DDP training is in
+[training_profiles/distributed_training.py](training_profiles/distributed_training.py).
+
+`gpu_ids` controls the launcher:
+
+| Value | Behavior |
+|-------|----------|
+| `-1` | CPU when CUDA is unavailable or not selected |
+| `0` | Single GPU |
+| `0,1` | PyTorch DDP via `mp.spawn` |
+
+`parallel_mode model_split` activates the experimental pipeline split launcher in
+[parallelism/launcher.py](parallelism/launcher.py). It slices the processor across
+GPUs and saves a merged checkpoint for normal inference.
+
+Training uses:
+
+| Component | Current code |
+|-----------|--------------|
+| Loss | Huber on normalized deltas, optional normalized feature weights |
+| Optimizer | Adam, fused on CUDA |
+| Schedule | Linear warmup then `CosineAnnealingWarmRestarts` |
+| Grad clip | `max_norm=3.0` |
+| AMP | bfloat16 autocast when `use_amp True` |
+| EMA | optional `AveragedModel`; rollout prefers EMA weights |
+| DataLoader | PyG `DataLoader`, spawn workers, `prefetch_factor=1`, pinned memory on CUDA |
+
+## Inference
+
+[inference_profiles/rollout.py](inference_profiles/rollout.py) performs
+autoregressive rollout:
+
+```text
+state_t -> normalize graph -> model predicts normalized delta
+        -> denormalize delta -> state_{t+1} = state_t + delta
+```
+
+For each input scene and each VAE sample draw, rollout writes:
+
+```text
+{inference_output_dir}/rollout_sample{sample_id}_steps{N}.h5
+{inference_output_dir}/rollout_sample{sample_id}_vaesample{idx}_steps{N}.h5
+```
+
+The latent `z` is sampled once per trajectory and held fixed across rollout steps.
+When the conditional prior is active, the first graph is built before sampling so
+`z` is conditioned on that mesh and initial state. Set `num_vae_samples` larger
+than the training set size to generate more spread samples than were observed;
+the conditional prior extrapolates within the learned spread distribution for each
+part type.
+
+## Documentation Map
+
+| File | Purpose |
+|------|---------|
+| [QUICKSTART.md](QUICKSTART.md) | Short run guide and workflow warnings |
+| [CLAUDE.md](CLAUDE.md) | Agent-facing engineering map |
+| [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) | Current config keys and semantics |
+| [docs/MESHGRAPHNET_ARCHITECTURE.md](docs/MESHGRAPHNET_ARCHITECTURE.md) | Architecture details grounded in live code |
+| [docs/multiscale_coarsening.md](docs/multiscale_coarsening.md) | Hierarchical V-cycle and coarsening |
+| [docs/WORLD_EDGES_DOCUMENTATION.md](docs/WORLD_EDGES_DOCUMENTATION.md) | World-edge runtime path |
+| [hierarchical_interpolation_mgn_comparison.md](hierarchical_interpolation_mgn_comparison.md) | Paper-style comparison for deterministic hierarchical MGN |
+
+## Installation
+
+Install a PyTorch build matching your CUDA environment, then install project deps:
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements.txt
+```
+
+`torch-cluster` is optional unless `world_edge_backend torch_cluster` is requested.
+The code falls back to scipy KDTree world-edge construction when torch-cluster is not
+available.
