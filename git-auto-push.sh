@@ -9,7 +9,11 @@ if [ "$BRANCH" = "HEAD" ]; then
     exit 1
 fi
 
-COMMIT_MESSAGE="${*:-$(date '+%Y-%m-%d %H:%M:%S')}"
+if [ "$#" -gt 0 ]; then
+    COMMIT_MESSAGE="$*"
+else
+    printf -v COMMIT_MESSAGE '%(%Y-%m-%d %H:%M:%S)T' -1
+fi
 
 echo "Staging changes..."
 git add -A
