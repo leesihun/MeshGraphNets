@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -u
+set -euo pipefail
 
 REMOTE="${REMOTE:-origin}"
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -21,17 +21,20 @@ else
     echo "No file changes to commit."
 fi
 
-if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+echo "Fetching $REMOTE..."
+git fetch "$REMOTE"
+
+UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+if [ -z "$UPSTREAM" ]; then
+    if git show-ref --verify --quiet "refs/remotes/$REMOTE/$BRANCH"; then
+        UPSTREAM="$REMOTE/$BRANCH"
+    fi
     echo "No upstream configured. Setting upstream to $REMOTE/$BRANCH on push."
     PUSH_ARGS=(-u "$REMOTE" "$BRANCH")
 else
     PUSH_ARGS=()
 fi
 
-echo "Fetching $REMOTE..."
-git fetch "$REMOTE"
-
-UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
 if [ -n "$UPSTREAM" ]; then
     BEHIND="$(git rev-list --count "HEAD..$UPSTREAM")"
     if [ "$BEHIND" -gt 0 ]; then
@@ -42,8 +45,16 @@ if [ -n "$UPSTREAM" ]; then
     fi
 fi
 
+push_with_timeout() {
+    if [ -x /usr/bin/timeout ]; then
+        /usr/bin/timeout 60 "$@"
+    else
+        "$@"
+    fi
+}
+
 echo "Pushing to remote..."
-if timeout 60 git push "${PUSH_ARGS[@]}" 2>&1; then
+if push_with_timeout git push "${PUSH_ARGS[@]}"; then
     echo "Successfully pushed to remote!"
 else
     echo "Error: failed to push. Changes remain committed locally."
