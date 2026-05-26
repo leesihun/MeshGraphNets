@@ -1,12 +1,11 @@
 # Hierarchical Interpolation MeshGraphNets: Literature Comparison
 
 Research status: May 13, 2026; deterministic-code recheck: May 26, 2026
-Scope: the current repository's deterministic hierarchical / multiscale MeshGraphNets path only. The conditional VAE, latent GMM, MMD objective, and stochastic rollout machinery are intentionally excluded.
+Scope: the current repository's deterministic hierarchical / multiscale MeshGraphNets path.
 
-May 26, 2026 recheck note: this repo also contains active VAE, conditional-prior,
-world-edge, and model-split code. This comparison intentionally keeps those
-stochastic and runtime-scaling paths out of scope so the deterministic
-hierarchical interpolation claims remain clean.
+May 26, 2026 recheck note: this checkout is deterministic-only. World-edge and
+model-split runtime paths are implementation details; the comparison below keeps
+the paper claims focused on hierarchical interpolation.
 
 This document covers (i) direct hierarchical mesh-GNN neighbors, (ii) generic hierarchical graph pooling, (iii) recent mesh-transformer hybrids that compete on the same long-range communication problem, and (iv) alternative modeling paradigms (neural operators, point-based architectures, full-attention solvers) that target the same surrogate problem but step outside the mesh-GNN family entirely.
 
@@ -30,7 +29,7 @@ The strongest novelty angle for an introduction is not "multiscale GNNs exist"; 
 
 ---
 
-## 2. Current Implementation, Excluding VAE
+## 2. Current Implementation
 
 ### 2.1 Base Simulator
 
@@ -84,7 +83,6 @@ voronoi_clusters    5000
 multiscale_levels   1
 mp_per_level        2, 12, 2
 bipartite_unpool    True
-use_vae             False
 ```
 
 For this configuration, the model performs two fine-level pre blocks, pools to a 5000-node coarse graph, performs twelve coarse-level blocks, learned-unpools back to the fine graph, merges with the fine skip state, and performs two fine-level post blocks.
@@ -1148,8 +1146,7 @@ targets:
   MS-MGN, AND a transformer-style baseline (Transolver) on multiple benchmarks
   with full ablations, (b) a theoretical statement about what boundary-induced
   FPS-Voronoi coarsening preserves that competing schemes do not, (c) a million-
-  node scale demonstration, or (d) the variational/VAE branch that is excluded
-  from this comparison. Without one of these, the deterministic-only paper is
+  node scale demonstration. Without one of these, the deterministic-only paper is
   best routed to CMAME/TMLR.
 
 ---

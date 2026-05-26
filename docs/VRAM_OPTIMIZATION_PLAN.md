@@ -23,13 +23,11 @@ through `model/MeshGraphNets.py`.
 Flat processor:
 
 - `process_with_checkpointing` checkpoints each `GnBlock`.
-- Optional VAE `z` fusion is applied before the checkpointed block.
 - World-edge tensors are preserved across the wrapper.
 
 Multiscale processor:
 
 - the same helper is used for pre, coarsest, and post block lists
-- per-arm VAE fusers are supported
 - world-edge tensors are only present on the fine-level blocks
 
 Use:
@@ -126,7 +124,6 @@ Current model-split limitations:
 - it is a simulator-training path only
 - it logs training loss and saves that value as `valid_loss`
 - it does not run the standard validation/test visualization loop
-- it does not run post-hoc conditional-prior training or legacy GMM fitting
 - if profiling OOMs, the equal-split fallback uses `message_passing_num` as the
   fallback block count, so multiscale configs should keep that value consistent
   with the intended processor size

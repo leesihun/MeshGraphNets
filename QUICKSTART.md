@@ -1,39 +1,22 @@
 # QUICKSTART
 
-This is the short operational guide for this checkout. For details, read
-[README.md](README.md), [CLAUDE.md](CLAUDE.md), and
+This is the short operational guide for the deterministic MeshGraphNets checkout.
+For details, read [README.md](README.md), [CLAUDE.md](CLAUDE.md), and
 [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md).
-
-**Goal**: Hi-MGN-V models manufacturing spread: generating realistic diverse
-samples from a trained VAE surrogate. With `use_vae True`, normal `mode train`
-now trains the post-hoc conditional prior by default unless
-`train_conditional_prior False` is set. Set `num_vae_samples` larger than the
-training set size at inference time when you want many spread samples.
 
 ## Fast Commands
 
-Existing legacy VAE/GMM training and rollout examples:
+Train:
 
 ```bash
-python MeshGraphNets_main.py --config _warpage_input/config_train5.txt
-python MeshGraphNets_main.py --config _warpage_input/config_infer4.txt
+python MeshGraphNets_main.py --config ex1/config_train1.txt
+python MeshGraphNets_main.py --config _warpage_input_deterministic/config_train3.txt
 ```
 
-B8 all-warpage training configs currently checked in:
+Roll out:
 
 ```bash
-python MeshGraphNets_main.py --config _b8_all_warpage_input/config_train1.txt
-python MeshGraphNets_main.py --config _b8_all_warpage_input/config_train2.txt
-```
-
-No `_b8_all_warpage_input/config_infer*.txt` file is present in this checkout.
-Use an existing `mode inference` config as a template and point `modelpath`,
-`infer_dataset`, `inference_output_dir`, and `num_vae_samples` at the B8 run.
-
-Conditional-prior-only training, if you create a config with `mode train_prior`:
-
-```bash
-python MeshGraphNets_main.py --config path/to/config_train_prior.txt
+python MeshGraphNets_main.py --config ex1/config_infer1.txt
 ```
 
 `mode` is read from the config file. The CLI only selects the config path.
@@ -44,10 +27,8 @@ Training needs:
 
 - `dataset_dir` exists.
 - Every GPU in `gpu_ids` is visible.
-- Do not rely on `gpu_ids -1` for CPU training on a CUDA-visible host; the
-  training path falls back to CPU only when CUDA is unavailable.
 - `edge_var` is `8`; the model rejects any other edge feature count.
-- `modelpath` parent directory exists or can be created by the checkpoint save path.
+- `modelpath` parent directory already exists; checkpoint save does not create it.
 
 Inference needs:
 
@@ -67,64 +48,32 @@ dir outputs
 
 | Mode | Use it for |
 |------|------------|
-| `train` | Train the simulator; with `use_vae True`, train the mesh-conditioned prior by default, then optionally fit legacy GMM if `fit_latent_gmm True`. |
-| `train_with_prior` | Backward-compatible alias for `train`; retained for older configs. |
-| `train_prior` | Train only the mesh-conditioned prior from an existing VAE checkpoint. |
-| `inference` | Autoregressive rollout. |
+| `train` | Deterministic simulator training. |
+| `inference` | Deterministic autoregressive rollout. |
 
-## Spread Modeling Config Checklist
-
-For manufacturing spread modeling, verify these keys before training:
-
-| Key | Recommended | Why |
-|-----|-------------|-----|
-| `use_vae` | `True` | VAE is required for spread sampling |
-| `vae_graph_aware` | `True` | Type-conditional spread encoding |
-| `lambda_mmd` | `0.1` | Low: preserve structured spread in z |
-| `beta_aux` | `1.0` | High: prevent mode/posterior collapse |
-| `lambda_det` | `0.0` | Zero: det pass conflicts with spread objective |
-| `vae_latent_dim` | `32` | Full capacity for spread representation |
-| `mode` | `train` | Trains simulator + conditional prior in one run unless `train_conditional_prior False` |
-| `num_vae_samples` | > dataset size | Extrapolates spread at inference time |
-
-## Active Prior Warning
-
-The code has two VAE inference priors:
-
-1. `conditional_prior_state_dict`: mesh-conditioned mixture prior.
-2. `gmm_params`: legacy global GMM over posterior means.
-
-Rollout prefers the conditional prior only when `use_conditional_prior` is still
-true after checkpoint `model_config` overrides the config. If a checkpoint was saved
-with `use_conditional_prior False`, an inference config can be overwritten. When
-debugging stochastic rollout, inspect the startup log line:
-
-```text
-VAE sampling: ... prior=conditional mixture prior
-```
-
-If it says `legacy GMM` or `N(0, I)`, the conditional prior is not active.
+Legacy branch modes, model names, keys, and checkpoints fail fast instead of
+being treated as active options.
 
 ## Config Gotchas
 
 - Keys are lowercased by the parser.
 - Full-line comments use `%`; inline comments use `#`.
-- Booleans are parsed case-insensitively (`True`, `true`, `False`, `false` all work).
+- Booleans are parsed case-insensitively.
 - Comma lists are stripped and parsed as numbers when possible.
 - `gpu_ids 0,1` triggers DDP unless `parallel_mode model_split` is set.
-- `message_passing_num` is ignored by the model when `use_multiscale True`; the
-  V-cycle uses `mp_per_level`.
-- `parallel_mode model_split` is an experimental memory-fit training path. It
-  does not run the standard validation/test visualization or post-training prior/GMM stages.
+- `message_passing_num` is ignored when `use_multiscale True`; the V-cycle uses
+  `mp_per_level`.
 - `mp_per_level` must have `2 * multiscale_levels + 1` entries.
 - `positional_features` increases node input size before normalization.
 - Node type one-hot features are appended after node normalization.
+- `parallel_mode model_split` is a memory-fit training path that saves a merged
+  checkpoint for normal rollout.
 
 ## Outputs
 
 | Output | Source |
 |--------|--------|
-| `outputs/*.pth` | Checkpoints with weights, optimizer/scheduler state, normalization, model_config, optional EMA, optional prior/GMM |
+| `outputs/*.pth` | Checkpoints with weights, optimizer/scheduler state, normalization, model_config, optional EMA |
 | `outputs/<log_file_dir>` | Epoch logs from training |
 | `outputs/test/...` | Per-epoch test reconstruction HDF5/PNG |
 | `outputs/train/...` | Optional train-set reconstruction HDF5/PNG |
@@ -134,9 +83,9 @@ If it says `legacy GMM` or `N(0, I)`, the conditional prior is not active.
 
 | Symptom | Check |
 |---------|-------|
+| Legacy-branch error | Use a current deterministic config or checkpoint. |
 | `FileNotFoundError` for HDF5 | `dataset_dir` or `infer_dataset` path is wrong or missing. |
 | Checkpoint missing normalization | Re-train or re-save with current training code. |
 | Size mismatch on load | Checkpoint `model_config` disagrees with the model architecture. |
-| Conditional prior not used | Check rollout startup log and checkpoint `model_config['use_conditional_prior']`. |
 | DDP hang | Drop to one GPU, then retry with visible `gpu_ids`; the launcher chooses a free port automatically. |
 | NaN/Inf or fp16 overflow | Keep `use_amp True`; current AMP path uses bfloat16, not fp16. |

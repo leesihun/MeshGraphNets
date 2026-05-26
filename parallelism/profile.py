@@ -116,8 +116,7 @@ def profile_activation_memory(
             try:
                 _ = model(probe_batch)
             except TypeError:
-                # Top-level MeshGraphNets.forward signature is (graph, debug, add_noise, use_posterior, fixed_z)
-                _ = model(probe_batch, add_noise=False, use_posterior=False)
+                _ = model(probe_batch, add_noise=False)
     finally:
         for h in handles:
             h.remove()

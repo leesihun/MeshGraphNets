@@ -98,8 +98,7 @@ state updates.
 ## Rollout Output
 
 Autoregressive rollout uses a different HDF5 schema. It writes one dataset-like
-file per sample or per VAE sample under `inference_output_dir` or
-`outputs/rollout`.
+file per sample under `inference_output_dir` or `outputs/rollout`.
 
 The rollout `nodal_data` layout is:
 

@@ -1,4 +1,4 @@
-"""Fail-fast checks for probabilistic features removed from this checkout."""
+"""Fail-fast checks for legacy branch artifacts removed from this checkout."""
 
 REMOVED_MODES = {
     "train_prior",
@@ -72,7 +72,7 @@ def _format_list(values):
 
 
 def validate_config(config, source="configuration"):
-    """Reject old probabilistic modes, model names, and keys."""
+    """Reject old branch modes, model names, and keys."""
     mode = str(config.get("mode", "")).lower()
     if mode in REMOVED_MODES:
         raise ValueError(f"Unsupported mode '{mode}' in {source}; this checkout supports only 'train' and 'inference'.")
@@ -83,14 +83,14 @@ def validate_config(config, source="configuration"):
 
     removed_keys = REMOVED_CONFIG_KEYS.intersection(config.keys())
     if removed_keys:
-        raise ValueError(f"{source} contains removed probabilistic keys: {_format_list(removed_keys)}")
+        raise ValueError(f"{source} contains removed legacy branch keys: {_format_list(removed_keys)}")
 
 
 def validate_checkpoint(checkpoint, source="checkpoint"):
-    """Reject checkpoints saved from the removed stochastic branch."""
+    """Reject checkpoints saved from the removed legacy branch."""
     top_level = REMOVED_CHECKPOINT_KEYS.intersection(checkpoint.keys())
     if top_level:
-        raise ValueError(f"{source} contains removed probabilistic artifacts: {_format_list(top_level)}")
+        raise ValueError(f"{source} contains removed legacy branch artifacts: {_format_list(top_level)}")
 
     model_config = checkpoint.get("model_config", {})
     if isinstance(model_config, dict):
@@ -106,4 +106,4 @@ def validate_checkpoint(checkpoint, source="checkpoint"):
         ]
         if bad:
             sample = ", ".join(sorted(bad)[:5])
-            raise ValueError(f"{source} {state_key} contains removed probabilistic weights: {sample}")
+            raise ValueError(f"{source} {state_key} contains removed legacy branch weights: {sample}")
