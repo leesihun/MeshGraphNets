@@ -215,8 +215,8 @@ fine_to_coarse_i
 coarse_edge_index_i
 coarse_edge_attr_i
 num_coarse_i
+coarse_centroid_i
 optional unpool_edge_index_i
-optional coarse_centroid_i
 ```
 
 Coarse edge normalizers are saved into checkpoints as:

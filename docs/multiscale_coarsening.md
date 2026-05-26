@@ -86,7 +86,8 @@ This method requires reference positions. It gives direct control over the
 coarse graph size through `voronoi_clusters`.
 
 Use it when the model must fit a fixed or aggressive coarse resolution, for
-example the `_b8_all_warpage_input` configs with `voronoi_clusters 200`.
+example `_b8_all_warpage_input/config_train2.txt` with `voronoi_clusters 200`
+or `config_train1.txt` with a two-level `2000, 500` schedule.
 
 ## Iterative Hierarchy
 
@@ -173,14 +174,14 @@ on the original fine graph. Coarse processor blocks are built with
 skip state so the ascending fine-level post blocks can still use them.
 
 Set `coarse_world_edges True` to lift world edges to every coarse level. For each
-fine world edge (u, v) where `fine_to_coarse[u] ≠ fine_to_coarse[v]`, a coarse
+fine world edge (u, v) where `fine_to_coarse[u] != fine_to_coarse[v]`, a coarse
 world edge is added between the cluster centroids. Lifting is applied iteratively
 across levels so contact topology is consistent at all scales. Coarse GnBlocks
 receive explicit contact-graph awareness, which matters for contact-rich FEA where
 contact has large-scale structural consequences (e.g. multi-body assemblies).
 
 Without `coarse_world_edges`, coarser message-passing stages that capture global
-load redistribution have no direct awareness of contact topology — contact effects
+load redistribution have no direct awareness of contact topology; contact effects
 are present only implicitly through the pooled fine-level node features.
 
 ## Failure Checks

@@ -4,26 +4,31 @@ This is the short operational guide for this checkout. For details, read
 [README.md](README.md), [CLAUDE.md](CLAUDE.md), and
 [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md).
 
-**Goal**: Hi-MGN-V models manufacturing spread — generating realistic diverse
-samples from a trained VAE surrogate. Use `train_with_prior` to produce a
-checkpoint suitable for spread sampling, and set `num_vae_samples` larger than
-the training set size at inference time.
+**Goal**: Hi-MGN-V models manufacturing spread: generating realistic diverse
+samples from a trained VAE surrogate. With `use_vae True`, normal `mode train`
+now trains the post-hoc conditional prior by default unless
+`train_conditional_prior False` is set. Set `num_vae_samples` larger than the
+training set size at inference time when you want many spread samples.
 
 ## Fast Commands
 
-Historical VAE/GMM training and rollout:
+Existing legacy VAE/GMM training and rollout examples:
 
 ```bash
 python MeshGraphNets_main.py --config _warpage_input/config_train5.txt
 python MeshGraphNets_main.py --config _warpage_input/config_infer4.txt
 ```
 
-B8 all-warpage rollout configs:
+B8 all-warpage training configs currently checked in:
 
 ```bash
-python MeshGraphNets_main.py --config _b8_all_warpage_input/config_infer1.txt
-python MeshGraphNets_main.py --config _b8_all_warpage_input/config_infer2.txt
+python MeshGraphNets_main.py --config _b8_all_warpage_input/config_train1.txt
+python MeshGraphNets_main.py --config _b8_all_warpage_input/config_train2.txt
 ```
+
+No `_b8_all_warpage_input/config_infer*.txt` file is present in this checkout.
+Use an existing `mode inference` config as a template and point `modelpath`,
+`infer_dataset`, `inference_output_dir`, and `num_vae_samples` at the B8 run.
 
 Conditional-prior-only training, if you create a config with `mode train_prior`:
 
@@ -39,6 +44,8 @@ Training needs:
 
 - `dataset_dir` exists.
 - Every GPU in `gpu_ids` is visible.
+- Do not rely on `gpu_ids -1` for CPU training on a CUDA-visible host; the
+  training path falls back to CPU only when CUDA is unavailable.
 - `edge_var` is `8`; the model rejects any other edge feature count.
 - `modelpath` parent directory exists or can be created by the checkpoint save path.
 
@@ -60,8 +67,8 @@ dir outputs
 
 | Mode | Use it for |
 |------|------------|
-| `train` | Train the simulator; optionally fit legacy GMM if `fit_latent_gmm True`. |
-| `train_with_prior` | Train simulator, then train mesh-conditioned prior into the checkpoint. |
+| `train` | Train the simulator; with `use_vae True`, train the mesh-conditioned prior by default, then optionally fit legacy GMM if `fit_latent_gmm True`. |
+| `train_with_prior` | Backward-compatible alias for `train`; retained for older configs. |
 | `train_prior` | Train only the mesh-conditioned prior from an existing VAE checkpoint. |
 | `inference` | Autoregressive rollout. |
 
@@ -77,7 +84,7 @@ For manufacturing spread modeling, verify these keys before training:
 | `beta_aux` | `1.0` | High: prevent mode/posterior collapse |
 | `lambda_det` | `0.0` | Zero: det pass conflicts with spread objective |
 | `vae_latent_dim` | `32` | Full capacity for spread representation |
-| `mode` | `train_with_prior` | Trains simulator + conditional prior in one run |
+| `mode` | `train` | Trains simulator + conditional prior in one run unless `train_conditional_prior False` |
 | `num_vae_samples` | > dataset size | Extrapolates spread at inference time |
 
 ## Active Prior Warning
@@ -107,6 +114,8 @@ If it says `legacy GMM` or `N(0, I)`, the conditional prior is not active.
 - `gpu_ids 0,1` triggers DDP unless `parallel_mode model_split` is set.
 - `message_passing_num` is ignored by the model when `use_multiscale True`; the
   V-cycle uses `mp_per_level`.
+- `parallel_mode model_split` is an experimental memory-fit training path. It
+  does not run the standard validation/test visualization or post-training prior/GMM stages.
 - `mp_per_level` must have `2 * multiscale_levels + 1` entries.
 - `positional_features` increases node input size before normalization.
 - Node type one-hot features are appended after node normalization.

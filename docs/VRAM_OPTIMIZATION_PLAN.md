@@ -121,6 +121,16 @@ stages across GPUs. This is the path intended for models that do not fit on one
 GPU. It is experimental and has explicit caveats in `parallelism/launcher.py`,
 including detached reconstruction gradients across some stage boundaries.
 
+Current model-split limitations:
+
+- it is a simulator-training path only
+- it logs training loss and saves that value as `valid_loss`
+- it does not run the standard validation/test visualization loop
+- it does not run post-hoc conditional-prior training or legacy GMM fitting
+- if profiling OOMs, the equal-split fallback uses `message_passing_num` as the
+  fallback block count, so multiscale configs should keep that value consistent
+  with the intended processor size
+
 ## Recommended Fit Order
 
 When a run does not fit:

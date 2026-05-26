@@ -1,7 +1,12 @@
 # Hierarchical Interpolation MeshGraphNets: Literature Comparison
 
-Research status: May 13, 2026  
+Research status: May 13, 2026; deterministic-code recheck: May 26, 2026
 Scope: the current repository's deterministic hierarchical / multiscale MeshGraphNets path only. The conditional VAE, latent GMM, MMD objective, and stochastic rollout machinery are intentionally excluded.
+
+May 26, 2026 recheck note: this repo also contains active VAE, conditional-prior,
+world-edge, and model-split code. This comparison intentionally keeps those
+stochastic and runtime-scaling paths out of scope so the deterministic
+hierarchical interpolation claims remain clean.
 
 This document covers (i) direct hierarchical mesh-GNN neighbors, (ii) generic hierarchical graph pooling, (iii) recent mesh-transformer hybrids that compete on the same long-range communication problem, and (iv) alternative modeling paradigms (neural operators, point-based architectures, full-attention solvers) that target the same surrogate problem but step outside the mesh-GNN family entirely.
 
@@ -1079,28 +1084,31 @@ When comparing against broader PDE surrogate families, use this framing:
 
 ---
 
-## 12. Appendix A. 2026-05-15 Code-Level Re-Verification
+## 12. Appendix A. 2026-05-26 Code-Level Re-Verification
 
-Each implementation claim in Sections 1–4 was checked against the live code on
-2026-05-15. The result of that audit is summarised below.
+Each implementation claim in Sections 1-4 was checked against the live code on
+2026-05-26. The result of that audit is summarised below. References are kept at
+module/function level where possible because line numbers drift during normal
+development.
 
 | Claim | Status | Citation |
 |---|---|---|
-| V-cycle with `mp_per_level` of length `2L+1` and per-level `Linear(2D→D)` skip merge | TRUE | `model/MeshGraphNets.py` 139–192, skip projection at 437–439 |
-| BFS bi-stride coarsening uses depth parity to choose coarse nodes | TRUE | `model/coarsening.py` 85–156 |
-| FPS-Voronoi: FPS seeds + multi-source BFS for graph-hop Voronoi (not Euclidean) | TRUE | `model/coarsening.py` 222–310 |
-| Coarse edges are boundary-induced from fine edges (no Euclidean kNN) | TRUE | `model/coarsening.py` 44–78 |
-| 8-D dual reference/deformed edge features | TRUE | `general_modules/edge_features.py` 4–23 |
-| Coarse edge features recomputed from centroid reference/deformed coordinates | TRUE | `general_modules/multiscale_helpers.py` 102–110 |
-| Learned bipartite unpool concatenates `[h_coarse, h_fine_skip, rel_pos]` over own + neighbour clusters | TRUE | `model/blocks.py` 102–135 |
-| Fine-to-coarse pooling is mean aggregation | TRUE | `model/coarsening.py` 379–396 |
-| World edges and the HybridNodeBlock are only active at the finest level (`i == 0`) | PARTIAL | `model/MeshGraphNets.py` 165 disables `use_we` for `i > 0` |
+| V-cycle with `mp_per_level` of length `2L+1` and per-level `Linear(2D->D)` skip merge | TRUE | `model/MeshGraphNets.py::_build_multiscale_processor` and `_forward_multiscale` |
+| BFS bi-stride coarsening uses depth parity to choose coarse nodes | TRUE | `model/coarsening.py::bfs_bistride_coarsen` |
+| FPS-Voronoi: FPS seeds plus multi-source BFS for graph-hop Voronoi, not Euclidean assignment | TRUE | `model/coarsening.py::fps_voronoi_coarsen` |
+| Coarse edges are boundary-induced from fine edges, with no Euclidean kNN coarse graph | TRUE | `model/coarsening.py::_build_coarse_edges` |
+| 8-D dual reference/deformed edge features | TRUE | `general_modules/edge_features.py::compute_edge_attr` |
+| Coarse edge features recomputed from centroid reference/deformed coordinates | TRUE | `general_modules/multiscale_helpers.py::attach_coarse_levels_to_graph` |
+| Learned bipartite unpool concatenates `[h_coarse, h_fine_skip, rel_pos]` over own plus neighbour clusters | TRUE | `model/blocks.py::UnpoolBlock` |
+| Fine-to-coarse pooling is mean aggregation | TRUE | `model/coarsening.py::pool_features` |
+| World edges and the HybridNodeBlock are finest-level only by default, but can be lifted to coarse levels with `coarse_world_edges True` | TRUE | `model/MeshGraphNets.py::_build_multiscale_processor` and `general_modules/multiscale_helpers.py::lift_world_edges` |
 
-Caveat to record in the paper. World edges and the HybridNodeBlock are *not*
-used at coarse V-cycle levels. Coarse-level long-range coupling therefore relies
-entirely on the multilevel mesh-edge processor, not on world-edge proximity.
-For contact-rich FEA problems this is a deliberate simplification worth stating
-explicitly rather than implying that world edges propagate through the V-cycle.
+Caveat to record in the paper. Unless `coarse_world_edges True` is enabled,
+world edges and the HybridNodeBlock are used only at the original fine level.
+Coarse-level long-range coupling then relies on the multilevel mesh-edge
+processor, not explicit proximity/contact edges. If `coarse_world_edges True` is
+part of an experiment, state that world edges are lifted through the hierarchy
+instead of implying that this happens in the default configuration.
 
 ---
 

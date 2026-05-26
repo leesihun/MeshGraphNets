@@ -116,7 +116,7 @@ hierarchy, not the radius graph.
 
 Set `coarse_world_edges True` to propagate contact information through all coarse
 levels. For each fine world edge (u, v) where the two nodes belong to different
-coarse clusters (`fine_to_coarse[u] ≠ fine_to_coarse[v]`), a coarse world edge is
+coarse clusters (`fine_to_coarse[u] != fine_to_coarse[v]`), a coarse world edge is
 added between the two cluster centroids. Edge features use the standard 8-D layout
 computed from coarse centroid positions and normalized with the per-level coarse-
 edge statistics. The lifting is applied iteratively so that level-i world edges are

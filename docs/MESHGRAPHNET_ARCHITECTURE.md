@@ -18,14 +18,16 @@ The authoritative modules are:
 
 | Mode | Runtime path |
 | --- | --- |
-| `train` | simulator training through `single_training.py` or DDP in `distributed_training.py` |
-| `train_with_prior` | simulator training, then post-hoc conditional-prior training |
+| `train` | simulator training through `single_training.py` or DDP in `distributed_training.py`; with `use_vae True`, post-hoc conditional-prior training runs afterward by default |
+| `train_with_prior` | backward-compatible alias for `train`; rewritten at dispatch |
 | `train_prior` | post-hoc conditional-prior training against an existing checkpoint |
 | `inference` | rollout through `inference_profiles/rollout.py` |
 
 With multiple `gpu_ids`, the default path is DDP data parallelism. Setting
 `parallel_mode model_split` uses the experimental pipeline split launcher under
-`parallelism/`.
+`parallelism/`. The model-split launcher is a training-only memory-fit path: it
+saves merged weights and training loss, but it does not run the standard
+validation/test visualization or post-training prior/GMM stages.
 
 ## Graph Contract
 
@@ -257,17 +259,17 @@ With VAE:
 
 ```text
 loss = alpha_recon * reconstruction_loss
-     + lambda_mmd * mmd_loss          # aggregate posterior ↔ N(0,I); keep LOW (≈0.1)
-     + beta_aux * auxiliary_loss      # z → graph output stats anchor; keep HIGH (≈1.0)
+     + lambda_mmd * mmd_loss          # aggregate posterior to N(0,I); keep low, about 0.1
+     + beta_aux * auxiliary_loss      # z to graph output stats anchor; keep high, about 1.0
      + optional free_bits_kl
 ```
 
 **Spread modeling guidance for loss weights:**
 
-- `lambda_mmd` should remain low (≈ 0.1). A non-zero residual MMD is acceptable
+- `lambda_mmd` should remain low (about 0.1). A non-zero residual MMD is acceptable
   and expected: the true aggregate posterior encodes real spread structure that does
-  not match an isotropic Gaussian. Forcing MMD → 0 erases that structure.
-- `beta_aux` should remain high (≈ 1.0). The auxiliary decoder forces `z` to
+  not match an isotropic Gaussian. Forcing MMD to 0 erases that structure.
+- `beta_aux` should remain high (about 1.0). The auxiliary decoder forces `z` to
   predict per-graph output mean and standard deviation. Without this anchor the
   encoder collapses all spread into a small z subspace (mode collapse).
 - `lambda_det` must be 0.0. The deterministic auxiliary pass (second forward with

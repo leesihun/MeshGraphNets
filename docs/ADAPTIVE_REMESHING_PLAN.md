@@ -1,5 +1,11 @@
 # Adaptive Remeshing for MeshGraphNets
 
+Status as of 2026-05-26: this is a design plan, not implemented runtime
+behavior. There is no `adaptive_remeshing/` package in this checkout, and
+`inference_profiles/rollout.py` currently uses fixed topology for the full
+rollout. Do not document or configure `use_adaptive_remeshing` as an available
+feature until those files are actually added.
+
 ## Context
 
 The current MeshGraphNets implementation uses **fixed mesh topology** throughout simulation -- the edge connectivity loaded from HDF5 never changes during rollout. This means regions that develop high stress gradients or large deformations use the same resolution as quiescent regions, leading to:

@@ -1,5 +1,15 @@
 # MeshGraphNets Enhancement Research for Quasi-Static Warpage Prediction
 
+Status as of 2026-05-26: this is a research and experiment-prioritization note,
+not a description of the current implemented architecture. The current repo
+already implements several items that this note originally proposed: optional
+rotation-invariant positional features (`positional_features` with `rwpe`,
+`lpe`, or `rwpe+lpe`), optional node-type one-hot features, the multiscale
+V-cycle, learned bipartite unpooling, and optional world edges. Treat the paper
+comparisons below as motivation for future experiments, then verify live behavior
+in `general_modules/mesh_dataset.py`, `model/MeshGraphNets.py`, and
+`general_modules/world_edges.py`.
+
 ## Core Diagnosis
 
 MeshGraphNets (Pfaff et al., ICLR 2021) was designed for **dynamic** simulations where information propagates locally per timestep. Warpage is a **static equilibrium** problem — the entire displacement field is determined simultaneously by global boundary conditions. Standard message passing cannot propagate information far enough before over-smoothing kills the signal.
@@ -7,10 +17,16 @@ MeshGraphNets (Pfaff et al., ICLR 2021) was designed for **dynamic** simulations
 This is a **documented failure mode**: Gladstone et al. (Scientific Reports, 2024) states:
 > "When a physical system requires long-range interactions, such as in static solid mechanics problems, standard mesh-based GNN approaches typically fail at capturing the physics accurately, because the exchange of information between distant nodes requires a large number of message passing steps."
 
-**Evidence in our codebase:**
-- `message_passing_num` 3 vs 15 gives similar results → depth doesn't help
-- Validation shows "completely mixed" correlation → model predicts uniform field
-- Simple Graph U-Net (GNN encoder + MLP decoder) outperforms flat MGN
+**Historical evidence that motivated this work:**
+- `message_passing_num` 3 vs 15 gave similar results in earlier flat-model runs.
+- Validation showed "completely mixed" correlation, meaning the model predicted a
+  nearly uniform field.
+- A simple Graph U-Net-style experiment outperformed the earlier flat MGN path.
+
+Current mitigation in this repo is no longer just "increase depth": use
+`positional_features`, `use_multiscale`, `mp_per_level`, `bipartite_unpool`,
+optional `use_world_edges`, and explicit `use_node_types` when the HDF5 data
+contains meaningful part or boundary labels.
 
 ---
 
@@ -97,9 +113,15 @@ to EA-GNN with edge attributes → the augmented EDGES (connectivity), not edge 
 They DO use node positions as features — but in a **simulation coordinate frame** (centered + PCA-rotated), not raw world coordinates. This preserves translation invariance (centered) and rotation invariance (PCA-aligned). Their node features also include rich boundary condition encoding (14 features total) — critical for static problems.
 
 **Gap vs. our setup:**
-- They have 50,000 diverse training samples; we have ~1
-- They encode BCs explicitly (14 node features); we have only 3 (displacements)
-- They use simulation coordinates; we have no positional information in nodes
+- They have 50,000 diverse training samples; this repo's active datasets may be
+  much smaller and should be checked per run.
+- They encode boundary conditions explicitly with rich node features. This repo
+  only gets explicit boundary/type information when the HDF5 feature at index 7
+  is meaningful and `use_node_types True`.
+- This repo now has positional node features, but they are not the exact
+  PCA-aligned simulation coordinates from Gladstone et al. The implemented
+  options are centroid distance, mean edge length, random-walk positional
+  encoding, and Laplacian positional encoding.
 
 ---
 
@@ -108,6 +130,10 @@ They DO use node positions as features — but in a **simulation coordinate fram
 ### 1. Simulation Coordinates (from Gladstone et al.)
 
 **What:** Transform reference positions to centroid-centered, principal-axis-aligned frame, then use as node features. Provides spatial context with partial invariance.
+
+Current repo note: `positional_features` already supplies invariant geometric and
+topological node identity features. PCA-aligned simulation coordinates remain a
+separate experiment, not the behavior of the current loader.
 
 | Property | Assessment |
 |---|---|
@@ -163,7 +189,10 @@ Enable `use_node_types True` if HDF5 encodes fixture/boundary information.
 
 ### 6. Enable Existing Multiscale/U-Net Path
 
-Already implemented in `model/MeshGraphNets.py`. Coarse-level message passing shortcuts long-range communication. Ensure coarsest level covers the entire domain.
+Already implemented in `model/MeshGraphNets.py` and active in several config
+files through `use_multiscale True`. Coarse-level message passing shortcuts
+long-range communication. Ensure coarsest level covers the entire domain and set
+`mp_per_level` explicitly for the intended compute distribution.
 
 ### 7. Discrete Curvature Features
 
@@ -200,12 +229,12 @@ Apple Research (Feb 2025): Pre-train on diverse simulations, fine-tune on target
 ## Recommended Experiment Plan
 
 ```
-Experiment 1: Simulation coordinates as node features  → proven 2-3x improvement
-Experiment 2: + Random long-range edges (EA-GNN)      → proven 5x on static mechanics
-Experiment 3: LapPE (k=8) as alternative to sim coords → fully invariant version
-Experiment 4: Virtual node                              → global context
-Experiment 5: Combine best of above + multiscale        → full solution
-Experiment 6: Enable use_node_types                     → boundary conditions
+Experiment 1: Validate current positional_features choices on the active dataset
+Experiment 2: Enable/use_node_types only when feature index 7 has meaningful labels
+Experiment 3: Tune multiscale coarsening and mp_per_level for the target mesh size
+Experiment 4: Evaluate coarse_world_edges or random long-range edges for contact/global coupling
+Experiment 5: Add PCA-aligned simulation coordinates only if current positional features underperform
+Experiment 6: Add virtual node/global context only after the cheaper graph features are exhausted
 ```
 
 ---

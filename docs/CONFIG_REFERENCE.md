@@ -18,7 +18,7 @@ python MeshGraphNets_main.py --config path\to\config.txt
 | --- | --- | --- |
 | `model` | launcher | Informational model name printed at startup. |
 | `mode` | launcher | `train`, `inference`, `train_prior`, or `train_with_prior`. |
-| `gpu_ids` | launcher | `-1` for CPU, one GPU id for single process, or comma list for multi-GPU. |
+| `gpu_ids` | launcher | One GPU id for single-process training, or a comma list for multi-GPU. Rollout treats `-1` as CPU; simulator training falls back to CPU only when CUDA is unavailable. |
 | `parallel_mode` | launcher | Optional. `ddp` by default; `model_split` enables the experimental pipeline split path. |
 | `modelpath` | training, inference, prior | Checkpoint path to save to or load from. |
 | `log_file_dir` | training | Relative path under `outputs/` for epoch logs. |
@@ -29,6 +29,11 @@ Mode behavior:
 - `train_prior`: freezes an existing VAE simulator checkpoint and trains a mesh-conditioned conditional prior into that checkpoint.
 - `train_with_prior`: backward-compat alias for `train` (the dispatcher rewrites it). Same behavior since `train_conditional_prior` now defaults to `True`.
 - `inference`: runs autoregressive rollout using the checkpoint and writes rollout HDF5 files. Loads the conditional prior from the checkpoint by default (set `use_conditional_prior False` to fall back to GMM/N(0,I)).
+
+`parallel_mode model_split` is only implemented for simulator training. It writes
+a merged checkpoint whose `valid_loss` is the training loss and does not run the
+standard validation/test visualization, post-hoc conditional-prior training, or
+legacy GMM fitting stages.
 
 Important caveat: inference loads `checkpoint['model_config']` and overwrites many
 architecture keys from the config file before it checks `use_conditional_prior`.
@@ -117,8 +122,8 @@ world edges are normalized with the per-level coarse mesh-edge statistics.
 
 The VAE branch exists to model manufacturing spread: `z` captures the
 sample-to-sample variation in physical outputs for objects that share the
-same mesh topology. For this objective, keep `lambda_mmd` low (≈ 0.1),
-`beta_aux` high (≈ 1.0), and `lambda_det` at 0.0. See
+same mesh topology. For this objective, keep `lambda_mmd` low (about 0.1),
+`beta_aux` high (about 1.0), and `lambda_det` at 0.0. See
 [MESHGRAPHNET_ARCHITECTURE.md](MESHGRAPHNET_ARCHITECTURE.md) for guidance.
 
 | Key | Used by | Meaning |
@@ -128,8 +133,8 @@ same mesh topology. For this objective, keep `lambda_mmd` low (≈ 0.1),
 | `vae_mp_layers` | VAE encoder | Message-passing layers inside the posterior encoder. Default `5` in model construction. |
 | `vae_graph_aware` | VAE encoder | Fuses graph input `x` with target `y` in the posterior encoder. Recommended `True` for multi-type datasets: enables type-conditional spread encoding. |
 | `alpha_recon` | training | Reconstruction-loss weight. |
-| `lambda_mmd` | training | MMD regularizer weight matching aggregate posterior to `N(0,I)`. Keep low (≈ 0.1) for spread modeling; residual MMD > 0 is acceptable and expected. |
-| `beta_aux` | training | Weight for auxiliary latent decoder predicting per-graph output stats from `z`. Keep high (≈ 1.0) to prevent mode collapse. |
+| `lambda_mmd` | training | MMD regularizer weight matching aggregate posterior to `N(0,I)`. Keep low (about 0.1) for spread modeling; residual MMD > 0 is acceptable and expected. |
+| `beta_aux` | training | Weight for auxiliary latent decoder predicting per-graph output stats from `z`. Keep high (about 1.0) to prevent mode collapse. |
 | `lambda_det` | training | Deterministic auxiliary pass weight (second forward with z=0). **Must be 0.0 for spread modeling.** Non-zero values conflict with the spread objective. |
 | `free_bits` | training | Optional per-dimension KL floor. `0.0` disables it. |
 | `num_vae_samples` | inference | Number of rollout samples per scene. Can exceed training set size to extrapolate spread. |
@@ -142,7 +147,7 @@ same mesh topology. For this objective, keep `lambda_mmd` low (≈ 0.1),
 | `prior_mixture_components` | prior | Mixture components predicted by the conditional prior. Default `10`. |
 | `prior_hidden_dim` | prior | Prior hidden width. Defaults to `latent_dim`. |
 | `prior_mp_layers` | prior | Prior graph message-passing layers. Default `3`. |
-| `prior_min_std` | prior | Minimum predicted latent standard deviation. Default `1e-3`. |
+| `prior_min_std` | prior | Minimum predicted latent standard deviation. Default `0.05`. |
 | `prior_epochs` | prior | Post-hoc prior training epochs. Default `200`. |
 | `prior_learningr` | prior | Prior optimizer LR. Defaults to `learningr`. |
 | `prior_batch_size` | prior | Prior batch size. Defaults to `batch_size`. |
@@ -153,10 +158,20 @@ same mesh topology. For this objective, keep `lambda_mmd` low (≈ 0.1),
 | `resume_prior` | prior | Defaults to `True`; resumes prior weights already stored in checkpoint. |
 
 Current `_b8_all_warpage_input/config_train*.txt` files say "Train VAE-MGN, then
-train post-hoc conditional prior" in comments, but their live keys are `mode train`
-and `fit_latent_gmm True`. That launch trains the simulator and fits the legacy
-GMM. To train the conditional prior, use `mode train_with_prior` for the simulator
-run or run `mode train_prior` against the finished checkpoint.
+train post-hoc conditional prior" in comments. That matches the live default:
+with `mode train`, `use_vae True`, and no `train_conditional_prior False`, the
+standard single-GPU/DDP path trains the simulator and then appends the
+conditional prior to the checkpoint. If `fit_latent_gmm True`, the legacy GMM is
+also appended after that and remains a rollout fallback. Use `mode train_prior`
+when you only want to refresh the conditional prior in an existing checkpoint.
+
+Important checkpoint caveat: `model_config` is saved before the post-hoc prior
+step. If the simulator training config did not include `use_conditional_prior True`,
+the checkpoint can contain `conditional_prior_state_dict` while
+`model_config['use_conditional_prior']` is still `False`. Because rollout applies
+`model_config` over the inference config, that stale field can suppress the prior.
+For spread-sampling checkpoints, put `use_conditional_prior True` in the simulator
+training config or deliberately patch that checkpoint field before rollout.
 
 ## Training And Performance Keys
 

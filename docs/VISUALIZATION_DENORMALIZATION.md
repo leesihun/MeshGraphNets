@@ -17,13 +17,13 @@ There are two different output schemas:
 For each selected test graph it saves an HDF5 file under:
 
 ```text
-outputs/test_set/<gpu_ids>/<epoch>/
+outputs/test/<gpu_ids>/<epoch>/
 ```
 
 Training-set reconstruction visualizations, when enabled, use:
 
 ```text
-outputs/train_set/<gpu_ids>/<epoch>/
+outputs/train/<gpu_ids>/<epoch>/
 ```
 
 The saved HDF5 groups include:

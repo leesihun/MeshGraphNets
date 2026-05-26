@@ -17,9 +17,9 @@ spread structure, not merely memorize training outputs.
 Implications for VAE design:
 
 - **z must encode spread, not be forced toward N(0,I).** Keep `lambda_mmd` low
-  (≈ 0.1). A residual MMD > 0 is acceptable because the true aggregate posterior
+  (about 0.1). A residual MMD > 0 is acceptable because the true aggregate posterior
   reflects genuine spread structure, not noise.
-- **beta_aux (≈ 1.0)** anchors z to per-graph output statistics and prevents
+- **beta_aux (about 1.0)** anchors z to per-graph output statistics and prevents
   posterior/mode collapse. Do not reduce it.
 - **lambda_det must be 0.0.** The deterministic auxiliary loss (second forward
   with z=0) was introduced to fight posterior shortcuts in single-mode problems.
@@ -27,8 +27,9 @@ Implications for VAE design:
 - **vae_graph_aware True** lets the posterior encoder see graph input features
   alongside target y, enabling type-conditional spread encoding. Recommended
   when data contains multiple manufactured part types.
-- **use_conditional_prior True** (with `train_with_prior` or `train_prior`) is
-  the correct architectural fix for type-to-type generalization: the prior
+- **use_conditional_prior True** is the correct architectural fix for type-to-type
+  generalization. Normal `mode train` trains this prior by default for VAE runs,
+  and `mode train_prior` can refresh it from an existing checkpoint. The prior
   `p(z|graph)` maps each part type to its spread distribution at inference time.
 
 ## Run Commands
@@ -36,10 +37,13 @@ Implications for VAE design:
 ```bash
 python MeshGraphNets_main.py --config _warpage_input/config_train5.txt
 python MeshGraphNets_main.py --config _warpage_input/config_infer4.txt
-python MeshGraphNets_main.py --config _b8_all_warpage_input/config_infer1.txt
+python MeshGraphNets_main.py --config _b8_all_warpage_input/config_train1.txt
 ```
 
 `mode` is inside the config. `--config` only picks the file.
+No `_b8_all_warpage_input/config_infer*.txt` files are checked in at the moment;
+use `_warpage_input/config_infer3.txt`, `_warpage_input/config_infer4.txt`, or
+`ex1/config_infer1.txt` as inference templates.
 
 ## Runtime Modes
 
@@ -51,7 +55,9 @@ python MeshGraphNets_main.py --config _b8_all_warpage_input/config_infer1.txt
 | `inference` | `inference_profiles.rollout.run_rollout`; loads conditional prior by default if present in the checkpoint (set `use_conditional_prior False` to fall back to GMM/N(0,I)). |
 
 `gpu_ids` length controls single process vs DDP unless `parallel_mode model_split`
-is set. `parallel_mode model_split` routes to `parallelism.launcher`.
+is set. `parallel_mode model_split` routes to `parallelism.launcher`; that path is
+experimental and currently logs/saves training loss only, with no standard
+validation/test visualization or post-training prior/GMM stage.
 
 ## Key Files
 

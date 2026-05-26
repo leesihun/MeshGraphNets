@@ -25,8 +25,8 @@ The code has four modes, selected inside the config file:
 
 | Mode | What runs |
 |------|-----------|
-| `train` | Train the simulator. If `use_vae True` and `fit_latent_gmm True`, fit legacy GMM after training. If `train_conditional_prior True`, also train the conditional prior after training. |
-| `train_with_prior` | Same simulator training path as `train`, but the launcher sets `train_conditional_prior True` before training. |
+| `train` | Train the simulator. If `use_vae True`, train the conditional prior after simulator training by default unless `train_conditional_prior False`. If `fit_latent_gmm True`, also fit the legacy GMM after training. |
+| `train_with_prior` | Backward-compatible alias for `train`; the launcher rewrites it to `train`. |
 | `train_prior` | Load an existing VAE-MGN checkpoint and train only the mesh-conditioned prior into that checkpoint. |
 | `inference` | Run autoregressive rollout from an HDF5 initial-condition dataset. |
 
@@ -45,25 +45,32 @@ to train or refresh the checkpoint with the conditional-prior keys present.
 
 ## Quick Start
 
-Historical VAE/GMM workflow:
+Existing legacy VAE/GMM config examples:
 
 ```bash
 python MeshGraphNets_main.py --config _warpage_input/config_train5.txt
 python MeshGraphNets_main.py --config _warpage_input/config_infer4.txt
 ```
 
-Current B8 all-warpage inference configs request the mesh-conditioned prior:
+B8 all-warpage training configs currently checked in:
 
 ```bash
-python MeshGraphNets_main.py --config _b8_all_warpage_input/config_infer1.txt
-python MeshGraphNets_main.py --config _b8_all_warpage_input/config_infer2.txt
+python MeshGraphNets_main.py --config _b8_all_warpage_input/config_train1.txt
+python MeshGraphNets_main.py --config _b8_all_warpage_input/config_train2.txt
 ```
 
 The paired `_b8_all_warpage_input/config_train1.txt` and `config_train2.txt` files
-are currently `mode train` and still contain legacy GMM keys. To produce a checkpoint
-that contains the conditional prior, use either `mode train_with_prior` for the
-simulator training run or run a separate `mode train_prior` config against a trained
-VAE checkpoint.
+are currently `mode train`. Because they also set `use_vae True` and do not set
+`train_conditional_prior False`, the live training path trains the simulator and
+then trains the mesh-conditioned prior into the same checkpoint. Some configs also
+keep legacy GMM keys; when `fit_latent_gmm True`, that GMM artifact is added after
+the conditional-prior step and remains a fallback for rollout.
+
+There is no checked-in `_b8_all_warpage_input/config_infer*.txt` in this checkout.
+Create an inference config from an existing `mode inference` file and make sure
+the checkpoint `model_config` has `use_conditional_prior True`; otherwise rollout
+can still fall back to GMM or `N(0, I)` even when the checkpoint contains
+conditional-prior weights.
 
 ## Architecture
 
@@ -105,10 +112,10 @@ and auxiliary latent losses. Optional `free_bits` adds a KL floor as a collapse
 safeguard.
 
 For manufacturing spread modeling the key tuning levers are:
-- `lambda_mmd 0.1` — keep low; z must retain structured spread, not collapse to N(0,I).
-- `beta_aux 1.0` — anchors z to per-graph output statistics; prevents mode collapse.
-- `lambda_det 0.0` — deterministic auxiliary loss must be disabled for spread modeling.
-- `vae_graph_aware True` — posterior encoder sees graph inputs alongside target y,
+- `lambda_mmd 0.1` - keep low; z must retain structured spread, not collapse to N(0,I).
+- `beta_aux 1.0` - anchors z to per-graph output statistics; prevents mode collapse.
+- `lambda_det 0.0` - deterministic auxiliary loss must be disabled for spread modeling.
+- `vae_graph_aware True` - posterior encoder sees graph inputs alongside target y,
   enabling type-conditional spread encoding across part variants.
 
 The post-hoc conditional prior is [model/conditional_prior.py](model/conditional_prior.py):
@@ -158,13 +165,16 @@ DDP training is in
 
 | Value | Behavior |
 |-------|----------|
-| `-1` | CPU when CUDA is unavailable or not selected |
+| `-1` | CPU for rollout; simulator training only falls back to CPU when CUDA is unavailable |
 | `0` | Single GPU |
 | `0,1` | PyTorch DDP via `mp.spawn` |
 
 `parallel_mode model_split` activates the experimental pipeline split launcher in
 [parallelism/launcher.py](parallelism/launcher.py). It slices the processor across
-GPUs and saves a merged checkpoint for normal inference.
+GPUs and saves a merged checkpoint for normal inference. This path is currently a
+training-only memory-fit path: it logs training loss, saves that value as
+`valid_loss`, and does not run the standard validation/test visualization,
+post-hoc conditional-prior training, or legacy GMM fitting stages.
 
 Training uses:
 
