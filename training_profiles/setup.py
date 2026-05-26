@@ -80,6 +80,10 @@ def log_model_summary(model, config, ema_model=None):
         print("torch.compile: ENABLED (dynamic=True)")
     if ema_model is not None:
         print(f"EMA: ENABLED (decay={config.get('ema_decay', 0.999)})")
+    if config.get('use_vae', False):
+        print(f"VAE (MMD): ENABLED (z_dim={config.get('vae_latent_dim', 32)}, lambda_mmd={config.get('lambda_mmd', 100.0)})")
+    else:
+        print("VAE: disabled")
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total parameters: {total_params:,}")
@@ -167,6 +171,21 @@ def build_model_config(config) -> dict:
         'fine_mp_post':      config.get('fine_mp_post', 5),
         'coarsening_type':   config.get('coarsening_type', 'bfs'),
         'voronoi_clusters':  config.get('voronoi_clusters', None),
+        'use_vae':           config.get('use_vae', False),
+        'vae_latent_dim':    config.get('vae_latent_dim', 32),
+        'vae_mp_layers':     config.get('vae_mp_layers', 5),
+        'vae_graph_aware':   config.get('vae_graph_aware', False),
+        'posterior_min_std': config.get('posterior_min_std', 0),
+        'num_z':             config.get('num_z',
+                                (config.get('multiscale_levels', 1) + 1)
+                                if config.get('use_multiscale', False) else 1),
+        'beta_aux':          config.get('beta_aux', 1.0),
+        'use_conditional_prior': config.get('use_conditional_prior', False),
+        'prior_mixture_components': config.get('prior_mixture_components', 10),
+        'prior_hidden_dim':   config.get('prior_hidden_dim', config.get('latent_dim')),
+        'prior_mp_layers':    config.get('prior_mp_layers', 3),
+        'prior_min_std':      config.get('prior_min_std', 0.05),
+        'prior_loss_type':    config.get('prior_loss_type', 'analytical_kl'),
     }
 
 
@@ -181,6 +200,9 @@ def save_checkpoint(
     config,
     train_dataset,
     modelpath: str,
+    use_vae: bool = False,
+    valid_prior_loss: float = None,
+    vae_valid_prior_samples: int = None,
 ) -> None:
     """Build and write a checkpoint dict to `modelpath`."""
     save_dict = {
@@ -193,6 +215,9 @@ def save_checkpoint(
         'normalization':       build_normalization_dict(train_dataset),
         'model_config':        build_model_config(config),
     }
+    if use_vae and valid_prior_loss is not None:
+        save_dict['valid_prior_loss']    = valid_prior_loss
+        save_dict['valid_prior_samples'] = vae_valid_prior_samples
     if ema_model is not None:
         save_dict['ema_state_dict'] = ema_model.state_dict()
     torch.save(save_dict, modelpath)

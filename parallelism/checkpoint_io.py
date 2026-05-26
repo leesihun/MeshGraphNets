@@ -17,7 +17,10 @@ import torch
 import torch.distributed as dist
 
 
-# Parameter-key prefixes that belong to specific components, used during slicing.
+# Parameter-key prefixes that belong to specific components, used during
+# slicing. Keys not under any of these prefixes are treated as "shared" and
+# placed on stage 0 (they include the VAE encoder, aux_decoder, and any
+# non-block top-level modules).
 _ENCODER_PREFIXES = ('model.encoder.',)
 _DECODER_PREFIXES = ('model.decoder.',)
 
@@ -54,11 +57,21 @@ def _processor_key_prefix(block_index: int, is_multiscale: bool, multiscale_meta
         if block_index < cumulative + c:
             local_idx = block_index - cumulative
             if kind == 'pre':
-                return [f"model.pre_blocks.{level}.{local_idx}."]
+                # z_fusers (when use_vae) follow the same per-level layout.
+                return [
+                    f"model.pre_blocks.{level}.{local_idx}.",
+                    f"model.ms_z_fusers_pre.{level}.{local_idx}.",
+                ]
             elif kind == 'post':
-                return [f"model.post_blocks.{level}.{local_idx}."]
+                return [
+                    f"model.post_blocks.{level}.{local_idx}.",
+                    f"model.ms_z_fusers_post.{level}.{local_idx}.",
+                ]
             else:  # coarsest
-                return [f"model.coarsest_blocks.{local_idx}."]
+                return [
+                    f"model.coarsest_blocks.{local_idx}.",
+                    f"model.ms_z_fusers_coarsest.{local_idx}.",
+                ]
         cumulative += c
 
     raise IndexError(f"block_index {block_index} out of range for multiscale layout")
@@ -74,8 +87,9 @@ def slice_state_dict_for_stage(
 ) -> Dict[str, torch.Tensor]:
     """Extract the subset of keys from `full_sd` that belong to stage `stage_idx`.
 
-    Stage 0 owns: encoder + its assigned blocks.
+    Stage 0 owns: encoder + vae_encoder + aux_decoder + its assigned blocks.
     Last stage owns: decoder + its assigned blocks.
+    All stages own: z_fusers / ms_z_fusers for their assigned blocks.
     Multiscale pool/unpool modules (coarse_eb_encoders, skip_projs, unpool_blocks)
     are co-located with the stage that owns the corresponding boundary block.
     """
@@ -86,6 +100,27 @@ def slice_state_dict_for_stage(
     # Processor block prefixes (flat and multiscale)
     for b in stage_blocks:
         allowed_prefixes.extend(_processor_key_prefix(b, is_multiscale, multiscale_meta))
+
+    # VAE fusers — every stage owns fusers for its assigned blocks
+    for b in stage_blocks:
+        if not is_multiscale:
+            allowed_prefixes.append(f'model.z_fusers.{b}.')
+        else:
+            if multiscale_meta is None:
+                allowed_prefixes.append(f'model.z_fusers.{b}.')
+            else:
+                L = int(multiscale_meta['L'])
+                mp = [int(x) for x in multiscale_meta['mp_per_level']]
+                prefixes = _processor_key_prefix(b, True, multiscale_meta)
+                for px in prefixes:
+                    # Derive the fuser key from the block key by replacing the module name
+                    # e.g. model.pre_blocks.0.2.  → model.ms_z_fusers_pre.0.2.
+                    if 'pre_blocks' in px:
+                        allowed_prefixes.append(px.replace('model.pre_blocks.', 'model.ms_z_fusers_pre.'))
+                    elif 'coarsest_blocks' in px:
+                        allowed_prefixes.append(px.replace('model.coarsest_blocks.', 'model.ms_z_fusers_coarsest.'))
+                    elif 'post_blocks' in px:
+                        allowed_prefixes.append(px.replace('model.post_blocks.', 'model.ms_z_fusers_post.'))
 
     # Multiscale pool/unpool modules — owned by stage that has the corresponding boundary block
     if is_multiscale and multiscale_meta is not None:
@@ -112,6 +147,7 @@ def slice_state_dict_for_stage(
     is_last  = (stage_idx == num_stages - 1)
     if is_first:
         allowed_prefixes.extend(_ENCODER_PREFIXES)
+        allowed_prefixes.extend(['model.vae_encoder.', 'model.aux_decoder.'])
     if is_last:
         allowed_prefixes.extend(_DECODER_PREFIXES)
 

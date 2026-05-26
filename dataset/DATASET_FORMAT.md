@@ -238,7 +238,7 @@ metadata attrs when present
 ```
 
 Rollout uses this file for initial conditions, then writes a separate output
-HDF5 per sample.
+HDF5 per sample or per VAE sample.
 
 ## Rollout Output Format
 
@@ -246,7 +246,7 @@ HDF5 per sample.
 
 ```text
 outputs/rollout/rollout_sample{sample_id}_steps{steps}.h5
-outputs/rollout/rollout_sample{sample_id}_steps{steps}.h5
+outputs/rollout/rollout_sample{sample_id}_vaesample{idx}_steps{steps}.h5
 ```
 
 Each output file has one sample and this `nodal_data` layout:
@@ -264,7 +264,7 @@ num_timesteps = rollout_steps + 1
 ```
 
 Per-sample metadata stores sample id, node and edge counts, rollout time, model
-path and config file. Global metadata stores feature
+path, config file, and optional VAE sample index. Global metadata stores feature
 names and the normalization arrays used for inference.
 
 ## Builder Notes

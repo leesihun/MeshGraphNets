@@ -6,6 +6,7 @@ synchronous (no-microbatching) training loop with cross-rank autograd bridging.
 
 Supported configs:
   - flat processor, multiscale V-cycle
+  - VAE (use_vae=True)
   - world edges (use_world_edges=True)
   - EMA (use_ema=True)
   - torch.compile (use_compile=True)
@@ -13,6 +14,9 @@ Supported configs:
 Notes:
   - Same dataloader on every rank (shuffle=False) so the last rank has graph.y
     for loss computation, and all ranks have graph topology for multiscale pool/unpool.
+  - VAE losses (MMD + aux) are added to stage-0's sync_loss only.
+    The reconstruction gradient does NOT flow back through z to vae_encoder across
+    stage boundaries (z_per_node is detached); vae_encoder trains via MMD/aux only.
 """
 
 from __future__ import annotations
@@ -269,47 +273,72 @@ def _profile_and_partition(rank, config, train_loader, device, L, num_stages):
 # One-batch forward step (dispatches flat vs multiscale)
 # ---------------------------------------------------------------------------
 
-def _forward_step(stage: ModelSplitStage, graph, device, config):
+def _forward_step(stage: ModelSplitStage, graph, device, config,
+                  det_mode: bool = False):
     """Execute one forward pass for a single batch.
 
+    When det_mode=True, z is forced to zero (deterministic auxiliary loss pass).
+    Noise injection is skipped in det_mode (graph already noised by main pass).
     Returns sync_loss (scalar) for .backward(), and (loss, count) for last stage.
     """
     rank       = stage.stage_idx
     is_first   = stage.is_first
     is_last    = stage.is_last
+    use_vae    = stage.use_vae
     use_ms     = stage.use_multiscale
+    use_we     = stage.use_world_edges
+
+    lambda_mmd = float(config.get('lambda_mmd', 1.0))
+    lambda_kl  = float(config.get('lambda_kl', 0.0))
+    beta_aux   = float(config.get('beta_aux', 1.0))
 
     # ---------- First stage ----------
     if is_first:
-        stage.apply_input_noise(graph)
+        if not det_mode:
+            stage.apply_input_noise(graph)
         x, ea, ei, wea, wei = stage.encode(graph)
+
+        # VAE: encode z on stage 0 (zeros in det_mode)
+        z_per_node = None
+        z_full = None
+        vae_sync_loss = torch.zeros((), device=device, dtype=x.dtype)
+        if use_vae:
+            z_per_node, z_full, vae_losses, aux_loss = stage.encode_vae(
+                graph, use_zero_z=det_mode)
+            if not det_mode:
+                vae_sync_loss = (lambda_mmd * vae_losses['mmd'].to(dtype=x.dtype)
+                                 + lambda_kl  * vae_losses['kl'].to(dtype=x.dtype)
+                                 + beta_aux   * aux_loss.to(dtype=x.dtype))
 
         # Run local blocks
         if not use_ms:
             x, ea, ei, wea, wei = stage.run_local_blocks_flat(
-                x, ea, ei, wea, wei)
+                x, ea, ei, wea, wei, z_per_node)
             skip_stack, cur_level = [], 0
         else:
-            x, ea, ei, skip_stack, wea, wei, cur_level = (
+            x, ea, ei, skip_stack, wea, wei, z_per_node, cur_level = (
                 stage.run_local_blocks_multiscale(
-                    x, ea, ei, [], wea, wei, 0, graph))
+                    x, ea, ei, [], wea, wei, z_per_node, 0, graph,
+                    z_full=z_full))
 
         sentinel = stage.send_to_next(x, ea, ei, skip_stack, wea, wei,
-                                       cur_level)
-        sync_loss = sentinel.sum()
+                                       z_per_node, cur_level, z_full=z_full)
+        sync_loss = sentinel.sum() + vae_sync_loss
         return sync_loss, None, None
 
     # ---------- Last stage ----------
     elif is_last:
-        x, ea, ei, wea, wei, skip_stack, cur_level = stage.recv_from_prev()
+        (x, ea, ei, wea, wei, skip_stack,
+         z_per_node, z_full, cur_level) = stage.recv_from_prev()
 
         if not use_ms:
             x, ea, ei, wea, wei = stage.run_local_blocks_flat(
-                x, ea, ei, wea, wei)
+                x, ea, ei, wea, wei, z_per_node)
         else:
-            x, ea, ei, skip_stack, wea, wei, cur_level = (
+            x, ea, ei, skip_stack, wea, wei, z_per_node, cur_level = (
                 stage.run_local_blocks_multiscale(
-                    x, ea, ei, list(skip_stack), wea, wei, cur_level, graph))
+                    x, ea, ei, list(skip_stack), wea, wei, z_per_node, cur_level, graph,
+                    z_full=z_full))
 
         predicted = stage.decode(x, ea, ei)
         target    = graph.y
@@ -319,18 +348,20 @@ def _forward_step(stage: ModelSplitStage, graph, device, config):
 
     # ---------- Middle stage ----------
     else:
-        x, ea, ei, wea, wei, skip_stack, cur_level = stage.recv_from_prev()
+        (x, ea, ei, wea, wei, skip_stack,
+         z_per_node, z_full, cur_level) = stage.recv_from_prev()
 
         if not use_ms:
             x, ea, ei, wea, wei = stage.run_local_blocks_flat(
-                x, ea, ei, wea, wei)
+                x, ea, ei, wea, wei, z_per_node)
         else:
-            x, ea, ei, skip_stack, wea, wei, cur_level = (
+            x, ea, ei, skip_stack, wea, wei, z_per_node, cur_level = (
                 stage.run_local_blocks_multiscale(
-                    x, ea, ei, list(skip_stack), wea, wei, cur_level, graph))
+                    x, ea, ei, list(skip_stack), wea, wei, z_per_node, cur_level, graph,
+                    z_full=z_full))
 
         sentinel = stage.send_to_next(x, ea, ei, skip_stack, wea, wei,
-                                       cur_level)
+                                       z_per_node, cur_level, z_full=z_full)
         return sentinel.sum(), None, None
 
 
@@ -350,6 +381,9 @@ def _train_one_epoch(
     num_stages = stage.num_stages
     is_last    = stage.is_last
     use_ms     = stage.use_multiscale
+    use_vae    = stage.use_vae
+
+    lambda_det = float(config.get('lambda_det', 0.0)) if use_vae else 0.0
 
     for graph in loader:
         # All stages move graph when multiscale (pool/unpool need topology) or first/last
@@ -363,6 +397,14 @@ def _train_one_epoch(
                 stage, graph, device, config)
 
         sync_loss.backward()
+
+        # Deterministic auxiliary pass: second forward with z=0, accumulates gradients.
+        # Forces the graph pathway to predict y without relying on the VAE encoder.
+        if lambda_det > 0.0:
+            with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
+                det_sync_loss, _, _ = _forward_step(
+                    stage, graph, device, config, det_mode=True)
+            (lambda_det * det_sync_loss).backward()
 
         torch.nn.utils.clip_grad_norm_(stage.parameters(), max_norm=3.0)
         optimizer.step()

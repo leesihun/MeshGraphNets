@@ -2,8 +2,6 @@
 
 import os
 
-from general_modules.removed_feature_guard import validate_no_removed_config
-
 def load_config(config_path):
     """Load configuration config.txt"""
     config = {}
@@ -39,8 +37,6 @@ def load_config(config_path):
                     continue
 
                 config[key] = parse_value(value)
-
-    validate_no_removed_config(config, source=f"config file '{config_path}'")
 
     print(f"Configuration loaded with {len(config)} parameters")
 
@@ -84,3 +80,4 @@ def parse_value(value_str):
     except ValueError:
         # Return string value as lowercase
         return value_str.lower()
+

@@ -2,56 +2,58 @@ import os
 import tqdm
 import torch
 import numpy as np
+from copy import deepcopy
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
-
 from general_modules.mesh_utils_fast import (
+    save_inference_results_fast,
+    render_plot_data,
     edges_to_triangles_gpu,
     edges_to_triangles_optimized,
-    render_plot_data,
-    save_inference_results_fast,
 )
 
 
 def build_ema_model(model, config):
-    """Create an EMA shadow model if use_ema is enabled."""
+    """Create an EMA shadow model if use_ema is enabled.
+
+    Returns the AveragedModel or None if EMA is disabled.
+    The source model should be the raw nn.Module (before torch.compile or DDP wrapping).
+    """
     if not config.get('use_ema', False):
         return None
     decay = float(config.get('ema_decay', 0.999))
     ema_model = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(decay=decay))
+    # Disable gradients on shadow parameters
     for p in ema_model.parameters():
         p.requires_grad_(False)
     return ema_model
-
 
 def save_debug_batch(epoch, batch_idx, graph, predicted, target, log_dir):
     """Save actual input/output values to debug file for inspection."""
     try:
         debug_file = os.path.join(log_dir, f'debug_epoch{epoch:03d}_batch{batch_idx:03d}.npz')
 
+        # Convert to numpy
         x_np = graph.x.cpu().numpy()
         y_np = target.cpu().numpy()
         pred_np = predicted.cpu().numpy()
 
-        np.savez(
-            debug_file,
-            x=x_np,
-            y=y_np,
-            pred=pred_np,
-            x_mean=x_np.mean(axis=0),
-            x_std=x_np.std(axis=0),
-            y_mean=y_np.mean(axis=0),
-            y_std=y_np.std(axis=0),
-            pred_mean=pred_np.mean(axis=0),
-            pred_std=pred_np.std(axis=0),
-        )
+        np.savez(debug_file,
+                 x=x_np,
+                 y=y_np,
+                 pred=pred_np,
+                 x_mean=x_np.mean(axis=0),
+                 x_std=x_np.std(axis=0),
+                 y_mean=y_np.mean(axis=0),
+                 y_std=y_np.std(axis=0),
+                 pred_mean=pred_np.mean(axis=0),
+                 pred_std=pred_np.std(axis=0))
 
         tqdm.tqdm.write(f"  Saved debug data to {debug_file}")
     except Exception as e:
         tqdm.tqdm.write(f"  Warning: Could not save debug data: {e}")
 
-
 def _build_loss_weights(config, device):
-    """Build per-feature loss weights normalized to sum to 1."""
+    """Build per-feature loss weights normalized to sum to 1 (weighted mean)."""
     loss_weights = config.get('feature_loss_weights', None)
     if loss_weights is not None:
         if not isinstance(loss_weights, list):
@@ -62,7 +64,7 @@ def _build_loss_weights(config, device):
 
 
 def _per_node_loss(errors, loss_weights):
-    """Reduce feature errors to one scalar per node."""
+    """Reduce feature errors to one scalar per node (mean over features)."""
     if loss_weights is not None:
         return torch.sum(errors * loss_weights, dim=-1)
     return torch.mean(errors, dim=-1)
@@ -89,7 +91,7 @@ def _accum_window_size(batch_idx, total_batches, actual_accum):
 
 
 def log_training_config(config):
-    """Log loss weights and multiscale architecture to stdout."""
+    """Log per-feature loss weights and multiscale architecture to stdout."""
     loss_weights_cfg = config.get('feature_loss_weights', None)
     if loss_weights_cfg is not None:
         if not isinstance(loss_weights_cfg, list):
@@ -101,27 +103,33 @@ def log_training_config(config):
     else:
         print("Per-feature loss weights: equal (default)")
 
+    if config.get('use_vae', False):
+        z_dim   = config.get('vae_latent_dim', 32)
+        mp_enc  = config.get('vae_mp_layers', 2)
+        lam     = config.get('lambda_mmd', 100.0)
+        b_aux   = config.get('beta_aux', 0.1)
+        alpha   = config.get('alpha_recon', 1.0)
+        l_det   = config.get('lambda_det', 0.5)
+        print(f"VAE (MMD): ENABLED (z_dim={z_dim}, vae_mp_layers={mp_enc}, "
+              f"lambda_mmd={lam}, beta_aux={b_aux}, alpha_recon={alpha}, "
+              f"lambda_det={l_det})")
+    else:
+        print("VAE: disabled")
+
     if config.get('use_multiscale', False):
-        levels = int(config.get('multiscale_levels', 1))
-        mp = config.get('mp_per_level', None)
-        if mp is None:
-            mp = [
-                int(config.get('fine_mp_pre', 5)),
-                int(config.get('coarse_mp_num', 5)),
-                int(config.get('fine_mp_post', 5)),
-            ]
-        if not isinstance(mp, list):
-            mp = [int(mp)]
-        print(
-            f"Multi-Scale: ENABLED (V-cycle, {levels} coarsening levels, "
-            f"{sum(int(x) for x in mp)} total GnBlocks)"
-        )
-        for i in range(levels):
-            print(f"  Level {i} pre:  {mp[i]} blocks")
-        print(f"  Coarsest:    {mp[levels]} blocks")
-        for i in range(levels - 1, -1, -1):
-            print(f"  Level {i} post: {mp[2 * levels - i]} blocks")
-        print("  [message_passing_num is IGNORED when use_multiscale=True]")
+        _L = int(config.get('multiscale_levels', 1))
+        _mp = config.get('mp_per_level', None)
+        if _mp is None:
+            _mp = [int(config.get('fine_mp_pre', 5)), int(config.get('coarse_mp_num', 5)), int(config.get('fine_mp_post', 5))]
+        if not isinstance(_mp, list):
+            _mp = [int(_mp)]
+        print(f"Multi-Scale: ENABLED (V-cycle, {_L} coarsening levels, {sum(int(x) for x in _mp)} total GnBlocks)")
+        for i in range(_L):
+            print(f"  Level {i} pre:  {_mp[i]} blocks")
+        print(f"  Coarsest:    {_mp[_L]} blocks")
+        for i in range(_L - 1, -1, -1):
+            print(f"  Level {i} post: {_mp[2 * _L - i]} blocks")
+        print(f"  [message_passing_num is IGNORED when use_multiscale=True]")
     else:
         print(f"Multi-Scale: disabled (flat GNN, message_passing_num={config.get('message_passing_num')})")
 
@@ -130,9 +138,16 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
     model.train()
     total_loss_sum = 0.0
     total_loss_count = 0
-    total_opt_loss_sum = 0.0
+    total_opt_loss_sum = 0.0  # actual optimization loss (recon + lambda_mmd*mmd when VAE)
     total_grad_norm = 0.0
-    num_steps = 0
+    total_mmd_sum = 0.0
+    total_aux_sum = 0.0
+    total_kl_sum = 0.0
+    total_kl_raw_sum = 0.0
+    total_det_sum = 0.0
+    mmd_count = 0
+    num_batches = 0
+    num_steps = 0  # number of optimizer steps taken
 
     verbose = config.get('verbose', False)
     monitor_gradients = config.get('monitor_gradients', False)
@@ -141,6 +156,18 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
     use_compile = config.get('use_compile', False)
     amp_dtype = torch.bfloat16
 
+    # VAE config (MMD objective: InfoVAE-style aggregate-posterior matching)
+    use_vae = config.get('use_vae', False)
+    alpha_recon = float(config.get('alpha_recon', 1.0))
+    lambda_mmd = float(config.get('lambda_mmd', 1.0))
+    beta_aux = float(config.get('beta_aux', 1.0))
+    # Free-bits floor: when > 0, adds a per-dim KL collapse safeguard (coefficient implicit = 1.0)
+    free_bits = float(config.get('free_bits', 0.0))
+    # Deterministic auxiliary loss: forces the graph-only pathway (z=0) to predict y.
+    # Closes the "posterior shortcut" — prevents z from absorbing deterministic content.
+    lambda_det = float(config.get('lambda_det', 0.0)) if use_vae else 0.0
+
+    # Gradient accumulation: 0 = full epoch (1 step/epoch), 1 = per-batch (default), N = every N batches
     grad_accum_steps = config.get('grad_accum_steps', 1)
     total_batches = len(dataloader)
     actual_accum = total_batches if grad_accum_steps == 0 else grad_accum_steps
@@ -151,62 +178,89 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
     iterable = _iter if _iter is not None else dataloader
     pbar = tqdm.tqdm(iterable, total=total_batches)
     for batch_idx, graph in enumerate(pbar):
+        # DEBUG: disabled when use_compile=True (.item() causes graph breaks)
         debug_internal = (not use_compile) and (batch_idx == 0 and (epoch < 5 or epoch % 10 == 0))
+
         graph = _move_graph_to_device(graph, device, config)
 
         with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
-            predicted, target = model(graph, debug=debug_internal)
+            predicted_acc, target_acc, vae_losses, aux_loss_val = model(graph, debug=debug_internal)
+            mmd_loss_val = vae_losses['mmd']
+            kl_loss_val = vae_losses['kl']
+            kl_raw_val = vae_losses['kl_raw']
+
+            # Deterministic auxiliary forward (z=0). Forces graph-only pathway to predict y,
+            # so z cannot absorb deterministic content via the encoder->y posterior shortcut.
+            # add_noise=False: the first forward already injected noise into graph in-place.
+            det_loss_val = predicted_acc.new_zeros(())
+            if use_vae and lambda_det > 0.0:
+                predicted_det, _, _, _ = model(graph, add_noise=False, use_zero_z=True)
+                errors_det = torch.nn.functional.huber_loss(
+                    predicted_det, target_acc, reduction='none', delta=1.0)
+                det_loss_val, _, _ = _loss_from_errors(errors_det, loss_weights)
 
             if batch_idx == 0 and verbose:
                 tqdm.tqdm.write(f"\n=== DEBUG Epoch {epoch} Batch 0 ===")
-                tqdm.tqdm.write(
-                    f"  Pred:   mean={predicted.mean().item():.6f}, "
-                    f"std={predicted.std().item():.6f}, "
-                    f"min={predicted.min().item():.4f}, max={predicted.max().item():.4f}"
-                )
-                tqdm.tqdm.write(
-                    f"  Target: mean={target.mean().item():.6f}, "
-                    f"std={target.std().item():.6f}, "
-                    f"min={target.min().item():.4f}, max={target.max().item():.4f}"
-                )
-                if predicted.std().item() < 0.01:
-                    tqdm.tqdm.write("  WARNING: Pred std < 0.01 - model outputting near-constant values!")
+                tqdm.tqdm.write(f"  Pred:   mean={predicted_acc.mean().item():.6f}, std={predicted_acc.std().item():.6f}, min={predicted_acc.min().item():.4f}, max={predicted_acc.max().item():.4f}")
+                tqdm.tqdm.write(f"  Target: mean={target_acc.mean().item():.6f}, std={target_acc.std().item():.6f}, min={target_acc.min().item():.4f}, max={target_acc.max().item():.4f}")
+                if predicted_acc.std().item() < 0.01:
+                    tqdm.tqdm.write(f"  *** WARNING: Pred std < 0.01 - model outputting near-constant values! ***")
                 if epoch >= 5:
                     log_dir = config.get('log_dir', '.')
-                    save_debug_batch(epoch, batch_idx, graph, predicted, target, log_dir)
+                    save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, log_dir)
 
-            errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
-            loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
+            errors = torch.nn.functional.huber_loss(predicted_acc, target_acc, reduction='none', delta=1.0)
+            recon_loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
+            if use_vae:
+                loss = alpha_recon * recon_loss + lambda_mmd * mmd_loss_val + beta_aux * aux_loss_val
+                if lambda_det > 0.0:
+                    loss = loss + lambda_det * det_loss_val
+                if free_bits > 0.0:
+                    loss = loss + kl_loss_val
+            else:
+                loss = recon_loss
+            # Scale loss so accumulated gradients equal the mean within each accumulation window.
             scaled_loss = loss / _accum_window_size(batch_idx, total_batches, actual_accum)
 
         scaled_loss.backward()
 
+        # Per-feature loss breakdown for diagnostics
         if batch_idx == 0 and epoch % 10 == 0 and verbose:
             per_feature_loss_mean = torch.mean(errors, dim=0)
             per_feature_loss_max = torch.max(errors, dim=0)[0]
             per_feature_loss_min = torch.min(errors, dim=0)[0]
             per_feature_loss_std = torch.std(errors, dim=0)
             feature_names = ['x_disp', 'y_disp', 'z_disp', 'stress']
-            tqdm.tqdm.write(f"\n=== Per-Feature Loss (Epoch {epoch}, Batch {batch_idx}) ===")
+            tqdm.tqdm.write(f"\n=== Per-Feature MSE Loss (Epoch {epoch}, Batch {batch_idx}) ===")
             for feat_idx, feat_name in enumerate(feature_names[:len(per_feature_loss_mean)]):
-                tqdm.tqdm.write(
-                    f"  {feat_name}: mean={per_feature_loss_mean[feat_idx].item():.2e}, "
-                    f"max={per_feature_loss_max[feat_idx].item():.2e}, "
-                    f"min={per_feature_loss_min[feat_idx].item():.2e}, "
-                    f"std={per_feature_loss_std[feat_idx].item():.2e}"
-                )
+                tqdm.tqdm.write(f"  {feat_name}: mean={per_feature_loss_mean[feat_idx].item():.2e}, max={per_feature_loss_max[feat_idx].item():.2e}, min={per_feature_loss_min[feat_idx].item():.2e}, std={per_feature_loss_std[feat_idx].item():.2e}")
 
         loss_val = batch_loss_sum / batch_loss_count
         total_loss_sum += batch_loss_sum
         total_loss_count += batch_loss_count
         total_opt_loss_sum += loss.item() * batch_loss_count
+        num_batches += 1
+        if use_vae:
+            mmd_scalar = mmd_loss_val.item() if hasattr(mmd_loss_val, 'item') else float(mmd_loss_val)
+            aux_scalar = aux_loss_val.item() if hasattr(aux_loss_val, 'item') else float(aux_loss_val)
+            kl_scalar = kl_loss_val.item() if hasattr(kl_loss_val, 'item') else float(kl_loss_val)
+            kl_raw_scalar = kl_raw_val.item() if hasattr(kl_raw_val, 'item') else float(kl_raw_val)
+            det_scalar = det_loss_val.item() if hasattr(det_loss_val, 'item') else float(det_loss_val)
+            total_mmd_sum += mmd_scalar
+            total_aux_sum += aux_scalar
+            total_kl_sum += kl_scalar
+            total_kl_raw_sum += kl_raw_scalar
+            total_det_sum += det_scalar
+            mmd_count += 1
 
+        # Step optimizer at end of accumulation window or final batch
         is_last_batch = (batch_idx == total_batches - 1)
         if (batch_idx + 1) % actual_accum == 0 or is_last_batch:
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.0)
             if monitor_gradients:
                 total_grad_norm += grad_norm.item()
                 num_steps += 1
+
                 if verbose:
                     layer_grad_stats = []
                     for name, param in model.named_parameters():
@@ -214,9 +268,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                             grad_mean = param.grad.abs().mean().item()
                             grad_max = param.grad.abs().max().item()
                             if grad_mean > 1e-10:
-                                layer_grad_stats.append(
-                                    f"{name}: mean={grad_mean:.2e}, max={grad_max:.2e}"
-                                )
+                                layer_grad_stats.append(f"{name}: mean={grad_mean:.2e}, max={grad_max:.2e}")
                     if layer_grad_stats:
                         tqdm.tqdm.write(f"\n=== Gradient Stats (Step after batch {batch_idx}) ===")
                         tqdm.tqdm.write(f"Total grad norm: {grad_norm.item():.2e}")
@@ -232,42 +284,76 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                 scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
+        # Update progress bar every 10 batches to reduce memory query overhead
         if batch_idx % 10 == 0:
-            mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-            postfix = {'loss': f'{loss_val:.2e}', 'mem': f'{mem_gb:.1f}GB'}
+            mem_gb = torch.cuda.memory_allocated() / 1e9
+            postfix = {'rec': f'{loss_val:.2e}', 'mem': f'{mem_gb:.1f}GB'}
+            if use_vae:
+                mmd_val = mmd_loss_val.item() if hasattr(mmd_loss_val, 'item') else float(mmd_loss_val)
+                aux_val = aux_loss_val.item() if hasattr(aux_loss_val, 'item') else float(aux_loss_val)
+                postfix['mmd'] = f'{mmd_val:.2e}'
+                postfix['aux'] = f'{aux_val:.2e}'
+                postfix['λ']   = f'{lambda_mmd:.1e}'
+                if lambda_det > 0.0:
+                    det_v = det_loss_val.item() if hasattr(det_loss_val, 'item') else float(det_loss_val)
+                    postfix['det'] = f'{det_v:.2e}'
+                if free_bits > 0.0:
+                    kl_val = kl_loss_val.item() if hasattr(kl_loss_val, 'item') else float(kl_loss_val)
+                    kl_raw_v = kl_raw_val.item() if hasattr(kl_raw_val, 'item') else float(kl_raw_val)
+                    postfix['kl'] = f'{kl_val:.2e}'
+                    postfix['kl_raw'] = f'{kl_raw_v:.2e}'
+                postfix['total'] = f'{loss.item():.2e}'
             if monitor_gradients:
                 postfix['grad'] = f'{grad_norm.item():.2e}'
             pbar.set_postfix(postfix)
 
     avg_grad_norm = total_grad_norm / num_steps if num_steps > 0 else 0.0
-    if monitor_gradients and num_steps > 0:
-        tqdm.tqdm.write(
-            f"Epoch {epoch} avg gradient norm: {avg_grad_norm:.2e} "
-            f"({num_steps} optimizer steps)"
-        )
-        if avg_grad_norm < 1e-6:
-            tqdm.tqdm.write("  WARNING: Very small gradients detected (< 1e-6)")
-        elif avg_grad_norm > 1e2:
-            tqdm.tqdm.write("  WARNING: Very large gradients detected (> 100)")
 
-    return {
+    # Print gradient summary for the epoch
+    if monitor_gradients and num_steps > 0:
+        tqdm.tqdm.write(f"Epoch {epoch} avg gradient norm: {avg_grad_norm:.2e} ({num_steps} optimizer steps)")
+        if avg_grad_norm < 1e-6:
+            tqdm.tqdm.write("  ⚠️  WARNING: Very small gradients detected (< 1e-6) - possible vanishing gradient problem!")
+        elif avg_grad_norm > 1e2:
+            tqdm.tqdm.write("  ⚠️  WARNING: Very large gradients detected (> 100) - possible exploding gradient problem!")
+
+    result = {
         'mean': total_loss_sum / total_loss_count,
         'total_mean': total_opt_loss_sum / total_loss_count,
         'sum': total_loss_sum,
         'count': total_loss_count,
     }
+    if use_vae and mmd_count > 0:
+        result['mmd_mean'] = total_mmd_sum / mmd_count
+        result['aux_mean'] = total_aux_sum / mmd_count
+        if lambda_det > 0.0:
+            result['det_mean'] = total_det_sum / mmd_count
+        if free_bits > 0.0:
+            result['kl_mean'] = total_kl_sum / mmd_count
+            result['kl_raw_mean'] = total_kl_raw_sum / mmd_count
+    return result
 
-
-def _eval_forward_errors(model, graph, use_amp, amp_dtype):
+def _eval_forward_errors(model, graph, use_amp, amp_dtype, use_posterior):
     with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
-        predicted, target = model(graph, add_noise=False)
+        predicted, target, vae_losses, _ = model(
+            graph,
+            add_noise=False,
+            use_posterior=use_posterior,
+        )
         errors = torch.nn.functional.huber_loss(
             predicted, target, reduction='none', delta=1.0
         )
-    return errors
+    mmd_loss_val = vae_losses['mmd'] if isinstance(vae_losses, dict) else vae_losses
+    return errors, mmd_loss_val
 
 
-def validate_epoch(model, dataloader, device, config, epoch=0, progress_name='Validation'):
+def _evaluate_epoch(model, dataloader, device, config, epoch=0, *,
+                    use_posterior=None, num_prior_samples=1, progress_name='Validation'):
+    if num_prior_samples < 1:
+        raise ValueError("num_prior_samples must be >= 1")
+    if use_posterior is not False and num_prior_samples != 1:
+        raise ValueError("num_prior_samples > 1 is only valid for prior evaluation")
+
     model.eval()
 
     verbose = config.get('verbose', False)
@@ -275,24 +361,55 @@ def validate_epoch(model, dataloader, device, config, epoch=0, progress_name='Va
     use_amp = config.get('use_amp', True)
     amp_dtype = torch.bfloat16
 
+    use_vae = config.get('use_vae', False)
+    alpha_recon = float(config.get('alpha_recon', 1.0))
+    lambda_mmd = float(config.get('lambda_mmd', 100.0))
+
     with torch.no_grad():
         total_loss_sum = 0.0
         total_loss_count = 0
         total_opt_loss_sum = 0.0
+        total_mmd_sum = 0.0
+        mmd_count = 0
+
+        # Accumulate per-feature losses across all batches
         accumulated_per_feature_loss = None
         accumulated_per_feature_count = 0
 
         pbar = tqdm.tqdm(dataloader, desc=progress_name)
         for batch_idx, graph in enumerate(pbar):
+            # Memory tracking for first 3 validation batches
             if batch_idx < 3 and verbose:
-                mem_before = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+                mem_before = torch.cuda.memory_allocated() / 1e9
                 tqdm.tqdm.write(f"\n=== {progress_name} Batch {batch_idx} ===")
                 tqdm.tqdm.write(f"Before: {mem_before:.2f}GB")
 
             graph = _move_graph_to_device(graph, device, config)
-            errors = _eval_forward_errors(model, graph, use_amp, amp_dtype)
-            loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
+            if use_vae and use_posterior is False and num_prior_samples > 1:
+                errors_sum = None
+                for _ in range(num_prior_samples):
+                    sample_errors, _ = _eval_forward_errors(
+                        model, graph, use_amp, amp_dtype, use_posterior=False
+                    )
+                    if errors_sum is None:
+                        errors_sum = sample_errors
+                    else:
+                        errors_sum += sample_errors
+                errors = errors_sum / num_prior_samples
+                mmd_loss_val = errors.new_zeros(())
+            else:
+                errors, mmd_loss_val = _eval_forward_errors(
+                    model, graph, use_amp, amp_dtype, use_posterior=use_posterior
+                )
+
+            recon_loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
+            if use_vae:
+                opt_loss = alpha_recon * recon_loss + lambda_mmd * mmd_loss_val
+            else:
+                opt_loss = recon_loss
+
+            # Accumulate per-feature losses
             per_feature_loss = torch.sum(errors, dim=0)
             if accumulated_per_feature_loss is None:
                 accumulated_per_feature_loss = per_feature_loss
@@ -301,18 +418,28 @@ def validate_epoch(model, dataloader, device, config, epoch=0, progress_name='Va
             accumulated_per_feature_count += errors.shape[0]
 
             if batch_idx < 3 and verbose:
-                mem_after = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-                peak = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-                tqdm.tqdm.write(f"After: {mem_after:.2f}GB (+{mem_after - mem_before:.2f}GB)")
-                tqdm.tqdm.write(f"Peak: {peak:.2f}GB\n")
+                mem_after = torch.cuda.memory_allocated() / 1e9
+                tqdm.tqdm.write(f"After: {mem_after:.2f}GB (+{mem_after-mem_before:.2f}GB)")
+                tqdm.tqdm.write(f"Peak: {torch.cuda.max_memory_allocated()/1e9:.2f}GB\n")
 
-            mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-            pbar.set_postfix({'loss': f'{loss.item():.2e}', 'mem': f'{mem_gb:.1f}GB'})
+            # Update progress bar
+            mem_gb = torch.cuda.memory_allocated() / 1e9
+            postfix = {'rec': f'{recon_loss.item():.2e}', 'mem': f'{mem_gb:.1f}GB'}
+            if use_vae:
+                mmd_scalar = mmd_loss_val.item() if hasattr(mmd_loss_val, 'item') else float(mmd_loss_val)
+                postfix['mmd'] = f'{mmd_scalar:.2e}'
+                postfix['total'] = f'{opt_loss.item():.2e}'
+            pbar.set_postfix(postfix)
 
             total_loss_sum += batch_loss_sum
             total_loss_count += batch_loss_count
-            total_opt_loss_sum += loss.item() * batch_loss_count
+            total_opt_loss_sum += opt_loss.item() * batch_loss_count
+            if use_vae:
+                mmd_scalar = mmd_loss_val.item() if hasattr(mmd_loss_val, 'item') else float(mmd_loss_val)
+                total_mmd_sum += mmd_scalar
+                mmd_count += 1
 
+        # Print per-feature validation loss breakdown
         if verbose and accumulated_per_feature_loss is not None and accumulated_per_feature_count > 0:
             avg_per_feature_loss = accumulated_per_feature_loss / accumulated_per_feature_count
             feature_names = ['x_disp', 'y_disp', 'z_disp', 'stress']
@@ -321,12 +448,57 @@ def validate_epoch(model, dataloader, device, config, epoch=0, progress_name='Va
                 tqdm.tqdm.write(f"  {feat_name}: {avg_per_feature_loss[feat_idx].item():.2e}")
             tqdm.tqdm.write("")
 
-    return {
+    result = {
         'mean': total_loss_sum / total_loss_count,
         'total_mean': total_opt_loss_sum / total_loss_count,
         'sum': total_loss_sum,
         'count': total_loss_count,
     }
+    if use_vae and mmd_count > 0:
+        result['mmd_mean'] = total_mmd_sum / mmd_count
+    return result
+
+
+def validate_epoch(model, dataloader, device, config, epoch=0):
+    return _evaluate_epoch(
+        model,
+        dataloader,
+        device,
+        config,
+        epoch,
+        use_posterior=None,
+        num_prior_samples=1,
+        progress_name='Validation',
+    )
+
+
+def evaluate_vae_posterior_epoch(model, dataloader, device, config, epoch=0, progress_name='ValidationQ'):
+    return _evaluate_epoch(
+        model,
+        dataloader,
+        device,
+        config,
+        epoch,
+        use_posterior=True,
+        num_prior_samples=1,
+        progress_name=progress_name,
+    )
+
+
+def evaluate_vae_prior_epoch(model, dataloader, device, config, epoch=0, *,
+                             num_prior_samples, progress_name=None):
+    if progress_name is None:
+        progress_name = f'ValidationPrior@{num_prior_samples}'
+    return _evaluate_epoch(
+        model,
+        dataloader,
+        device,
+        config,
+        epoch,
+        use_posterior=False,
+        num_prior_samples=num_prior_samples,
+        progress_name=progress_name,
+    )
 
 
 def test_model(model, dataloader, device, config, epoch, dataset=None, output_prefix='test'):
@@ -335,13 +507,18 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
     verbose = config.get('verbose', False)
     loss_weights = _build_loss_weights(config, device)
 
+    # Use GPU for triangle reconstruction if available
     use_gpu = device.type == 'cuda' if hasattr(device, 'type') else (device != 'cpu')
     mesh_device = device if use_gpu else 'cpu'
+
+    # Cache reconstructed faces by sample_id (topology is constant across timesteps)
     faces_cache = {}
 
     use_amp = config.get('use_amp', True)
     amp_dtype = torch.bfloat16
 
+    # Cap test batches to avoid NCCL timeout in DDP (test runs only on rank 0;
+    # other ranks wait at a barrier whose timeout is the process-group timeout).
     total_test = len(dataloader)
     max_test_batches = int(config.get('test_max_batches', 200))
     effective_total = min(max_test_batches, total_test)
@@ -349,6 +526,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
         print(f"  Test: evaluating {effective_total}/{total_test} samples "
               f"(set test_max_batches in config to change)")
 
+    # Get denormalization parameters from dataset
     delta_mean = None
     delta_std = None
     if dataset is not None:
@@ -360,8 +538,13 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
     with torch.no_grad():
         total_loss_sum = 0.0
         total_loss_count = 0
+        num_batches = 0
+
+        # Accumulate per-feature losses across all test batches
         accumulated_per_feature_loss = None
         accumulated_per_feature_count = 0
+
+        # Collect plot data for parallel processing
         plot_data_queue = []
 
         pbar = tqdm.tqdm(dataloader, total=effective_total)
@@ -371,12 +554,11 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
 
             graph = _move_graph_to_device(graph, device, config)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
-                predicted, target = model(graph)
-                errors = torch.nn.functional.huber_loss(
-                    predicted, target, reduction='none', delta=1.0
-                )
+                predicted, target, _, _ = model(graph, use_posterior=True)
+                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
                 loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
+            # Accumulate per-feature losses
             per_feature_loss = torch.sum(errors, dim=0)
             if accumulated_per_feature_loss is None:
                 accumulated_per_feature_loss = per_feature_loss
@@ -384,15 +566,20 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
                 accumulated_per_feature_loss += per_feature_loss
             accumulated_per_feature_count += errors.shape[0]
 
+            # Update progress bar
             mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
             pbar.set_postfix({'loss': f'{loss.item():.2e}', 'mem': f'{mem_gb:.1f}GB'})
 
             total_loss_sum += batch_loss_sum
             total_loss_count += batch_loss_count
+            num_batches += 1
 
+            # Save results with GPU-accelerated mesh reconstruction
             if batch_idx in config.get('test_batch_idx', [0, 1, 2, 3]):
                 gpu_ids = str(config.get('gpu_ids'))
 
+                # Build filename with sample_id and time_idx for clarity
+                # Extract sample_id and time_idx from graph (handle tensor or scalar)
                 sample_id = None
                 time_idx = None
                 if hasattr(graph, 'sample_id') and graph.sample_id is not None:
@@ -417,6 +604,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
                     else:
                         time_idx = int(tid)
 
+                # Build descriptive filename
                 if sample_id is not None and time_idx is not None:
                     filename = f'sample{sample_id}_t{time_idx}'
                 elif sample_id is not None:
@@ -425,40 +613,41 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
                     filename = f'batch{batch_idx}'
 
                 output_path = f'outputs/{output_prefix}/{gpu_ids}/{str(epoch)}/{filename}.h5'
-
+                
+                # Convert to numpy
                 predicted_np = predicted.float().cpu().numpy() if hasattr(predicted, 'cpu') else predicted
                 target_np = target.float().cpu().numpy() if hasattr(target, 'cpu') else target
 
+                # DENORMALIZE: Convert normalized deltas to actual physical deltas
                 if delta_mean is not None and delta_std is not None:
                     predicted_denorm = predicted_np * delta_std + delta_mean
                     target_denorm = target_np * delta_std + delta_mean
                 else:
+                    # Fallback: use normalized values
                     predicted_denorm = predicted_np
                     target_denorm = target_np
 
+                # Look up or reconstruct faces for this sample
                 cached_faces = faces_cache.get(sample_id)
                 if cached_faces is None and sample_id is not None:
+                    # Reconstruct once and cache for this sample_id
                     if use_gpu and torch.cuda.is_available():
                         edge_index_gpu = graph.edge_index.to(mesh_device)
                         cached_faces = edges_to_triangles_gpu(edge_index_gpu, device=mesh_device)
                     else:
-                        ei_np = (
-                            graph.edge_index.cpu().numpy()
-                            if hasattr(graph.edge_index, 'cpu')
-                            else np.array(graph.edge_index)
-                        )
+                        ei_np = (graph.edge_index.cpu().numpy()
+                                 if hasattr(graph.edge_index, 'cpu')
+                                 else np.array(graph.edge_index))
                         cached_faces = edges_to_triangles_optimized(ei_np)
                     faces_cache[sample_id] = cached_faces
 
+                # Save HDF5 and collect plot data
                 display_testset = config.get('display_testset', True)
                 plot_feature_idx = config.get('plot_feature_idx', -1)
                 plot_data = save_inference_results_fast(
-                    output_path,
-                    graph,
-                    predicted_norm=predicted_np,
-                    target_norm=target_np,
-                    predicted_denorm=predicted_denorm,
-                    target_denorm=target_denorm,
+                    output_path, graph,
+                    predicted_norm=predicted_np, target_norm=target_np,
+                    predicted_denorm=predicted_denorm, target_denorm=target_denorm,
                     skip_visualization=not display_testset,
                     device=mesh_device,
                     feature_idx=plot_feature_idx,
@@ -468,21 +657,23 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
                 if plot_data:
                     plot_data_queue.append(plot_data)
 
+        # Render all collected visualizations sequentially (PyVista is fast enough)
         if plot_data_queue:
             print(f"\nRendering {len(plot_data_queue)} visualizations...")
             failed = 0
-            for pd in plot_data_queue:
+            for i, pd in enumerate(plot_data_queue):
                 if not render_plot_data(pd):
                     failed += 1
             if failed:
                 print(f"Visualization done with {failed}/{len(plot_data_queue)} failures.")
             else:
                 print("All visualizations complete!")
-
+        
+        # Print per-feature test loss breakdown
         if verbose and accumulated_per_feature_loss is not None and accumulated_per_feature_count > 0:
             avg_per_feature_loss = accumulated_per_feature_loss / accumulated_per_feature_count
             feature_names = ['x_disp', 'y_disp', 'z_disp', 'stress']
-            print(f"\n=== Per-Feature Test Loss (Epoch {epoch}) ===")
+            print(f"\n=== Per-Feature Test MSE Loss (Epoch {epoch}) ===")
             for feat_idx, feat_name in enumerate(feature_names[:len(avg_per_feature_loss)]):
                 print(f"  {feat_name}: {avg_per_feature_loss[feat_idx].item():.2e}")
             print("")

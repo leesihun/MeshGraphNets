@@ -24,6 +24,8 @@ from training_profiles.setup import (
     save_checkpoint,
 )
 from training_profiles.training_loop import (
+    evaluate_vae_posterior_epoch,
+    evaluate_vae_prior_epoch,
     log_training_config,
     test_model,
     train_epoch,
@@ -225,6 +227,10 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
     dist.barrier(device_ids=[gpu_id])
 
     modelname = config.get('modelpath')
+    use_vae = config.get('use_vae', False)
+    vae_valid_prior_samples = int(config.get('vae_valid_prior_samples', 8)) if use_vae else 1
+    if vae_valid_prior_samples < 1:
+        raise ValueError("vae_valid_prior_samples must be >= 1")
 
     interrupted = False
     for epoch in range(config.get('training_epochs')):
@@ -251,6 +257,18 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         dist.all_reduce(train_totals, op=dist.ReduceOp.SUM)
         train_loss = (train_totals[0] / train_totals[1]).item()
 
+        if use_vae and 'mmd_mean' in train_metrics:
+            mmd_tensor = torch.tensor([train_metrics['mmd_mean']], device=device, dtype=torch.float64)
+            dist.all_reduce(mmd_tensor, op=dist.ReduceOp.SUM)
+            train_metrics['mmd_mean'] = (mmd_tensor[0] / world_size).item()
+        if use_vae and 'total_mean' in train_metrics:
+            total_tensor = torch.tensor(
+                [train_metrics['total_mean'] * train_metrics['count']],
+                device=device, dtype=torch.float64,
+            )
+            dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
+            train_metrics['total_mean'] = (total_tensor[0] / train_totals[1]).item()
+
         if rank == 0:
             eval_model = ema_model.module if ema_model is not None else model
 
@@ -267,8 +285,24 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 prefetch_factor=1 if num_workers > 0 else None,
                 multiprocessing_context=mp_context,
             )
-            train_eval_metrics = validate_epoch(model, train_eval_loader, device, config, epoch)
-            valid_metrics = validate_epoch(eval_model, val_loader, device, config, epoch)
+            if use_vae:
+                train_eval_metrics = evaluate_vae_posterior_epoch(
+                    eval_model, train_eval_loader, device, config, epoch,
+                    progress_name='TrainEvalQ'
+                )
+                valid_metrics = evaluate_vae_posterior_epoch(
+                    eval_model, val_loader, device, config, epoch,
+                    progress_name='ValidQ'
+                )
+                valid_prior_metrics = evaluate_vae_prior_epoch(
+                    eval_model, val_loader, device, config, epoch,
+                    num_prior_samples=vae_valid_prior_samples,
+                    progress_name=f'ValidPrior@{vae_valid_prior_samples}'
+                )
+            else:
+                train_eval_metrics = validate_epoch(model, train_eval_loader, device, config, epoch)
+                valid_metrics = validate_epoch(eval_model, val_loader, device, config, epoch)
+                valid_prior_metrics = None
             train_eval_loss = train_eval_metrics['mean']
             valid_loss = valid_metrics['mean']
         else:
@@ -295,13 +329,26 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         # Per epoch, node-weighted optimization and evaluation losses.
         current_lr = optimizer.param_groups[0]['lr']
         if rank == 0:
-            print(
-                f"Epoch {epoch}/{config['training_epochs']} "
-                f"TrainOpt: {train_loss:.2e} "
-                f"TrainEval: {train_eval_loss:.2e} "
-                f"Valid: {valid_loss:.2e} "
-                f"LR: {current_lr:.2e}"
-            )
+            if use_vae:
+                train_eval_mmd = train_eval_metrics.get('mmd_mean', 0.0)
+                train_eval_total = train_eval_metrics.get('total_mean', train_eval_loss)
+                valid_prior_loss = valid_prior_metrics['mean']
+                prior_gap = valid_prior_loss - valid_loss
+                print(
+                    f"Epoch {epoch}/{config['training_epochs']} LR: {current_lr:.2e} | "
+                    f"TrainOpt  recon={train_loss:.2e} mmd={train_metrics.get('mmd_mean', 0.0):.2e} total={train_metrics.get('total_mean', train_loss):.2e} | "
+                    f"TrainEvalQ recon={train_eval_loss:.2e} mmd={train_eval_mmd:.2e} total={train_eval_total:.2e} | "
+                    f"ValidQ    recon={valid_loss:.2e} mmd={valid_metrics.get('mmd_mean', 0.0):.2e} total={valid_metrics.get('total_mean', valid_loss):.2e} | "
+                    f"ValidPrior@{vae_valid_prior_samples} recon={valid_prior_loss:.2e} gap={prior_gap:.2e}"
+                )
+            else:
+                print(
+                    f"Epoch {epoch}/{config['training_epochs']} "
+                    f"TrainOpt: {train_loss:.2e} "
+                    f"TrainEval: {train_eval_loss:.2e} "
+                    f"Valid: {valid_loss:.2e} "
+                    f"LR: {current_lr:.2e}"
+                )
 
         # Only rank 0 saves checkpoints
         if valid_loss < best_valid_loss and rank == 0:
@@ -310,17 +357,30 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
             save_checkpoint(
                 epoch, ddp_model.module, ema_model, optimizer, scheduler,
                 train_loss, valid_loss, config, train_dataset, modelname,
+                use_vae=use_vae,
+                valid_prior_loss=valid_prior_loss if use_vae else None,
+                vae_valid_prior_samples=vae_valid_prior_samples if use_vae else None,
             )
             print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
 
         if log_file and rank == 0:
             with open(log_file, 'a') as f:
-                f.write(
-                    f"Elapsed: {time.time() - start_time:.2f}s "
-                    f"Epoch {epoch} TrainOpt {train_loss:.4e} "
-                    f"TrainEval {train_eval_loss:.4e} "
-                    f"Valid {valid_loss:.4e} LR: {current_lr:.4e}\n"
-                )
+                if use_vae:
+                    f.write(
+                        f"Elapsed: {time.time() - start_time:.2f}s "
+                        f"Epoch {epoch} LR: {current_lr:.4e} | "
+                        f"TrainOpt recon={train_loss:.4e} mmd={train_metrics.get('mmd_mean', 0.0):.4e} total={train_metrics.get('total_mean', train_loss):.4e} | "
+                        f"TrainEvalQ recon={train_eval_loss:.4e} mmd={train_eval_metrics.get('mmd_mean', 0.0):.4e} total={train_eval_metrics.get('total_mean', train_eval_loss):.4e} | "
+                        f"ValidQ recon={valid_loss:.4e} mmd={valid_metrics.get('mmd_mean', 0.0):.4e} total={valid_metrics.get('total_mean', valid_loss):.4e} | "
+                        f"ValidPrior@{vae_valid_prior_samples} recon={valid_prior_loss:.4e} gap={prior_gap:.4e}\n"
+                    )
+                else:
+                    f.write(
+                        f"Elapsed: {time.time() - start_time:.2f}s "
+                        f"Epoch {epoch} TrainOpt {train_loss:.4e} "
+                        f"TrainEval {train_eval_loss:.4e} "
+                        f"Valid {valid_loss:.4e} LR: {current_lr:.4e}\n"
+                    )
 
         # Periodically test the model on the test set
         # Use unwrapped model to avoid DDP deadlock (only rank 0 runs this)
@@ -354,6 +414,16 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
             print(f"\nTraining interrupted. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
         else:
             print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+
+    if rank == 0 and config.get('use_vae', False) and config.get('train_conditional_prior', True):
+        from training_profiles.posthoc_prior import train_posthoc_prior
+        train_posthoc_prior(config, config_filename)
+
+    # Legacy post-hoc GMM fitting on VAE latent codes (rank 0 only)
+    if rank == 0 and config.get('use_vae', False) and config.get('fit_latent_gmm', False):
+        from model.latent_gmm import run_posthoc_gmm_fitting
+        gmm_model = ema_model.module if ema_model is not None else model
+        run_posthoc_gmm_fitting(gmm_model, train_dataset, config, device, modelname)
 
     # Analyze debug files if they exist
     if rank == 0:
