@@ -23,13 +23,11 @@ through `model/MeshGraphNets.py`.
 Flat processor:
 
 - `process_with_checkpointing` checkpoints each `GnBlock`.
-- Optional VAE `z` fusion is applied before the checkpointed block.
 - World-edge tensors are preserved across the wrapper.
 
 Multiscale processor:
 
 - the same helper is used for pre, coarsest, and post block lists
-- per-arm VAE fusers are supported
 - world-edge tensors are only present on the fine-level blocks
 
 Use:

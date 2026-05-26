@@ -35,13 +35,7 @@ writes:
 outputs/b8_all/train1.log
 ```
 
-Current VAE logs look like:
-
-```text
-Elapsed: 123.45s Epoch 10 LR: 1.0000e-04 | TrainOpt recon=... mmd=... total=... | ValidQ recon=... mmd=... total=... | ValidPrior@... recon=... gap=...
-```
-
-Current non-VAE logs look like:
+Current logs look like:
 
 ```text
 Elapsed: 123.45s Epoch 10 TrainOpt 1.2345e-02 Valid 1.5678e-02 LR: 1.0000e-04
@@ -61,7 +55,7 @@ and parse the older log pattern:
 Epoch N Train Loss: ... Valid Loss: ...
 ```
 
-That does not match the current training log path or current VAE log format.
+That does not match the current training log path or current log format.
 Use these scripts only for older logs with that format, or update the scripts
 before using them for current training runs.
 

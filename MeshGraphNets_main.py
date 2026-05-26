@@ -8,8 +8,6 @@ import socket
 import torch.multiprocessing as mp
 from torch.multiprocessing.spawn import ProcessExitedException
 from general_modules.load_config import load_config
-from general_modules.data_loader import load_data
-from model.MeshGraphNets import MeshGraphNets
 from training_profiles.distributed_training import train_worker
 from training_profiles.single_training import single_worker
 from inference_profiles.rollout import run_rollout
@@ -23,15 +21,9 @@ def main():
 
     print('\n'*3)
 
-    # Display ASCII art banner
-    print("""
-    ██████╗ █████╗ ███████╗    ███╗   ███╗██╗         ███████╗██╗   ██╗██╗████████╗███████╗
-   ██╔════╝██╔══██╗██╔════╝    ████╗ ████║██║         ██╔════╝██║   ██║██║╚══██╔══╝██╔════╝
-   ██║     ███████║█████╗      ██╔████╔██║██║         ███████╗██║   ██║██║   ██║   █████╗
-   ██║     ██╔══██║██╔══╝      ██║╚██╔╝██║██║         ╚════██║██║   ██║██║   ██║   ██╔══╝
-   ╚██████╗██║  ██║███████╗    ██║ ╚═╝ ██║███████╗    ███████║╚██████╔╝██║   ██║   ███████╗
-    ╚═════╝╚═╝  ╚═╝╚══════╝    ╚═╝     ╚═╝╚══════╝    ╚══════╝ ╚═════╝ ╚═╝   ╚═╝   ╚══════╝
-    """)
+    # Display a console-safe banner.
+    print('MeshGraphNets')
+    print('=' * 64)
     print(" " * 64 + "Version 1.0.0, 2026-01-06")
     print(" " * 50 + "Developed by SiHun Lee, Ph. D., MX, SEC")
     print()
@@ -40,10 +32,11 @@ def main():
     config = load_config(args.config)
 
     run_mode = config.get('mode')
-    # Backward-compat alias: `train_with_prior` is now equivalent to `train`
-    # since `train_conditional_prior` defaults to True.
-    if run_mode == 'train_with_prior':
-        run_mode = 'train'
+    if run_mode not in ('train', 'inference'):
+        raise ValueError(
+            f"Unsupported mode '{run_mode}'. Removed probabilistic modes are not supported; "
+            "use 'train' or 'inference'."
+        )
     model = config.get('model')
 
     print('\n'*2)
@@ -78,11 +71,7 @@ def main():
     # Display the current absolute path
     print(f"Current absolute path: {os.path.abspath('.')}")
 
-    if run_mode == 'train_prior':
-        from training_profiles.posthoc_prior import train_posthoc_prior
-        train_posthoc_prior(config, args.config)
-
-    elif run_mode == 'inference':
+    if run_mode == 'inference':
         # Inference mode: autoregressive rollout
         run_rollout(config, args.config)
 

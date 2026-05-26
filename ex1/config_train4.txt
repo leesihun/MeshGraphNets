@@ -7,7 +7,6 @@ modelpath   ./outputs/ex1/model4.pth
 dataset_dir ./dataset/ex1copy.h5
 infer_dataset   ./dataset/b8_main_sec_dataset_infer.h5
 infer_timesteps 1
-num_vae_samples 10000
 %   Common params
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
@@ -56,15 +55,4 @@ multiscale_levels   1
 mp_per_level        2, 10, 8
 bipartite_unpool    True    # Learned bipartite MP unpool (False = broadcast)
 '
-% Variational Autoencoder (MMD-VAE / InfoVAE) Parameters
-use_vae             False   # Enable conditional VAE (encodes target delta during training)
-vae_latent_dim      32      # Global latent z dimension
-alpha_recon         1    # Reconstruction loss weight
-lambda_mmd          0.1    # MMD(q(z), N(0,I)) weight; matches aggregate posterior to prior
-vae_graph_aware     false  # Feed graph.x into VAE encoder so z encodes only y-residual (fixes minority-type spread collapse)
-free_bits           0.0    # Per-dim KL floor (nats). 0.0 = off. Set to 0.25 if collapse persists after vae_graph_aware
 '
-% Post-hoc GMM training
-fit_latent_gmm      True
-gmm_components      10
-gmm_covariance_type full
