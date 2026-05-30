@@ -463,9 +463,6 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
     vtk_faces = np.column_stack([np.full(n_faces, 3, dtype=faces.dtype), faces]).ravel()
     mesh = pv.PolyData(pos.astype(np.float64), vtk_faces)
 
-    # Show edges when there are multiple parts
-    show_edges = (face_part_ids is not None and len(np.unique(face_part_ids)) > 1)
-
     # Build header text
     header_parts = []
     if sample_id is not None:
@@ -508,9 +505,7 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
             scalars='values',
             cmap='jet',
             clim=clim,
-            show_edges=show_edges,
-            edge_color='gray',
-            line_width=0.3 if show_edges else 0,
+            show_edges=False,
             show_scalar_bar=show_cbar,
             scalar_bar_args=sbar_args,
         )
