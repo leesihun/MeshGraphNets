@@ -28,6 +28,7 @@ Multi-level support:
 
 import re
 from collections import deque
+from typing import Optional
 
 import numpy as np
 import torch
@@ -223,7 +224,7 @@ def fps_voronoi_coarsen(
     edge_index_np: np.ndarray,
     num_nodes: int,
     num_clusters: int,
-    ref_pos: np.ndarray | None = None,
+    ref_pos: Optional[np.ndarray] = None,
 ):
     """
     FPS-Voronoi coarsening: Farthest Point Sampling + Voronoi partition.
@@ -318,8 +319,8 @@ def coarsen_graph(
     edge_index_np: np.ndarray,
     num_nodes: int,
     method: str = 'bfs',
-    num_clusters: int | None = None,
-    ref_pos: np.ndarray | None = None,
+    num_clusters: Optional[int] = None,
+    ref_pos: Optional[np.ndarray] = None,
 ):
     """
     Dispatch to the appropriate coarsening method.
