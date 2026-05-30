@@ -18,7 +18,7 @@ from general_modules.edge_features import EDGE_FEATURE_DIM, compute_edge_attr
 try:
     from torch_cluster import radius_graph
     HAS_TORCH_CLUSTER = True
-except ImportError:
+except (ImportError, OSError):
     HAS_TORCH_CLUSTER = False
 
 
