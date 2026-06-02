@@ -217,7 +217,12 @@ coarse_edge_attr_i
 num_coarse_i
 coarse_centroid_i
 optional unpool_edge_index_i
+optional coarse_seed_idx_i   # only when level i uses voronoi_inherit mode
 ```
+
+Under `voronoi_inherit` mode the `coarse_centroid_i` tensor stores the FPS
+seed's position (a real fine-mesh node) instead of the arithmetic centroid;
+the attribute name is retained for compatibility with reader code.
 
 Coarse edge normalizers are saved into checkpoints as:
 

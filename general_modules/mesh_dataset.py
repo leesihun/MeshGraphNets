@@ -356,7 +356,12 @@ class MeshGraphDataset(Dataset):
         self._coarse_cache: Dict = {}  # {sample_id: list[dict]} — list from build_multiscale_hierarchy
         self._static_cache: Dict = {}  # per-worker topology and positional features
 
-        # Per-level coarsening method ('bfs' or 'voronoi')
+        # Per-level coarsening method. Accepted values per level:
+        #   'bfs'              — BFS bi-stride, centroid pool
+        #   'voronoi'          — back-compat alias for 'voronoi_centroid'
+        #   'voronoi_centroid' — FPS-Voronoi, centroid position + mean pool
+        #   'voronoi_inherit'  — FPS-Voronoi, seed position + gather pool (variant C)
+        _VALID_COARSENERS = {'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit'}
         raw_ct = config.get('coarsening_type', 'bfs')
         if isinstance(raw_ct, list):
             self.coarsening_types = [str(t).strip().lower() for t in raw_ct]
@@ -365,6 +370,16 @@ class MeshGraphDataset(Dataset):
         # Expand single value to all levels
         if len(self.coarsening_types) == 1 and self.multiscale_levels > 1:
             self.coarsening_types = self.coarsening_types * self.multiscale_levels
+        # Normalize 'voronoi' → 'voronoi_centroid' and validate.
+        canonical = []
+        for t in self.coarsening_types:
+            if t not in _VALID_COARSENERS:
+                raise ValueError(
+                    f"Unknown coarsening_type '{t}'. Accepted values: "
+                    f"'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit'."
+                )
+            canonical.append('voronoi_centroid' if t == 'voronoi' else t)
+        self.coarsening_types = canonical
 
         # Per-level cluster counts for voronoi levels
         raw_vc = config.get('voronoi_clusters', None)
@@ -387,7 +402,7 @@ class MeshGraphDataset(Dataset):
         print(f"  use_multiscale: {self.use_multiscale}" + (f" (levels={self.multiscale_levels})" if self.use_multiscale else ""))
         if self.use_multiscale:
             print(f"  coarsening_types: {self.coarsening_types}")
-            if any(t == 'voronoi' for t in self.coarsening_types):
+            if any(t.startswith('voronoi') for t in self.coarsening_types):
                 print(f"  voronoi_clusters: {self.voronoi_clusters}")
         if self.use_world_edges:
             print(f"  world_radius_multiplier: {self.world_radius_multiplier}")
@@ -891,9 +906,15 @@ class MeshGraphDataset(Dataset):
                         ftc_l = entry['ftc']
                         c_ei_l = entry['c_ei']
                         n_c_l = entry['n_c']
+                        seeds_l = entry.get('seeds')
+                        mode_l = entry.get('mode', 'centroid')
 
-                        coarse_ref = compute_coarse_centroids(cur_ref, ftc_l, n_c_l)
-                        coarse_def = compute_coarse_centroids(cur_def, ftc_l, n_c_l)
+                        if mode_l == 'inherit' and seeds_l is not None:
+                            coarse_ref = cur_ref[seeds_l].astype(np.float64)
+                            coarse_def = cur_def[seeds_l].astype(np.float64)
+                        else:
+                            coarse_ref = compute_coarse_centroids(cur_ref, ftc_l, n_c_l)
+                            coarse_def = compute_coarse_centroids(cur_def, ftc_l, n_c_l)
 
                         if c_ei_l.shape[1] > 0:
                             c_edge_attr = compute_edge_attr(

@@ -559,6 +559,10 @@ class ModelSplitStage(nn.Module):
             'c_we_idx': getattr(graph, f'coarse_world_edge_index_{level}', None),
             'c_we_attr': getattr(graph, f'coarse_world_edge_attr_{level}', None),
         }
+        # Inherit-mode (voronoi_inherit) levels expose seed indices.
+        seed_key = f'coarse_seed_idx_{level}'
+        if hasattr(graph, seed_key):
+            ld['seeds'] = graph[seed_key]
         if bool(self.config.get('bipartite_unpool', False)):
             up_ei = getattr(graph, f'unpool_edge_index_{level}', None)
             if up_ei is not None:
@@ -608,7 +612,11 @@ class ModelSplitStage(nn.Module):
                     'w_attr': getattr(current_graph, 'world_edge_attr', None) if use_we_here else None,
                     'w_idx': getattr(current_graph, 'world_edge_index', None) if use_we_here else None,
                 })
-                h_coarse = pool_features(current_graph.x, ld['ftc'], ld['n_c'])
+                # Inherit mode: gather seed features. Centroid mode: scatter-mean pool.
+                if 'seeds' in ld:
+                    h_coarse = current_graph.x[ld['seeds']]
+                else:
+                    h_coarse = pool_features(current_graph.x, ld['ftc'], ld['n_c'])
                 e_coarse = self.model.coarse_eb_encoders[str(pool_level)](ld['c_ea'])
                 current_graph = Data(x=h_coarse, edge_attr=e_coarse, edge_index=ld['c_ei'])
                 if self.use_coarse_world_edges:

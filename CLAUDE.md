@@ -65,6 +65,12 @@ a merged checkpoint for standard rollout.
   aggregates mesh and world messages separately.
 - Multiscale V-cycle uses per-level skip states merged by
   `Linear(2 * latent_dim, latent_dim)`.
+- Coarsening modes (`coarsening_type`, per-level): `bfs` (BFS bi-stride,
+  centroid pool), `voronoi_centroid` (FPS-Voronoi, centroid position + mean
+  pool; `voronoi` is a back-compat alias), `voronoi_inherit` (FPS-Voronoi,
+  seed position + gather pool — coarse node = FPS seed, pool is `x[seeds]`).
+  Inherit-mode levels additionally write a `coarse_seed_idx_{i}` graph
+  attribute consumed by the model's pool step.
 
 ## Data Facts
 

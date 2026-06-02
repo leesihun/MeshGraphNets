@@ -109,6 +109,10 @@ def bfs_bistride_coarsen(edge_index_np: np.ndarray, num_nodes: int):
                           cluster index (0 … M-1) of fine node i.
         coarse_edge_index:[2, E_c] int64 numpy array. Bidirectional coarse edges.
         num_coarse:       int M — number of coarse nodes.
+        seeds:            [M] int64 numpy array. Fine-node index for each coarse
+                          cluster (the even-depth parent). Aligned with cluster
+                          IDs: seeds[cluster_id] is the fine-node index of that
+                          cluster's representative.
     """
     # 1. Build CSR adjacency matrix (vectorized, no Python loop)
     row = edge_index_np[0].astype(np.int32)
@@ -154,7 +158,11 @@ def bfs_bistride_coarsen(edge_index_np: np.ndarray, num_nodes: int):
     # 5. Build coarse edges via boundary detection
     coarse_edge_index = _build_coarse_edges(fine_to_coarse, edge_index_np, num_coarse)
 
-    return fine_to_coarse, coarse_edge_index, num_coarse
+    # 6. Seeds aligned with cluster IDs (coarse_nodes is already in cluster-id order
+    #    because coarse_idx_of[coarse_nodes] = arange(num_coarse) above).
+    seeds = coarse_nodes.astype(np.int64)
+
+    return fine_to_coarse, coarse_edge_index, num_coarse, seeds
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +255,10 @@ def fps_voronoi_coarsen(
         fine_to_coarse:    [N] int32 numpy array.
         coarse_edge_index: [2, E_c] int64 numpy array.
         num_coarse:        int M.
+        seeds:             [M] int64 numpy array — fine-node index per coarse
+                           cluster, aligned with cluster IDs. Includes any
+                           extra seeds added for unseeded connected components
+                           and is reindexed if cluster compaction renumbered IDs.
     """
     k = min(num_clusters, num_nodes)
     if k <= 0:
@@ -273,6 +285,7 @@ def fps_voronoi_coarsen(
             seeds.append(comp_node)
 
     k_actual = len(seeds)
+    seeds_arr = np.asarray(seeds, dtype=np.int64)
 
     # --- Multi-source BFS for Voronoi partition ---
     fine_to_coarse = np.full(num_nodes, -1, dtype=np.int32)
@@ -304,11 +317,17 @@ def fps_voronoi_coarsen(
         remap = np.full(k_actual, -1, dtype=np.int32)
         remap[unique_clusters] = np.arange(num_coarse, dtype=np.int32)
         fine_to_coarse = remap[fine_to_coarse]
+        # Reindex seeds so seeds_arr[new_cluster_id] is the surviving seed.
+        # FPS seeds are sticky (dist[seed]=0 is never beaten), so each surviving
+        # cluster's id maps back to its own seed via fine_to_coarse.
+        new_seeds = np.empty(num_coarse, dtype=np.int64)
+        new_seeds[fine_to_coarse[seeds_arr[unique_clusters]]] = seeds_arr[unique_clusters]
+        seeds_arr = new_seeds
 
     # --- Build boundary edges ---
     coarse_edge_index = _build_coarse_edges(fine_to_coarse, edge_index_np, num_coarse)
 
-    return fine_to_coarse, coarse_edge_index, num_coarse
+    return fine_to_coarse, coarse_edge_index, num_coarse, seeds_arr
 
 
 # ---------------------------------------------------------------------------
@@ -328,22 +347,30 @@ def coarsen_graph(
     Args:
         edge_index_np: [2, E] int numpy array — bidirectional mesh edges.
         num_nodes:     N — total number of fine nodes.
-        method:        'bfs' or 'voronoi'.
-        num_clusters:  Required for voronoi — number of coarse nodes.
-        ref_pos:       [N, 3] positions — optional, used by voronoi for Euclidean FPS.
+        method:        'bfs', 'voronoi', 'voronoi_centroid', or 'voronoi_inherit'.
+                       'voronoi' is a back-compat alias for 'voronoi_centroid'.
+                       'voronoi_centroid' and 'voronoi_inherit' both call the
+                       same FPS-Voronoi coarsener; the difference is only in
+                       how downstream code uses the result (centroid vs
+                       seed-anchored coarse positions / pool semantics).
+        num_clusters:  Required for voronoi modes — number of coarse nodes.
+        ref_pos:       [N, 3] positions — used by voronoi for Euclidean FPS.
 
     Returns:
-        (fine_to_coarse [N], coarse_edge_index [2, E_c], num_coarse int)
+        (fine_to_coarse [N], coarse_edge_index [2, E_c], num_coarse int, seeds [M])
     """
     method = method.strip().lower()
     if method == 'bfs':
         return bfs_bistride_coarsen(edge_index_np, num_nodes)
-    elif method == 'voronoi':
+    elif method in ('voronoi', 'voronoi_centroid', 'voronoi_inherit'):
         if num_clusters is None:
-            raise ValueError("num_clusters is required for 'voronoi' coarsening")
+            raise ValueError(f"num_clusters is required for '{method}' coarsening")
         return fps_voronoi_coarsen(edge_index_np, num_nodes, num_clusters, ref_pos)
     else:
-        raise ValueError(f"Unknown coarsening method: '{method}'. Use 'bfs' or 'voronoi'.")
+        raise ValueError(
+            f"Unknown coarsening method: '{method}'. "
+            f"Use 'bfs', 'voronoi', 'voronoi_centroid', or 'voronoi_inherit'."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +501,7 @@ def build_unpool_edges(
 # Regex to extract level index from attribute names like "fine_to_coarse_0"
 _LEVEL_RE = re.compile(
     r'^(fine_to_coarse|coarse_edge_index|coarse_edge_attr|coarse_centroid'
-    r'|unpool_edge_index|num_coarse)_(\d+)$'
+    r'|coarse_seed_idx|unpool_edge_index|num_coarse)_(\d+)$'
 )
 
 
@@ -488,11 +515,18 @@ class MultiscaleData(Data):
         coarse_edge_index_{i} [2, E_i]   — edge topology at level i+1
         coarse_edge_attr_{i}  [E_i, 8]   — edge features at level i+1
         num_coarse_{i}        [1] long    — node count at level i+1
+        coarse_seed_idx_{i}   [num_coarse_i] long — fine-node index for each
+                                                    coarse cluster. Optional:
+                                                    present only when the
+                                                    level uses voronoi_inherit
+                                                    mode.
 
     When Batch.from_data_list combines multiple MultiscaleData objects:
     - fine_to_coarse_{i} values are offset by cumulative num_coarse_{i} counts
     - coarse_edge_index_{i} values are offset by cumulative num_coarse_{i} counts
     - coarse_edge_attr_{i} is concatenated along dim 0 (no offset needed)
+    - coarse_seed_idx_{i} values are offset by cumulative fine-node counts
+      (level 0 → num_nodes; level i>0 → num_coarse_{i-1})
     - num_coarse_{i} values are concatenated → [B] tensor
     """
 
@@ -507,6 +541,10 @@ class MultiscaleData(Data):
                 coarse_inc = int(self[f'num_coarse_{level}'])
                 fine_inc = self.num_nodes if int(level) == 0 else int(self[f'num_coarse_{int(level) - 1}'])
                 return torch.tensor([[coarse_inc], [fine_inc]])
+            if prefix == 'coarse_seed_idx':
+                # Indices into level (l-1)'s node space (or fine-node space at l=0).
+                lvl = int(level)
+                return self.num_nodes if lvl == 0 else int(self[f'num_coarse_{lvl - 1}'])
         return super().__inc__(key, value, *args, **kwargs)
 
     def __cat_dim__(self, key: str, value, *args, **kwargs):
@@ -515,6 +553,7 @@ class MultiscaleData(Data):
             prefix = m.group(1)
             if prefix in ('coarse_edge_index', 'unpool_edge_index'):
                 return 1   # [2, E] — concatenate along edge dimension
-            if prefix in ('fine_to_coarse', 'coarse_edge_attr', 'coarse_centroid'):
+            if prefix in ('fine_to_coarse', 'coarse_edge_attr', 'coarse_centroid',
+                          'coarse_seed_idx'):
                 return 0   # [N, ...] — concatenate along node/edge dim
         return super().__cat_dim__(key, value, *args, **kwargs)

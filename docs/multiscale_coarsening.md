@@ -17,7 +17,7 @@ more coarsened graph levels.
 | --- | --- |
 | `use_multiscale` | Enables multiscale graph data and the V-cycle processor. |
 | `multiscale_levels` | Number of coarse levels. |
-| `coarsening_type` | `bfs`, `voronoi`, or a comma list with one method per level. |
+| `coarsening_type` | `bfs`, `voronoi_centroid`, `voronoi_inherit`, or a comma list with one method per level. `voronoi` is a back-compat alias for `voronoi_centroid`. |
 | `voronoi_clusters` | Cluster count for Voronoi levels; scalar or comma list. |
 | `mp_per_level` | Processor block counts. Must have `2 * multiscale_levels + 1` entries. |
 | `bipartite_unpool` | Enables learned coarse-to-fine unpooling. |
@@ -45,18 +45,40 @@ Both coarsening algorithms return:
 fine_to_coarse:    [N] cluster id for each fine node
 coarse_edge_index: [2, E_c] directed coarse graph edges
 num_coarse:        number of coarse nodes
+seeds:             [num_coarse] fine-node index per coarse cluster
+                   (BFS even-depth parent, or FPS-selected seed)
 ```
 
 `build_multiscale_hierarchy` extends that base contract with data needed by the
 model and DataLoader, including:
 
 - coarse edge attributes computed with the same 8-D edge layout as mesh edges
-- coarse centroids for each level
+- coarse anchor positions for each level (centroid or seed depending on mode)
 - optional bipartite unpool edges from coarse nodes to fine nodes
 
 The dataset attaches these tensors as `fine_to_coarse_i`,
 `coarse_edge_index_i`, `coarse_edge_attr_i`, `num_coarse_i`, and, when
-`bipartite_unpool True`, `unpool_edge_index_i` and `coarse_centroid_i`.
+`bipartite_unpool True`, `unpool_edge_index_i` and `coarse_centroid_i`. When a
+level uses `voronoi_inherit`, the dataset additionally attaches
+`coarse_seed_idx_i`.
+
+## Coarsening Modes
+
+The `coarsening_type` is a per-level setting; you can mix modes via a
+comma-separated list (e.g. `voronoi_centroid, voronoi_inherit`).
+
+| Mode | Coarsener | Coarse position | Coarse feature (pool) |
+| --- | --- | --- | --- |
+| `bfs` | BFS bi-stride | mean centroid of cluster | `scatter mean` |
+| `voronoi_centroid` (alias: `voronoi`) | FPS-Voronoi | mean centroid of cluster | `scatter mean` |
+| `voronoi_inherit` | FPS-Voronoi | FPS seed's position (real fine-mesh node) | gather: `x[seeds]` |
+
+`voronoi_inherit` is variant C: the coarse node *is* the FPS seed, a real
+fine-mesh node. Pool is `x[seeds]` — pure gather, zero parameters, zero
+information loss. The coarse graph becomes the induced subgraph on the seed
+set with cluster-boundary edges. The `coarse_centroid_i` attribute exists in
+both modes; under `voronoi_inherit` it stores the seed's position rather than
+the centroid (name retained for backward-compatibility with reader code).
 
 ## BFS Bi-Stride
 
