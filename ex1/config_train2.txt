@@ -24,7 +24,7 @@ num_workers 2
 std_noise   0.0
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
-grad_accum_steps    4
+grad_accum_steps    1
 '
 % Memory Optimization
 use_checkpointing   True
@@ -50,7 +50,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 use_multiscale      True
 % Multi-BFS + Voronoi
 coarsening_type     voronoi
-voronoi_clusters    10000, 1000
+voronoi_clusters    5000, 1000
 multiscale_levels   2
 mp_per_level        2, 4, 8, 4, 2 
 bipartite_unpool    True    # Learned bipartite MP unpool (False = broadcast)
