@@ -189,9 +189,6 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
     if rank == 0:
         log_model_summary(ddp_model, config, ema_model)
 
-    best_valid_loss = float('inf')
-    best_epoch = -1
-
     # ---- Optimizer / Scheduler ----
     if rank == 0:
         print("\nInitializing optimizer...")
@@ -303,16 +300,6 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 f"LR: {current_lr:.2e}"
             )
 
-        # Only rank 0 saves checkpoints
-        if valid_loss < best_valid_loss and rank == 0:
-            best_valid_loss = valid_loss
-            best_epoch = epoch
-            save_checkpoint(
-                epoch, ddp_model.module, ema_model, optimizer, scheduler,
-                train_loss, valid_loss, config, train_dataset, modelname,
-            )
-            print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
-
         if log_file and rank == 0:
             with open(log_file, 'a') as f:
                 f.write(
@@ -351,9 +338,13 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
 
     if rank == 0:
         if interrupted:
-            print(f"\nTraining interrupted. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+            print("\nTraining interrupted. No checkpoint saved.")
         else:
-            print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+            save_checkpoint(
+                epoch, ddp_model.module, ema_model, optimizer, scheduler,
+                train_loss, valid_loss, config, train_dataset, modelname,
+            )
+            print(f"\nTraining finished. Final model saved at epoch {epoch} with validation loss {valid_loss:.2e}")
 
     # Analyze debug files if they exist
     if rank == 0:

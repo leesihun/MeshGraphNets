@@ -111,9 +111,9 @@ def single_worker(config, config_filename='config.txt'):
 
     modelname = config.get('modelpath')
 
-    best_valid_loss = float('inf')
-    best_epoch = -1
     val_interval = int(config.get('val_interval', 1))
+    train_loss = float('nan')
+    valid_loss = float('nan')
 
     try:
         for epoch in range(total_epochs):
@@ -132,7 +132,6 @@ def single_worker(config, config_filename='config.txt'):
                 valid_metrics = validate_epoch(eval_model, val_loader, device, config, epoch)
                 valid_loss = valid_metrics['mean']
             else:
-                valid_loss = best_valid_loss  # reuse last known for checkpoint gating
                 valid_metrics = {}
 
             if do_val:
@@ -146,15 +145,6 @@ def single_worker(config, config_filename='config.txt'):
                     f"Epoch {epoch}/{total_epochs} "
                     f"TrainOpt: {train_loss:.2e} LR: {current_lr:.2e}"
                 )
-
-            if do_val and valid_loss < best_valid_loss:
-                best_valid_loss = valid_loss
-                best_epoch = epoch
-                save_checkpoint(
-                    epoch, model, ema_model, optimizer, scheduler,
-                    train_loss, valid_loss, config, train_dataset, modelname,
-                )
-                print(f"  -> New best model saved at epoch {epoch} with valid loss {valid_loss:.2e}")
 
             if log_file:
                 with open(log_file, 'a') as f:
@@ -188,9 +178,13 @@ def single_worker(config, config_filename='config.txt'):
                         )
                         print(f"  Train reconstruction loss: {train_viz_loss:.2e}")
 
-        print(f"\nTraining finished. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+        save_checkpoint(
+            epoch, model, ema_model, optimizer, scheduler,
+            train_loss, valid_loss, config, train_dataset, modelname,
+        )
+        print(f"\nTraining finished. Final model saved at epoch {epoch} with validation loss {valid_loss:.2e}")
     except KeyboardInterrupt:
-        print(f"\nTraining interrupted by user. Best model at epoch {best_epoch} with validation loss {best_valid_loss:.2e}")
+        print("\nTraining interrupted by user. No checkpoint saved.")
 
     analyze_debug_files(log_dir)
 
