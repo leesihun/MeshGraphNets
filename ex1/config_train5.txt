@@ -48,7 +48,7 @@ plot_feature_idx    -1
 % Multi-Scale / Hierarchical Parameters
 use_multiscale      True
 coarsening_type     voronoi_inherit
-voronoi_clusters    2500, 500     % <<< SWEEP: was 5000,1000
+voronoi_clusters    2500, 500     # <<< SWEEP: was 5000,1000
 multiscale_levels   2
 mp_per_level        2, 4, 8, 4, 2
 bipartite_unpool    True

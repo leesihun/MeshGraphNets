@@ -12,8 +12,8 @@ input_var   4
 output_var  4
 feature_loss_weights  0, 0, 0, 1.0
 edge_var    8
-positional_features  8          % <<< SWEEP: was 4 (now 2 base + 3 RWPE + 3 LPE)
-positional_encoding rwpe+lpe    % <<< SWEEP: was rwpe (default)
+positional_features  8          # <<< SWEEP: was 4 (now 2 base + 3 RWPE + 3 LPE)
+positional_encoding rwpe+lpe    # <<< SWEEP: was rwpe (default)
 '
 %   Network parameters
 Training_epochs	5000

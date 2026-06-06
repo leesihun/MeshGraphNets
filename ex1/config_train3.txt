@@ -50,5 +50,5 @@ use_multiscale      True
 coarsening_type     voronoi_inherit
 voronoi_clusters    5000, 1000
 multiscale_levels   2
-mp_per_level        1, 2, 4, 2, 1     % <<< SWEEP: was 2,4,8,4,2 (20 blocks -> 10)
+mp_per_level        1, 2, 4, 2, 1     # <<< SWEEP: was 2,4,8,4,2 (20 blocks -> 10)
 bipartite_unpool    True
