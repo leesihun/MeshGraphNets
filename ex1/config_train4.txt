@@ -52,5 +52,5 @@ use_multiscale      True
 coarsening_type     voronoi_inherit
 voronoi_clusters    2500, 800, 200, 50   # SWEEP: extended cascade for L=4
 multiscale_levels   4                    # SWEEP: was 3 (depth push)
-mp_per_level        1, 1, 2, 4, 6, 4, 2, 1, 1   # SWEEP: 2*L+1=9 entries, 22 blocks
+mp_per_level        1, 2, 3, 5, 6, 5, 3, 2, 1   # SWEEP: 2*L+1=9 entries, 28 blocks (train1 bell-curve, expanded)
 bipartite_unpool    False
