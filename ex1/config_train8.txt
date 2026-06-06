@@ -1,12 +1,14 @@
-% SWEEP train4: heavier noise
-%   vs train1: std_noise 0.01 -> 0.03
-%   Tests: is current noise level under-regularizing?
+% SWEEP train8: shallow hierarchy — 1 multiscale level
+%   vs train1: multiscale_levels 2 -> 1, clusters 5000/1000 -> 1000
+%              mp_per_level becomes 3 entries (2*1+1), 20 blocks like baseline
+%   Tests: is the extra coarsening level in train1 actually pulling weight?
+%   Pairs with train1 (L=2) and train2 (L=3) for a clean depth axis at fixed compute.
 
 model   MeshGraphNets
 mode    train
 gpu_ids 3
-log_file_dir    ex1/train4.log
-modelpath   ./outputs/ex1/model4.pth
+log_file_dir    ex1/train8.log
+modelpath   ./outputs/ex1/model8.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/b8_main_sec_dataset_infer.h5
@@ -24,7 +26,7 @@ Batch_size	1
 LearningR	0.0001
 Latent_dim	128
 num_workers 2
-std_noise   0.03    % <<< SWEEP: was 0.01 (3x heavier noise)
+std_noise   0.01
 residual_scale  1
 augment_geometry True
 grad_accum_steps    1
@@ -52,7 +54,7 @@ plot_feature_idx    -1
 % Multi-Scale / Hierarchical Parameters
 use_multiscale      True
 coarsening_type     voronoi_inherit
-voronoi_clusters    5000, 1000
-multiscale_levels   2
-mp_per_level        2, 4, 8, 4, 2
+voronoi_clusters    1000           % <<< SWEEP: single value for L=1
+multiscale_levels   1              % <<< SWEEP: was 2
+mp_per_level        6, 8, 6        % <<< SWEEP: 3 entries (2*L+1), 20 blocks
 bipartite_unpool    True

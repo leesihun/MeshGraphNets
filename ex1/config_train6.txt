@@ -1,12 +1,12 @@
-% SWEEP train4: heavier noise
-%   vs train1: std_noise 0.01 -> 0.03
-%   Tests: is current noise level under-regularizing?
+% SWEEP train6: add Laplacian positional encoding
+%   vs train1: positional_encoding rwpe -> rwpe+lpe, positional_features 4 -> 8
+%   Tests: global graph-structure prior helps generalization
 
 model   MeshGraphNets
 mode    train
-gpu_ids 3
-log_file_dir    ex1/train4.log
-modelpath   ./outputs/ex1/model4.pth
+gpu_ids 1
+log_file_dir    ex1/train6.log
+modelpath   ./outputs/ex1/model6.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/b8_main_sec_dataset_infer.h5
@@ -16,7 +16,8 @@ input_var   4
 output_var  4
 feature_loss_weights  0, 0, 0, 1.0
 edge_var    8
-positional_features  4
+positional_features  8          % <<< SWEEP: was 4 (now 2 base + 3 RWPE + 3 LPE)
+positional_encoding rwpe+lpe    % <<< SWEEP: was rwpe (default)
 '
 %   Network parameters
 Training_epochs	5000
@@ -24,7 +25,7 @@ Batch_size	1
 LearningR	0.0001
 Latent_dim	128
 num_workers 2
-std_noise   0.03    % <<< SWEEP: was 0.01 (3x heavier noise)
+std_noise   0.01
 residual_scale  1
 augment_geometry True
 grad_accum_steps    1

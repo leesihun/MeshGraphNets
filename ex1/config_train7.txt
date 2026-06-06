@@ -1,12 +1,13 @@
-% SWEEP train4: heavier noise
-%   vs train1: std_noise 0.01 -> 0.03
-%   Tests: is current noise level under-regularizing?
+% SWEEP train7: bigger model — more blocks per level
+%   vs train1: mp_per_level 2,4,8,4,2 (20 blocks) -> 3,6,12,6,3 (30 blocks)
+%   Tests: does increasing capacity (with noise+EMA regularization) help, or just overfit faster?
+%   Paired with train3 (smaller) for a clean capacity ablation.
 
 model   MeshGraphNets
 mode    train
-gpu_ids 3
-log_file_dir    ex1/train4.log
-modelpath   ./outputs/ex1/model4.pth
+gpu_ids 2
+log_file_dir    ex1/train7.log
+modelpath   ./outputs/ex1/model7.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/b8_main_sec_dataset_infer.h5
@@ -24,7 +25,7 @@ Batch_size	1
 LearningR	0.0001
 Latent_dim	128
 num_workers 2
-std_noise   0.03    % <<< SWEEP: was 0.01 (3x heavier noise)
+std_noise   0.01
 residual_scale  1
 augment_geometry True
 grad_accum_steps    1
@@ -54,5 +55,5 @@ use_multiscale      True
 coarsening_type     voronoi_inherit
 voronoi_clusters    5000, 1000
 multiscale_levels   2
-mp_per_level        2, 4, 8, 4, 2
+mp_per_level        3, 6, 12, 6, 3   % <<< SWEEP: was 2,4,8,4,2 (20 -> 30 blocks)
 bipartite_unpool    True

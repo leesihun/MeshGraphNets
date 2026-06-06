@@ -57,7 +57,7 @@ class MeshGraphNets(nn.Module):
                 noise_padded = torch.zeros_like(graph.x)
                 noise_padded[:, :output_var] = noise
                 graph.x = graph.x + noise_padded
-                noise_gamma = self.config.get('noise_gamma', 0.1)
+                noise_gamma = self.config.get('noise_gamma', 1)
                 noise_std_ratio = self.config.get('noise_std_ratio', None)
                 if noise_std_ratio is not None:
                     ratio = torch.tensor(noise_std_ratio, device=graph.x.device, dtype=graph.x.dtype)
