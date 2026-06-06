@@ -1,7 +1,3 @@
-% SWEEP train6: add Laplacian positional encoding
-%   vs train1: positional_encoding rwpe -> rwpe+lpe, positional_features 4 -> 8
-%   Tests: global graph-structure prior helps generalization
-
 model   MeshGraphNets
 mode    train
 gpu_ids 1

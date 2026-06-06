@@ -1,7 +1,3 @@
-% SWEEP train3: smaller multiscale capacity
-%   vs train1: mp_per_level shrunk 20 blocks -> 10 blocks
-%   Tests: does cutting capacity reduce overfitting and improve val?
-
 model   MeshGraphNets
 mode    train
 gpu_ids 2

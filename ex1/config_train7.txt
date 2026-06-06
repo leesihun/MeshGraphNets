@@ -1,8 +1,3 @@
-% SWEEP train7: bigger model — more blocks per level
-%   vs train1: mp_per_level 2,4,8,4,2 (20 blocks) -> 3,6,12,6,3 (30 blocks)
-%   Tests: does increasing capacity (with noise+EMA regularization) help, or just overfit faster?
-%   Paired with train3 (smaller) for a clean capacity ablation.
-
 model   MeshGraphNets
 mode    train
 gpu_ids 2

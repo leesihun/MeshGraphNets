@@ -1,7 +1,3 @@
-% SWEEP train5: aggressive coarsening
-%   vs train1: voronoi_clusters 5000,1000 -> 2500,500 (2x more compression each level)
-%   Tests: stronger V-cycle bias / better global aggregation
-
 model   MeshGraphNets
 mode    train
 gpu_ids 0
