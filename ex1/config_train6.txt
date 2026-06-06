@@ -16,6 +16,7 @@ positional_features  8          # <<< SWEEP: was 4 (now 2 base + 3 RWPE + 3 LPE)
 positional_encoding rwpe+lpe    # <<< SWEEP: was rwpe (default)
 '
 %   Network parameters
+message_passing_num 15  # unused (multiscale on); required by model init
 Training_epochs	5000
 Batch_size	1
 LearningR	0.0001

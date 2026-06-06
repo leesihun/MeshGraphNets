@@ -15,6 +15,7 @@ edge_var    8
 positional_features  4
 '
 %   Network parameters
+message_passing_num 15  # unused (multiscale on); required by model init
 Training_epochs	5000
 Batch_size	1
 LearningR	0.0001
