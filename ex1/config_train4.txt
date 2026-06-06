@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 3    # SWEEP train4: heavier noise regularization
+gpu_ids 3    # SWEEP train4: L=4 depth push (saturation check)
 log_file_dir    ex1/train4.log
 modelpath   ./outputs/ex1/model4.pth
 %   Datasets
@@ -21,7 +21,7 @@ Batch_size	4
 LearningR	0.0001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
-std_noise   0.03    # SWEEP: was 0.01 (3x heavier noise)
+std_noise   0.01
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
 grad_accum_steps    1
@@ -50,7 +50,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 use_multiscale      True
 % Multi-BFS + Voronoi
 coarsening_type     voronoi_inherit
-voronoi_clusters    5000, 1000
-multiscale_levels   2
-mp_per_level        2, 4, 8, 4, 2
-bipartite_unpool    True    # Learned bipartite MP unpool (False = broadcast)
+voronoi_clusters    2500, 800, 200, 50   # SWEEP: extended cascade for L=4
+multiscale_levels   4                    # SWEEP: was 3 (depth push)
+mp_per_level        1, 1, 2, 4, 6, 4, 2, 1, 1   # SWEEP: 2*L+1=9 entries, 22 blocks
+bipartite_unpool    False

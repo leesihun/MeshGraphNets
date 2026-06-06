@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 2    # SWEEP train7: bigger capacity (mp 30 blocks vs 20)
+gpu_ids 2    # SWEEP train7: wider latent (width sweep at fixed depth)
 log_file_dir    ex1/train7.log
 modelpath   ./outputs/ex1/model7.pth
 %   Datasets
@@ -19,7 +19,7 @@ message_passing_num 15
 Training_epochs	5000
 Batch_size	4
 LearningR	0.0001  # Scaled by sqrt(8/1) from 0.0001 for larger batch size
-Latent_dim	128	# MeshGraphNets latent dimension
+Latent_dim	192	# SWEEP: was 128 (wider latent)
 num_workers 2
 std_noise   0.01
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
@@ -50,7 +50,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 use_multiscale      True
 % Multi-BFS + Voronoi
 coarsening_type     voronoi_inherit
-voronoi_clusters    5000, 1000
-multiscale_levels   2
-mp_per_level        3, 6, 12, 6, 3   # SWEEP: was 2,4,8,4,2 (20 -> 30 blocks)
-bipartite_unpool    True    # Learned bipartite MP unpool (False = broadcast)
+voronoi_clusters    2500, 500, 100
+multiscale_levels   3
+mp_per_level        1, 2, 4, 6, 4, 2, 1
+bipartite_unpool    False

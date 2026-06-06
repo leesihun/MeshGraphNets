@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 3    # SWEEP train8: shallow hierarchy (L=1) at 20-block budget
+gpu_ids 3    # SWEEP train8: no geometry augmentation (Tier B ablation — verify aug is helping)
 log_file_dir    ex1/train8.log
 modelpath   ./outputs/ex1/model8.pth
 %   Datasets
@@ -23,7 +23,7 @@ Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0.01
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
-augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
+augment_geometry False  # SWEEP: was True (ablation — is aug actually helping?)
 grad_accum_steps    1
 '
 % Memory Optimization
@@ -50,7 +50,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 use_multiscale      True
 % Multi-BFS + Voronoi
 coarsening_type     voronoi_inherit
-voronoi_clusters    1000          # SWEEP: single value for L=1
-multiscale_levels   1             # SWEEP: was 2
-mp_per_level        6, 8, 6       # SWEEP: 2*L+1=3 entries, 20 blocks
-bipartite_unpool    True    # Learned bipartite MP unpool (False = broadcast)
+voronoi_clusters    2500, 500, 100
+multiscale_levels   3
+mp_per_level        1, 2, 4, 6, 4, 2, 1
+bipartite_unpool    False
