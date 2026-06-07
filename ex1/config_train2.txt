@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 1    # SWEEP train2: smaller batch (SGD-noise regularizer for memorization gap)
+gpu_ids 1    # SWEEP train2: bs=1 + sqrt-scaled LR (stack LR/bs wins)
 log_file_dir    ex1/train2.log
 modelpath   ./outputs/ex1/model2.pth
 %   Datasets
@@ -17,8 +17,8 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 %   Network parameters
 message_passing_num 15
 Training_epochs	5000
-Batch_size	2       # SWEEP: was 4 (smaller batch = more SGD noise)
-LearningR	0.00007 # SWEEP: sqrt scaled from 0.0001 (sqrt(2/4))
+Batch_size	1       # SWEEP: was 4 (smallest batch = max SGD noise regularizer)
+LearningR	0.0001  # SWEEP: sqrt(1/4) scaled from anchor 0.0002
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0.01
@@ -53,4 +53,4 @@ coarsening_type     voronoi_inherit
 voronoi_clusters    2500, 500, 100
 multiscale_levels   3
 mp_per_level        1, 2, 4, 6, 4, 2, 1
-bipartite_unpool    False
+bipartite_unpool    True
