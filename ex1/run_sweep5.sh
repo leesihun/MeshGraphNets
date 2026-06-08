@@ -49,9 +49,27 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Resolve the python binary from venv (override with PYTHON_BIN=/path/to/python)
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+    PYTHON="$PYTHON_BIN"
+elif [[ -x "$PROJECT_ROOT/venv/bin/python" ]]; then
+    PYTHON="$PROJECT_ROOT/venv/bin/python"
+elif [[ -x "$PROJECT_ROOT/.venv/bin/python" ]]; then
+    PYTHON="$PROJECT_ROOT/.venv/bin/python"
+else
+    echo "ERROR: no venv python found. Looked for:" >&2
+    echo "  $PROJECT_ROOT/venv/bin/python" >&2
+    echo "  $PROJECT_ROOT/.venv/bin/python" >&2
+    echo "Set PYTHON_BIN env var to override, e.g.:" >&2
+    echo "  PYTHON_BIN=/path/to/venv/bin/python ./ex1/run_sweep5.sh" >&2
+    exit 1
+fi
+echo "Using python: $PYTHON"
+echo ""
+
 if [[ $PLOT_ONLY -eq 1 ]]; then
     echo "Plot-only mode: generating loss plots from existing logs"
-    python "$SCRIPT_DIR/plot_sweep5.py" "${CONFIGS[@]}" --combined
+    "$PYTHON" "$SCRIPT_DIR/plot_sweep5.py" "${CONFIGS[@]}" --combined
     exit 0
 fi
 
@@ -79,12 +97,12 @@ for n in "${CONFIGS[@]}"; do
     fi
 
     if [[ $DRY_RUN -eq 1 ]]; then
-        echo "  [dry] python MeshGraphNets_main.py --config $CONFIG_REL > $STDOUT_LOG 2> $STDERR_LOG &"
+        echo "  [dry] $PYTHON MeshGraphNets_main.py --config $CONFIG_REL > $STDOUT_LOG 2> $STDERR_LOG &"
         continue
     fi
 
     echo "  launching train${n} -> $STDOUT_LOG"
-    nohup python MeshGraphNets_main.py --config "$CONFIG_REL" \
+    nohup "$PYTHON" MeshGraphNets_main.py --config "$CONFIG_REL" \
         < /dev/null > "$STDOUT_LOG" 2> "$STDERR_LOG" &
     PIDS+=($!)
     LAUNCHED=$((LAUNCHED + 1))
@@ -111,7 +129,7 @@ else
     echo "  kill \$(cat ex1/sweep5_pids.txt)"
     echo ""
     echo "Generate loss plots (anytime — re-run as runs progress):"
-    echo "  python ex1/plot_sweep5.py --combined"
-    echo "  python ex1/plot_sweep5.py 1 11             # specific configs"
+    echo "  $PYTHON ex1/plot_sweep5.py --combined"
+    echo "  $PYTHON ex1/plot_sweep5.py 1 11            # specific configs"
     echo "  ./ex1/run_sweep5.sh --plot-only            # same, via this script"
 fi

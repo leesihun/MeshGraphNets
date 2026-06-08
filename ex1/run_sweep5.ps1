@@ -29,10 +29,30 @@ param(
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 
+# Resolve venv python (override with $env:PYTHON_BIN)
+if ($env:PYTHON_BIN) {
+    $Python = $env:PYTHON_BIN
+} elseif (Test-Path (Join-Path $ProjectRoot "venv\Scripts\python.exe")) {
+    $Python = Join-Path $ProjectRoot "venv\Scripts\python.exe"
+} elseif (Test-Path (Join-Path $ProjectRoot ".venv\Scripts\python.exe")) {
+    $Python = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+} elseif (Test-Path (Join-Path $ProjectRoot "venv\bin\python")) {
+    $Python = Join-Path $ProjectRoot "venv\bin\python"
+} else {
+    Write-Host "ERROR: no venv python found. Looked for:" -ForegroundColor Red
+    Write-Host "  $ProjectRoot\venv\Scripts\python.exe"
+    Write-Host "  $ProjectRoot\.venv\Scripts\python.exe"
+    Write-Host "  $ProjectRoot\venv\bin\python"
+    Write-Host 'Set $env:PYTHON_BIN to override.'
+    exit 1
+}
+Write-Host "Using python: $Python"
+Write-Host ""
+
 if ($PlotOnly) {
     Write-Host "Plot-only mode: generating loss plots from existing logs"
     $configArgs = $Configs | ForEach-Object { "$_" }
-    & python (Join-Path $ScriptDir "plot_sweep5.py") @configArgs --combined
+    & $Python (Join-Path $ScriptDir "plot_sweep5.py") @configArgs --combined
     exit
 }
 
@@ -58,12 +78,12 @@ foreach ($n in $Configs) {
     }
 
     if ($DryRun) {
-        Write-Host "  [dry] python MeshGraphNets_main.py --config $configRel  > $stdoutLog 2> $stderrLog"
+        Write-Host "  [dry] $Python MeshGraphNets_main.py --config $configRel  > $stdoutLog 2> $stderrLog"
         continue
     }
 
     Write-Host "  launching train$n -> $stdoutLog"
-    Start-Process -FilePath "python" `
+    Start-Process -FilePath $Python `
         -ArgumentList "MeshGraphNets_main.py", "--config", $configRel `
         -WorkingDirectory $ProjectRoot `
         -RedirectStandardOutput $stdoutLog `
@@ -87,7 +107,7 @@ if ($DryRun) {
     Write-Host "  Get-Content ex1/train1.stdout.log -Wait"
     Write-Host ""
     Write-Host "Generate loss plots (anytime — re-run as runs progress):"
-    Write-Host "  python ex1/plot_sweep5.py --combined"
-    Write-Host "  python ex1/plot_sweep5.py 1 11           # specific configs"
+    Write-Host "  $Python ex1/plot_sweep5.py --combined"
+    Write-Host "  $Python ex1/plot_sweep5.py 1 11          # specific configs"
     Write-Host "  .\ex1\run_sweep5.ps1 -PlotOnly           # same, via this script"
 }
