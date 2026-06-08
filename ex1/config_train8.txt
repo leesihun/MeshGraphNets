@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 3    # SWEEP train8: combo — bs=1 + LR sqrt-scaled + longer training
+gpu_ids 3    # SWEEP train8: 2-step voronoi (L=2 with 10000/1000 cascade)
 log_file_dir    ex1/train8.log
 modelpath   ./outputs/ex1/model8.pth
 %   Datasets
@@ -16,9 +16,9 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	10000   # COMBO: longer training
-Batch_size	1       # COMBO: smaller batch
-LearningR	0.0001  # COMBO: sqrt(1/4) scaled from 0.0002
+Training_epochs	10000
+Batch_size	1
+LearningR	0.0002
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0.01
@@ -50,7 +50,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 use_multiscale      True
 % Multi-BFS + Voronoi
 coarsening_type     voronoi_inherit
-voronoi_clusters    2500, 500, 100
-multiscale_levels   3
-mp_per_level        1, 2, 4, 6, 4, 2, 1
+voronoi_clusters    10000, 1000   # SWEEP: 2-step cascade (large finest, modest coarsest)
+multiscale_levels   2             # SWEEP: was 3 (drop to L=2)
+mp_per_level        2, 4, 8, 4, 2 # SWEEP: 2*L+1=5 entries, 20 blocks
 bipartite_unpool    True

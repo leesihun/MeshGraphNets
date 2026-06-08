@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 2    # SWEEP train7: longer training at anchor LR
+gpu_ids 2    # SWEEP train7: larger mp (does bs=1 unlock more processor capacity?)
 log_file_dir    ex1/train7.log
 modelpath   ./outputs/ex1/model7.pth
 %   Datasets
@@ -16,9 +16,9 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	10000   # SWEEP: was 5000 (longer training — 2x epochs)
-Batch_size	4
-LearningR	0.0002  # Anchor LR
+Training_epochs	10000
+Batch_size	1
+LearningR	0.0002
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0.01
@@ -52,5 +52,5 @@ use_multiscale      True
 coarsening_type     voronoi_inherit
 voronoi_clusters    2500, 500, 100
 multiscale_levels   3
-mp_per_level        1, 2, 4, 6, 4, 2, 1
+mp_per_level        2, 4, 6, 8, 6, 4, 2   # SWEEP: was 1,2,4,6,4,2,1 (20 -> 32 blocks, larger only)
 bipartite_unpool    True

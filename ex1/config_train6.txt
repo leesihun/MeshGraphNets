@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 1    # SWEEP train6: less aggressive coarsening (revert to old cascade at new LR)
+gpu_ids 1    # SWEEP train6: lighter explicit noise (bs=1 already adds SGD noise)
 log_file_dir    ex1/train6.log
 modelpath   ./outputs/ex1/model6.pth
 %   Datasets
@@ -16,12 +16,12 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	5000
-Batch_size	4
-LearningR	0.0002  # Anchor LR
+Training_epochs	10000
+Batch_size	1
+LearningR	0.0002
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
-std_noise   0.01
+std_noise   0.005   # SWEEP: was 0.01 (half noise)
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
 grad_accum_steps    1
@@ -50,7 +50,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 use_multiscale      True
 % Multi-BFS + Voronoi
 coarsening_type     voronoi_inherit
-voronoi_clusters    5000, 1000, 200    # SWEEP: was 2500,500,100 (less aggressive cascade)
+voronoi_clusters    2500, 500, 100
 multiscale_levels   3
 mp_per_level        1, 2, 4, 6, 4, 2, 1
 bipartite_unpool    True
