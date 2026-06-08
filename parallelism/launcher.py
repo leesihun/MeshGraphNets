@@ -264,7 +264,7 @@ def _forward_step(stage: ModelSplitStage, graph, device):
 
         predicted = stage.decode(x, ea, ei)
         target = graph.y
-        errors = F.huber_loss(predicted, target, reduction='none', delta=1.0)
+        errors = F.mse_loss(predicted, target, reduction='none')
         loss = errors.mean()
         return loss, float(loss.item()), predicted.numel()
 

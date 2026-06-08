@@ -181,7 +181,9 @@ def _fps_euclidean(pos: np.ndarray, k: int) -> list:
 
     pos = np.asarray(pos, dtype=np.float64)
     seeds = np.empty(k, dtype=np.intp)
-    seeds[0] = np.random.randint(N)
+    # Deterministic start: per-worker FPS must produce identical topology for
+    # the same sample, otherwise val loss oscillates with worker assignment.
+    seeds[0] = 0
 
     min_sq_dists = np.full(N, np.inf, dtype=np.float64)
 
@@ -213,7 +215,8 @@ def _fps_geodesic(adj: csr_matrix, num_nodes: int, k: int) -> list:
     if k >= num_nodes:
         return list(range(num_nodes))
 
-    seeds = [np.random.randint(num_nodes)]
+    # Deterministic start: see _fps_euclidean for rationale.
+    seeds = [0]
     min_dists = _bfs_distances(adj, seeds[0], num_nodes)
     min_dists[seeds[0]] = -1
 

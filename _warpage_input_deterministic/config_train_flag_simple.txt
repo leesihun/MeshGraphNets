@@ -29,7 +29,7 @@ use_checkpointing   True
 % Performance Optimization
 use_amp             True
 use_ema             True
-ema_decay           0.99
+ema_decay           0.9995
 test_interval       1
 % Node Type Parameters
 use_node_types  True

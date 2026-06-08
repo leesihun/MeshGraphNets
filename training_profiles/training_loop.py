@@ -160,7 +160,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                 if epoch >= 5:
                     save_debug_batch(epoch, batch_idx, graph, predicted_acc, target_acc, config.get('log_dir', '.'))
 
-            errors = torch.nn.functional.huber_loss(predicted_acc, target_acc, reduction='none', delta=1.0)
+            errors = torch.nn.functional.mse_loss(predicted_acc, target_acc, reduction='none')
             loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
             scaled_loss = loss / _accum_window_size(batch_idx, total_batches, actual_accum)
 
@@ -172,7 +172,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
             per_feature_loss_min = torch.min(errors, dim=0)[0]
             per_feature_loss_std = torch.std(errors, dim=0)
             feature_names = ['x_disp', 'y_disp', 'z_disp', 'stress']
-            tqdm.tqdm.write(f"\n=== Per-Feature Huber Loss (Epoch {epoch}, Batch {batch_idx}) ===")
+            tqdm.tqdm.write(f"\n=== Per-Feature MSE Loss (Epoch {epoch}, Batch {batch_idx}) ===")
             for feat_idx, feat_name in enumerate(feature_names[:len(per_feature_loss_mean)]):
                 tqdm.tqdm.write(
                     f"  {feat_name}: mean={per_feature_loss_mean[feat_idx].item():.2e}, "
@@ -234,7 +234,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
 def _eval_forward_errors(model, graph, use_amp, amp_dtype):
     with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
         predicted, target = model(graph, add_noise=False)
-        errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
+        errors = torch.nn.functional.mse_loss(predicted, target, reduction='none')
     return errors
 
 
@@ -339,7 +339,7 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             graph = _move_graph_to_device(graph, device, config)
             with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
                 predicted, target = model(graph)
-                errors = torch.nn.functional.huber_loss(predicted, target, reduction='none', delta=1.0)
+                errors = torch.nn.functional.mse_loss(predicted, target, reduction='none')
                 loss, batch_loss_sum, batch_loss_count = _loss_from_errors(errors, loss_weights)
 
             per_feature_loss = torch.sum(errors, dim=0)

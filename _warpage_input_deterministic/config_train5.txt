@@ -32,7 +32,7 @@ use_checkpointing   True
 % Performance Optimization
 use_amp             True    # Mixed precision training with bfloat16 (1.5-2x speedup on Ampere+ GPUs)
 use_ema             True    # EMA shadow model for validation/inference (smooths SGD noise, ~free precision)
-ema_decay           0.99   # EMA decay factor (0.999 = ~1000-step averaging window)
+ema_decay           0.9995  # EMA decay factor (0.9995 = ~2000-step averaging window)
 test_interval       1      # Run test/visualization every N epochs (1 = every epoch, 10 = every 10th)
 '
 % Node Type Parameters
