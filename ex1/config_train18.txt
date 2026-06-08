@@ -1,8 +1,8 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 1    # SWEEP 5 train2: LR 0.00005 (half anchor LR)
-log_file_dir    ex1/train2.log
-modelpath   ./outputs/ex1/model2.pth
+gpu_ids 7    # SWEEP 5 train18: Latent_dim 192 (wider)
+log_file_dir    ex1/train18.log
+modelpath   ./outputs/ex1/model18.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/b8_main_sec_dataset_infer.h5
@@ -18,8 +18,8 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 message_passing_num 15
 Training_epochs	10000
 Batch_size	1
-LearningR	0.00005    # SWEEP: was 0.0001 (half)
-Latent_dim	128	# MeshGraphNets latent dimension
+LearningR	0.0001
+Latent_dim	192	# SWEEP: was 128 (1.5x wider)
 num_workers 2
 std_noise   0.0
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)

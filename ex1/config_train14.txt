@@ -1,8 +1,8 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 1    # SWEEP 5 train2: LR 0.00005 (half anchor LR)
-log_file_dir    ex1/train2.log
-modelpath   ./outputs/ex1/model2.pth
+gpu_ids 3    # SWEEP 5 train14: std_noise 0.01 (moderate noise)
+log_file_dir    ex1/train14.log
+modelpath   ./outputs/ex1/model14.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/b8_main_sec_dataset_infer.h5
@@ -18,10 +18,10 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 message_passing_num 15
 Training_epochs	10000
 Batch_size	1
-LearningR	0.00005    # SWEEP: was 0.0001 (half)
+LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
-std_noise   0.0
+std_noise   0.01    # SWEEP: was 0.0 (moderate noise)
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
 grad_accum_steps    1

@@ -6,12 +6,13 @@ validation loss on stress prediction (`feature_loss_weights 0, 0, 0, 1.0`).
 ## Common Setup (all sweeps unless noted)
 
 - Dataset: `./dataset/ex1.h5`, deterministic 80/10/10 split (seed 42)
-- 5000 epochs (sweep 3 introduces 10000 for some configs), EMA `0.999`,
-  bfloat16 AMP, `augment_geometry True`
+- 5000 epochs (sweep 3 introduces 10000; sweep 4 uses 10000/20000), bfloat16 AMP, `augment_geometry True`
 - `use_node_types True`, `positional_features 4` (centroid_dist + edge_len + 2× RWPE)
 - `use_world_edges False`, `use_checkpointing True`
 - `feature_loss_weights 0, 0, 0, 1.0` (stress only)
-- Stress predicted as normalized delta (Huber loss)
+- Stress predicted as normalized delta
+- **Loss function:** Huber (δ=0.1) in sweeps 1–3; switched to **MSE on 2026-06-08** for sweep 4 onward (sensitivity to large stress-hot-spot errors)
+- **EMA decay:** `0.999` in sweeps 1–3; `0.9995` from sweep 4 (~2000-step window)
 
 ---
 
@@ -179,11 +180,182 @@ python MeshGraphNets_main.py --config ex1/config_train8.txt   # GPU 3
 ## Locked Settings (do not sweep)
 
 - `feature_loss_weights 0, 0, 0, 1.0` (stress only — user requirement)
-- `ema_decay 0.999` (user — don't change)
-- `bipartite_unpool True` (user — locked after sweep 2)
+- `ema_decay 0.9995` (bumped from 0.999 in baseline reset)
+- `bipartite_unpool True` (locked — see [feedback memory](../../C:/Users/Lee/.claude/projects/c--Users-Lee-Desktop-Huni-MeshGraphNets/memory/feedback_bipartite_unpool.md))
+- `Batch_size 1` (locked — use `grad_accum_steps` to simulate larger effective batch)
 - `use_node_types True`
 - `use_amp True` (bfloat16)
 - `augment_geometry True`
+- Loss: **MSE** (switched from Huber on 2026-06-08)
+
+---
+
+## Sweep 5 — Multi-axis around fresh baseline (running)
+
+**Anchor (sweep-5 train1) = user's reset baseline (2026-06-09):**
+- L=2 multiscale, `voronoi_inherit`, clusters `5000, 1000`
+- `mp_per_level 2, 4, 8, 4, 2` (20 blocks)
+- `LearningR 0.0001`, `Batch_size 1`, `grad_accum_steps 1`, `Training_epochs 10000`
+- `Latent_dim 128`, `std_noise 0.0`, `positional_features 4` (RWPE)
+- `use_checkpointing False`, `ema_decay 0.9995`, MSE loss
+- `val_interval 1` (was 10)
+
+### Configs (16 total — 2 per GPU across 8 GPUs)
+
+| # | GPU | Knob change vs anchor | Axis |
+|---|-----|----------------------|------|
+| train1 | 0 | — anchor | — |
+| train2 | 1 | `LearningR 0.00005` | LR ↓ |
+| train3 | 2 | `LearningR 0.0002` | LR ↑ |
+| train4 | 3 | `LearningR 0.0005` | LR ↑↑ |
+| train5 | 4 | `grad_accum_steps 4` | eff bs=4 (anchor LR) |
+| train6 | 5 | `Training_epochs 5000` | epochs ↓ |
+| train7 | 6 | `std_noise 0.005` | tiny noise |
+| train8 | 7 | L=3, voronoi `5000,1000,200`, mp `1,2,4,6,4,2,1` | L=3 less aggressive |
+| train11 | 0 | `LearningR 0.001` | LR ↑↑↑ |
+| train12 | 1 | `grad_accum_steps 4`, `LearningR 0.0002` | eff bs=4 + sqrt LR |
+| train13 | 2 | `Training_epochs 20000` | epochs ↑↑ |
+| train14 | 3 | `std_noise 0.01` | moderate noise |
+| train15 | 4 | L=3, voronoi `2500,500,100`, mp `1,2,4,6,4,2,1` | L=3 aggressive cascade |
+| train16 | 5 | L=3, voronoi `5000,1000,200`, mp `2,4,6,8,6,4,2` (32 blocks) | L=3 + bigger mp |
+| train17 | 6 | `mp_per_level 3, 6, 10, 6, 3` (28 blocks at L=2) | bigger mp at L=2 |
+| train18 | 7 | `Latent_dim 192` | wider |
+
+### Axis Coverage
+
+- **LR (4):** 0.00005, 0.0002, 0.0005, 0.001 vs anchor 0.0001
+- **grad_accum (2):** eff bs=4 at anchor LR; eff bs=4 + sqrt-scaled LR
+- **Epochs (2):** 5000, 20000
+- **std_noise (2):** 0.005, 0.01 (anchor is 0)
+- **Multiscale L=3 (3 variants):** less aggressive, aggressive, bigger mp
+- **mp size at L=2 (1):** 28 blocks
+- **Latent width (1):** 192
+
+### Watch List
+
+- **train4 (LR 0.0005) and train11 (LR 0.001):** may diverge — kill early if NaN
+- **train16 (L=3 + 32 blocks):** highest memory footprint; could OOM at bs=1 + Latent 128 on shared GPU
+- **train18 (Latent 192):** also heavy; paired with train8 (L=3) on GPU 7 — watch memory
+- **train12 vs train5:** difference is LR scaling at the same effective batch — tells you the SGD-noise-vs-step-size question
+
+### Run Plan
+
+All 16 launch simultaneously via the bundled script:
+
+```powershell
+.\ex1\run_sweep5.ps1
+```
+
+Each process picks its GPU from the `gpu_ids` field in its config; two processes
+per GPU. Logs go to `ex1/trainN.log` (training log) and
+`ex1/trainN.stdout.log` / `trainN.stderr.log` (process stdio).
+
+To dry-run or launch a subset:
+
+```powershell
+.\ex1\run_sweep5.ps1 -DryRun
+.\ex1\run_sweep5.ps1 -Configs 1,11      # just GPU 0
+```
+
+### Cross-Sweep Caveat
+
+Sweep 5 numbers are not comparable to sweeps 1–4:
+- Loss changed Huber (δ=0.1 then δ=1.0) → MSE on 2026-06-08
+- EMA decay 0.999 → 0.9995
+- Baseline architecture changed (L=2 + 5000/1000 vs L=3 + 2500/500/100)
+- Baseline std_noise changed (0.01 → 0.0)
+- `use_checkpointing` changed (True → False)
+
+Treat sweep-5 train1 as the new reference; do not compare to past sweep numbers.
+
+### Results
+
+_Fill in as runs complete._
+
+| Config | Val | Train | Notes |
+|--------|-----|-------|-------|
+| train1  |  |  | anchor |
+| train2  |  |  | LR 0.00005 |
+| train3  |  |  | LR 0.0002 |
+| train4  |  |  | LR 0.0005 |
+| train5  |  |  | grad_accum 4 |
+| train6  |  |  | epochs 5000 |
+| train7  |  |  | std_noise 0.005 |
+| train8  |  |  | L=3 less aggressive |
+| train11 |  |  | LR 0.001 |
+| train12 |  |  | grad_accum 4 + LR 0.0002 |
+| train13 |  |  | epochs 20000 |
+| train14 |  |  | std_noise 0.01 |
+| train15 |  |  | L=3 aggressive |
+| train16 |  |  | L=3 + bigger mp |
+| train17 |  |  | mp 28 at L=2 |
+| train18 |  |  | Latent 192 |
+
+---
+
+## Sweep 4 — Multi-axis at bs=1 (configured, superseded by sweep 5)
+
+> **Status: Superseded.** Sweep 4 was configured but not run. Baseline was reset
+> on 2026-06-09 to a fresh L=2 + std_noise=0 + LR 0.0001 + MSE configuration,
+> and the sweep design was rebuilt as sweep 5.
+
+
+
+**Anchor (sweep-4 train1):** bs=1, LR 0.0002, 10000 epochs, voronoi `2500,500,100`,
+mp `1,2,4,6,4,2,1` (20 blocks), Latent_dim 128, std_noise 0.01, ema_decay 0.9995,
+**MSE loss**. This = sweep-3 train7's winning config but with bs=1 + MSE + bumped EMA.
+
+### Configs
+
+| # | GPU | Change vs anchor | Axis |
+|---|-----|------------------|------|
+| train1 | 0 | — anchor | — |
+| train2 | 1 | `Training_epochs 20000` | epochs push 2× |
+| train3 | 2 | `LearningR 0.001` | LR push (re-verify train5 win) |
+| train4 | 3 | `voronoi_clusters 5000, 1000, 200` | less aggressive 3-step cascade |
+| train5 | 4 | `Latent_dim 256` | wider latent (does bs=1 unlock capacity?) |
+| train6 | 5 | `std_noise 0` | zero explicit noise (bs=1 SGD noise should suffice) |
+| train7 | 6 | `mp_per_level 2, 4, 6, 8, 6, 4, 2` (32 blocks) | larger mp only |
+| train8 | 7 | L=2, voronoi `10000, 1000`, mp `2,4,8,4,2` | 2-step large cascade |
+
+### Run Plan
+
+GPUs 0–7 used in parallel — all 8 configs run simultaneously, single wave.
+
+```powershell
+python MeshGraphNets_main.py --config ex1/config_train1.txt   # GPU 0
+python MeshGraphNets_main.py --config ex1/config_train2.txt   # GPU 1
+python MeshGraphNets_main.py --config ex1/config_train3.txt   # GPU 2
+python MeshGraphNets_main.py --config ex1/config_train4.txt   # GPU 3
+python MeshGraphNets_main.py --config ex1/config_train5.txt   # GPU 4
+python MeshGraphNets_main.py --config ex1/config_train6.txt   # GPU 5
+python MeshGraphNets_main.py --config ex1/config_train7.txt   # GPU 6
+python MeshGraphNets_main.py --config ex1/config_train8.txt   # GPU 7
+```
+
+### Caveat on Cross-Sweep Comparison
+
+Sweep 4 numbers are not directly comparable to sweeps 1–3:
+- Loss changed Huber (δ=0.1) → MSE
+- EMA decay 0.999 → 0.9995
+
+Treat sweep 4's anchor (train1) as the new reference; don't compare to
+sweep-3 train7's 2.22e-3 directly.
+
+### Results
+
+_Fill in as runs complete._
+
+| Config | Val | Notes |
+|--------|-----|-------|
+| train1 |  |  |
+| train2 |  |  |
+| train3 |  |  |
+| train4 |  |  |
+| train5 |  |  |
+| train6 |  |  |
+| train7 |  |  |
+| train8 |  |  |
 
 ---
 

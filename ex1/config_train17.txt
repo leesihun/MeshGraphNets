@@ -1,8 +1,8 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 1    # SWEEP 5 train2: LR 0.00005 (half anchor LR)
-log_file_dir    ex1/train2.log
-modelpath   ./outputs/ex1/model2.pth
+gpu_ids 6    # SWEEP 5 train17: bigger mp at L=2 (28 blocks)
+log_file_dir    ex1/train17.log
+modelpath   ./outputs/ex1/model17.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/b8_main_sec_dataset_infer.h5
@@ -18,7 +18,7 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 message_passing_num 15
 Training_epochs	10000
 Batch_size	1
-LearningR	0.00005    # SWEEP: was 0.0001 (half)
+LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0.0
@@ -52,5 +52,5 @@ use_multiscale      True
 coarsening_type     voronoi_inherit
 voronoi_clusters    5000, 1000
 multiscale_levels   2
-mp_per_level        2, 4, 8, 4, 2
+mp_per_level        3, 6, 10, 6, 3   # SWEEP: was 2,4,8,4,2 (20 -> 28 blocks)
 bipartite_unpool    True    # LOCKED: learned bipartite MP unpool (always)

@@ -1,8 +1,8 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 1    # SWEEP 5 train2: LR 0.00005 (half anchor LR)
-log_file_dir    ex1/train2.log
-modelpath   ./outputs/ex1/model2.pth
+gpu_ids 2    # SWEEP 5 train13: epochs 20000 (2x — push longer training)
+log_file_dir    ex1/train13.log
+modelpath   ./outputs/ex1/model13.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/b8_main_sec_dataset_infer.h5
@@ -16,9 +16,9 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	10000
+Training_epochs	20000   # SWEEP: was 10000 (2x)
 Batch_size	1
-LearningR	0.00005    # SWEEP: was 0.0001 (half)
+LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0.0
