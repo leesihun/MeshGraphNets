@@ -26,7 +26,7 @@ LOG_PATTERN = re.compile(
     r"Epoch\s+(\d+)\s+TrainOpt\s+([\d.eE+-]+)\s+Valid\s+([\d.eE+-]+|skipped)"
 )
 
-DEFAULT_CONFIGS = [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18]
+DEFAULT_CONFIGS = list(range(1, 17))
 
 
 def parse_log(path: Path):

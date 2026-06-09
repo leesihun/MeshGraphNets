@@ -1,12 +1,12 @@
 model   MeshGraphNets
 mode    inference  # Train / Inference
-gpu_ids 2    # Inference pipeline for train3
-log_file_dir    ex1/infer3.log
-modelpath   ./outputs/ex1/model3.pth
+gpu_ids 7    # Inference pipeline for train8
+log_file_dir    ex1/infer8.log
+modelpath   ./outputs/ex1/model8.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/ex1.h5
-inference_output_dir   outputs/rollout/model3
+inference_output_dir   outputs/rollout/model8
 % infer_timesteps omitted -> rollout uses full available trajectory length
 %   Common params (architecture overridden by checkpoint model_config at load)
 input_var   4

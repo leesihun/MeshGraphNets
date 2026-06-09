@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 5    # SWEEP 5 train16: L=3 + bigger mp (32 blocks)
+gpu_ids 7    # SWEEP train16: train3 + Training_epochs 5000 (longer)
 log_file_dir    ex1/train16.log
 modelpath   ./outputs/ex1/model16.pth
 %   Datasets
@@ -16,7 +16,7 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	10000
+Training_epochs	5000   # SWEEP: was 3000 (longer training)
 Batch_size	1
 LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
@@ -50,7 +50,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 use_multiscale      True
 % Multi-BFS + Voronoi
 coarsening_type     voronoi_inherit
-voronoi_clusters    5000, 1000, 200   # SWEEP: 3-step cascade
-multiscale_levels   3                 # SWEEP: was 2 (deeper)
-mp_per_level        2, 4, 6, 8, 6, 4, 2   # SWEEP: 2*L+1=7 entries, 32 blocks (bigger)
-bipartite_unpool    True    # LOCKED: learned bipartite MP unpool (always)
+voronoi_clusters    5000, 1000, 200
+multiscale_levels   3
+mp_per_level        2, 4, 6, 8, 6, 4, 2   # train3 architecture (32 blocks)
+bipartite_unpool    True

@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 1    # SWEEP 5 train12: grad_accum 4 + LR 0.0002 (eff bs=4 with sqrt-scaled LR)
+gpu_ids 3    # SWEEP train12: train3 + LearningR 0.0005 (LR 5x)
 log_file_dir    ex1/train12.log
 modelpath   ./outputs/ex1/model12.pth
 %   Datasets
@@ -16,15 +16,15 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	10000
+Training_epochs	3000
 Batch_size	1
-LearningR	0.0002     # SWEEP: sqrt(4) scaled for eff bs=4
+LearningR	0.0005     # SWEEP: was 0.0001 (5x)
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   0.0
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
-grad_accum_steps    4   # SWEEP: was 1 (effective bs=4)
+grad_accum_steps    1
 '
 % Memory Optimization
 use_checkpointing   False
@@ -50,7 +50,7 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 use_multiscale      True
 % Multi-BFS + Voronoi
 coarsening_type     voronoi_inherit
-voronoi_clusters    5000, 1000
-multiscale_levels   2
-mp_per_level        2, 4, 8, 4, 2
-bipartite_unpool    True    # LOCKED: learned bipartite MP unpool (always)
+voronoi_clusters    5000, 1000, 200
+multiscale_levels   3
+mp_per_level        2, 4, 6, 8, 6, 4, 2   # train3 architecture (32 blocks)
+bipartite_unpool    True
