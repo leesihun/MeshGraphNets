@@ -38,6 +38,23 @@ def _decode(s):
     return str(s)
 
 
+def peek_num_features(path: Path) -> int:
+    with h5py.File(path, "r") as f:
+        sample_keys = sorted([k for k in f["data"].keys() if k.isdigit()], key=int)
+        return int(f[f"data/{sample_keys[0]}/nodal_data"].shape[0])
+
+
+def resolve_feature_indices(spec: str, num_features: int) -> list[int]:
+    """Expand -f spec. 'all' = predicted physical channels (3..F-2), skipping
+    coords (0,1,2) and trailing part-number (F-1). Comma list: '3,4,6'. Single int."""
+    s = str(spec).strip().lower()
+    if s == "all":
+        return list(range(3, max(3, num_features - 1)))
+    if "," in s:
+        return [int(p.strip()) for p in s.split(",") if p.strip()]
+    return [int(s)]
+
+
 def load_rollout(path: Path):
     """Return (sample_id, nodal_data [F, T, N], mesh_edge [2, E], feature_names)."""
     with h5py.File(path, "r") as f:
@@ -100,7 +117,11 @@ def plot_field(
         else f"feature_{feature_idx}"
     )
 
-    timesteps = np.linspace(0, T - 1, num_panels, dtype=int)
+    if T <= num_panels:
+        timesteps = np.arange(T)
+    else:
+        timesteps = np.unique(np.linspace(0, T - 1, num_panels, dtype=int))
+    num_panels = len(timesteps)
 
     truth = load_truth(truth_path, sample_id, feature_idx, T) if truth_path else None
     has_truth = truth is not None
@@ -208,8 +229,10 @@ def main():
         help="Rollout HDF5 file(s) or directory containing rollout_sample*.h5"
     )
     parser.add_argument(
-        "-f", "--feature", type=int, default=6,
-        help="Feature index to plot. Default 6 = stress. Negative = from end."
+        "-f", "--feature", type=str, default="6",
+        help="Feature index to plot. Default 6 = stress. "
+             "Use 'all' for all predicted channels (3..F-2), "
+             "or a comma list like '3,4,5,6'. Negative ints = from end."
     )
     parser.add_argument(
         "-n", "--num-panels", type=int, default=6,
@@ -230,12 +253,15 @@ def main():
     print(f"Plotting {len(paths)} rollout file(s)")
     for path in paths:
         try:
-            plot_field(
-                path,
-                feature_idx=args.feature,
-                num_panels=args.num_panels,
-                truth_path=args.truth,
-            )
+            num_features = peek_num_features(path)
+            indices = resolve_feature_indices(args.feature, num_features)
+            for fi in indices:
+                plot_field(
+                    path,
+                    feature_idx=fi,
+                    num_panels=args.num_panels,
+                    truth_path=args.truth,
+                )
         except Exception as exc:
             print(f"  ERROR {path}: {exc}", file=sys.stderr)
     return 0
