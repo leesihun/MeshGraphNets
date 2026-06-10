@@ -92,7 +92,8 @@ def log_model_summary(model, config, ema_model=None):
 
 def build_optimizer_scheduler(config, params, total_epochs: int):
     """
-    Build fused Adam and a SequentialLR: linear warmup then cosine warm restarts.
+    Build fused AdamW (weight_decay=1e-4) and a SequentialLR: linear warmup
+    then cosine warm restarts.
 
     Scheduler hyper-parameters:
         warmup_epochs  (config key, default 3)
@@ -102,7 +103,7 @@ def build_optimizer_scheduler(config, params, total_epochs: int):
     """
     learning_rate = config.get('learningr')
     use_fused = torch.cuda.is_available()
-    optimizer = torch.optim.Adam(params, lr=learning_rate, fused=use_fused)
+    optimizer = torch.optim.AdamW(params, lr=learning_rate, weight_decay=1e-4, fused=use_fused)
 
     warmup_epochs = int(config.get('warmup_epochs', 3))
     remaining_epochs = max(total_epochs - warmup_epochs, 1)
@@ -195,6 +196,9 @@ def save_checkpoint(
     }
     if ema_model is not None:
         save_dict['ema_state_dict'] = ema_model.state_dict()
+    model_dir = os.path.dirname(modelpath)
+    if model_dir:
+        os.makedirs(model_dir, exist_ok=True)
     torch.save(save_dict, modelpath)
 
 

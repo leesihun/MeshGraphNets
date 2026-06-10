@@ -1,17 +1,17 @@
 model   MeshGraphNets
 mode    inference  # Train / Inference
-gpu_ids 5    # Inference pipeline for train14
-log_file_dir    ex1/infer14.log
-modelpath   ./outputs/ex1/model14.pth
+gpu_ids 7    # Inference pipeline for NOISE SWEEP train8
+log_file_dir    ex1/parametric_sweep/infer8.log
+modelpath   ./outputs/ex1/parametric_sweep/model8.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/ex1.h5
-inference_output_dir   outputs/rollout/model14
+inference_output_dir   outputs/rollout/parametric_sweep/model8
 % infer_timesteps omitted -> rollout uses full available trajectory length
 %   Common params (architecture overridden by checkpoint model_config at load)
 input_var   4
 output_var  4
-feature_loss_weights  0, 0, 0, 1.0
+feature_loss_weights  0.1, 0.1, 0.1, 0.7
 edge_var    8
 positional_features  4
 '
@@ -33,7 +33,7 @@ use_checkpointing   False
 % Performance Optimization
 use_amp             True
 use_ema             True
-ema_decay           0.9995
+ema_decay           0.99
 test_interval       100
 val_interval        1
 '
@@ -50,7 +50,7 @@ plot_feature_idx    -1
 % Multi-Scale (overridden by checkpoint)
 use_multiscale      True
 coarsening_type     voronoi_inherit
-voronoi_clusters    5000, 1000, 200
-multiscale_levels   3
-mp_per_level        1, 2, 4, 6, 4, 2, 1
+voronoi_clusters    5000, 1000
+multiscale_levels   2
+mp_per_level        2, 4, 8, 4, 2
 bipartite_unpool    True
