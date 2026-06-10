@@ -17,7 +17,7 @@ more coarsened graph levels.
 | --- | --- |
 | `use_multiscale` | Enables multiscale graph data and the V-cycle processor. |
 | `multiscale_levels` | Number of coarse levels. |
-| `coarsening_type` | `bfs`, `voronoi_centroid`, `voronoi_inherit`, or a comma list with one method per level. `voronoi` is a back-compat alias for `voronoi_centroid`. |
+| `coarsening_type` | `bfs`, `voronoi_centroid`, `voronoi_inherit`, `voronoi_seedmean`, or a comma list with one method per level. `voronoi` is a back-compat alias for `voronoi_centroid`. |
 | `voronoi_clusters` | Cluster count for Voronoi levels; scalar or comma list. |
 | `mp_per_level` | Processor block counts. Must have `2 * multiscale_levels + 1` entries. |
 | `bipartite_unpool` | Enables learned coarse-to-fine unpooling. |
@@ -60,7 +60,8 @@ The dataset attaches these tensors as `fine_to_coarse_i`,
 `coarse_edge_index_i`, `coarse_edge_attr_i`, `num_coarse_i`, and, when
 `bipartite_unpool True`, `unpool_edge_index_i` and `coarse_centroid_i`. When a
 level uses `voronoi_inherit`, the dataset additionally attaches
-`coarse_seed_idx_i`.
+`coarse_seed_idx_i` (`voronoi_seedmean` deliberately does not, so the model
+falls back to mean pooling).
 
 ## Coarsening Modes
 
@@ -72,13 +73,24 @@ comma-separated list (e.g. `voronoi_centroid, voronoi_inherit`).
 | `bfs` | BFS bi-stride | mean centroid of cluster | `scatter mean` |
 | `voronoi_centroid` (alias: `voronoi`) | FPS-Voronoi | mean centroid of cluster | `scatter mean` |
 | `voronoi_inherit` | FPS-Voronoi | FPS seed's position (real fine-mesh node) | gather: `x[seeds]` |
+| `voronoi_seedmean` | FPS-Voronoi | FPS seed's position (real fine-mesh node) | `scatter mean` |
 
 `voronoi_inherit` is variant C: the coarse node *is* the FPS seed, a real
 fine-mesh node. Pool is `x[seeds]` — pure gather, zero parameters, zero
 information loss. The coarse graph becomes the induced subgraph on the seed
-set with cluster-boundary edges. The `coarse_centroid_i` attribute exists in
-both modes; under `voronoi_inherit` it stores the seed's position rather than
-the centroid (name retained for backward-compatibility with reader code).
+set with cluster-boundary edges.
+
+`voronoi_seedmean` combines the seed-anchored coarse positions of
+`voronoi_inherit` with the mean pool of `voronoi_centroid`: coarse edge
+features are computed from real on-mesh seed positions (centroids of thin or
+curved shells can fall off-surface), while the coarse feature averages all
+cluster members instead of discarding non-seed latents. It does not write
+`coarse_seed_idx_i` — the model mean-pools whenever that attribute is absent.
+
+The `coarse_centroid_i` attribute exists in all modes; under the seed-anchored
+modes (`voronoi_inherit`, `voronoi_seedmean`) it stores the seed's position
+rather than the centroid (name retained for backward-compatibility with
+reader code).
 
 ## BFS Bi-Stride
 

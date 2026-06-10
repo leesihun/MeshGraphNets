@@ -92,8 +92,11 @@ def log_model_summary(model, config, ema_model=None):
 
 def build_optimizer_scheduler(config, params, total_epochs: int):
     """
-    Build fused AdamW (weight_decay=1e-4) and a SequentialLR: linear warmup
-    then cosine warm restarts.
+    Build fused AdamW and a SequentialLR: linear warmup then cosine warm restarts.
+
+    Optimizer hyper-parameters:
+        weight_decay   (config key, default 1e-4; use decimal form in config files,
+                        the parser reads `1e-4` as a string)
 
     Scheduler hyper-parameters:
         warmup_epochs  (config key, default 3)
@@ -102,8 +105,9 @@ def build_optimizer_scheduler(config, params, total_epochs: int):
         eta_min = 1e-8
     """
     learning_rate = config.get('learningr')
+    weight_decay = float(config.get('weight_decay', 1e-4))
     use_fused = torch.cuda.is_available()
-    optimizer = torch.optim.AdamW(params, lr=learning_rate, weight_decay=1e-4, fused=use_fused)
+    optimizer = torch.optim.AdamW(params, lr=learning_rate, weight_decay=weight_decay, fused=use_fused)
 
     warmup_epochs = int(config.get('warmup_epochs', 3))
     remaining_epochs = max(total_epochs - warmup_epochs, 1)

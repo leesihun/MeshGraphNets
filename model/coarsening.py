@@ -350,12 +350,13 @@ def coarsen_graph(
     Args:
         edge_index_np: [2, E] int numpy array — bidirectional mesh edges.
         num_nodes:     N — total number of fine nodes.
-        method:        'bfs', 'voronoi', 'voronoi_centroid', or 'voronoi_inherit'.
+        method:        'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit',
+                       or 'voronoi_seedmean'.
                        'voronoi' is a back-compat alias for 'voronoi_centroid'.
-                       'voronoi_centroid' and 'voronoi_inherit' both call the
-                       same FPS-Voronoi coarsener; the difference is only in
-                       how downstream code uses the result (centroid vs
-                       seed-anchored coarse positions / pool semantics).
+                       All voronoi modes call the same FPS-Voronoi coarsener;
+                       the difference is only in how downstream code uses the
+                       result (centroid vs seed-anchored coarse positions,
+                       mean vs gather pool semantics).
         num_clusters:  Required for voronoi modes — number of coarse nodes.
         ref_pos:       [N, 3] positions — used by voronoi for Euclidean FPS.
 
@@ -365,14 +366,15 @@ def coarsen_graph(
     method = method.strip().lower()
     if method == 'bfs':
         return bfs_bistride_coarsen(edge_index_np, num_nodes)
-    elif method in ('voronoi', 'voronoi_centroid', 'voronoi_inherit'):
+    elif method in ('voronoi', 'voronoi_centroid', 'voronoi_inherit', 'voronoi_seedmean'):
         if num_clusters is None:
             raise ValueError(f"num_clusters is required for '{method}' coarsening")
         return fps_voronoi_coarsen(edge_index_np, num_nodes, num_clusters, ref_pos)
     else:
         raise ValueError(
             f"Unknown coarsening method: '{method}'. "
-            f"Use 'bfs', 'voronoi', 'voronoi_centroid', or 'voronoi_inherit'."
+            f"Use 'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit', "
+            f"or 'voronoi_seedmean'."
         )
 
 

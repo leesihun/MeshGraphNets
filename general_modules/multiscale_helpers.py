@@ -37,6 +37,12 @@ def _is_inherit(method: str) -> bool:
     return _normalize_method(method) == 'voronoi_inherit'
 
 
+def _uses_seed_anchor(method: str) -> bool:
+    """Return True for modes whose coarse positions are FPS seed positions
+    (voronoi_inherit: gather pool; voronoi_seedmean: mean pool)."""
+    return _normalize_method(method) in ('voronoi_inherit', 'voronoi_seedmean')
+
+
 def build_multiscale_hierarchy(
     edge_index: np.ndarray,
     num_nodes: int,
@@ -57,7 +63,7 @@ def build_multiscale_hierarchy(
         'c_ei':  [2, E_coarse]   coarse edge index (np.int64)
         'n_c':   int             number of coarse nodes
         'seeds': [n_c]           fine-node index per coarse cluster (np.int64)
-        'mode':  'centroid' | 'inherit'   per-level pool/position mode
+        'mode':  'centroid' | 'inherit' | 'seedmean'   per-level pool/position mode
         'up_ei': [2, E_up]       bipartite unpool edges (only if bipartite_unpool)
     """
     hierarchy: List[dict] = []
@@ -72,7 +78,12 @@ def build_multiscale_hierarchy(
             current_ei, current_n, method=method_norm,
             num_clusters=n_clusters, ref_pos=level_ref_pos,
         )
-        mode = 'inherit' if _is_inherit(method_norm) else 'centroid'
+        if _is_inherit(method_norm):
+            mode = 'inherit'
+        elif method_norm == 'voronoi_seedmean':
+            mode = 'seedmean'
+        else:
+            mode = 'centroid'
         entry = {'ftc': ftc, 'c_ei': c_ei, 'n_c': n_c, 'seeds': seeds, 'mode': mode}
         if bipartite_unpool:
             entry['up_ei'] = build_unpool_edges(ftc, c_ei, n_c)
@@ -81,9 +92,9 @@ def build_multiscale_hierarchy(
         if n_c <= 1 or c_ei.shape[1] == 0:
             break
 
-        # Chain to next level: inherit mode uses seed positions, centroid mode
-        # uses the arithmetic mean.
-        if mode == 'inherit':
+        # Chain to next level: seed-anchored modes use seed positions,
+        # centroid mode uses the arithmetic mean.
+        if mode in ('inherit', 'seedmean'):
             level_ref_pos = level_ref_pos[seeds].astype(np.float32)
         else:
             level_ref_pos = compute_coarse_centroids(
@@ -141,9 +152,9 @@ def attach_coarse_levels_to_graph(
         seeds = entry.get('seeds')
         mode = entry.get('mode', 'centroid')
 
-        # Inherit (variant C) mode: coarse anchor = FPS seed position.
-        # Centroid mode: coarse anchor = arithmetic centroid of cluster.
-        if mode == 'inherit' and seeds is not None:
+        # Seed-anchored modes (inherit, seedmean): coarse anchor = FPS seed
+        # position. Centroid mode: coarse anchor = arithmetic centroid.
+        if mode in ('inherit', 'seedmean') and seeds is not None:
             coarse_ref = cur_ref[seeds].astype(np.float64)
             coarse_def = cur_def[seeds].astype(np.float64)
         else:
@@ -168,10 +179,11 @@ def attach_coarse_levels_to_graph(
         c_ei_t = torch.from_numpy(c_ei)
         c_ea_t = torch.from_numpy(c_ea_norm.astype(np.float32))
         n_c_t = torch.tensor([n_c], dtype=torch.long)
-        # Note: under voronoi_inherit mode this attribute holds seed-anchor
-        # positions (real fine-mesh coordinates), not arithmetic centroids.
-        # Name retained for backward-compat with reader code in MeshGraphNets.py
-        # and parallelism/model_split.py.
+        # Note: under seed-anchored modes (voronoi_inherit, voronoi_seedmean)
+        # this attribute holds seed-anchor positions (real fine-mesh
+        # coordinates), not arithmetic centroids. Name retained for
+        # backward-compat with reader code in MeshGraphNets.py and
+        # parallelism/model_split.py.
         cent_t = torch.from_numpy(coarse_ref.astype(np.float32))
 
         if device is not None:
@@ -188,7 +200,8 @@ def attach_coarse_levels_to_graph(
         graph[f'coarse_centroid_{level}']   = cent_t
 
         # Inherit-mode levels expose seed indices so the model's pool step can
-        # gather features at the seeds (variant C).
+        # gather features at the seeds (variant C). seedmean levels must NOT
+        # write this attribute — its absence makes the model mean-pool.
         if mode == 'inherit' and seeds is not None:
             seed_idx_t = torch.from_numpy(seeds.astype(np.int64))
             if device is not None:

@@ -68,9 +68,11 @@ a merged checkpoint for standard rollout.
 - Coarsening modes (`coarsening_type`, per-level): `bfs` (BFS bi-stride,
   centroid pool), `voronoi_centroid` (FPS-Voronoi, centroid position + mean
   pool; `voronoi` is a back-compat alias), `voronoi_inherit` (FPS-Voronoi,
-  seed position + gather pool — coarse node = FPS seed, pool is `x[seeds]`).
+  seed position + gather pool — coarse node = FPS seed, pool is `x[seeds]`),
+  `voronoi_seedmean` (FPS-Voronoi, seed position + mean pool).
   Inherit-mode levels additionally write a `coarse_seed_idx_{i}` graph
-  attribute consumed by the model's pool step.
+  attribute consumed by the model's pool step; seedmean levels do not write
+  it, which is what selects mean pooling in the model.
 
 ## Data Facts
 

@@ -60,7 +60,7 @@ Other legacy mode or model names are invalid in this checkout.
 | `fine_mp_pre` | Default fine pre-block count when `mp_per_level` is absent. |
 | `coarse_mp_num` | Default coarsest block count when `mp_per_level` is absent. |
 | `fine_mp_post` | Default fine post-block count when `mp_per_level` is absent. |
-| `coarsening_type` | `bfs` or `voronoi`, scalar or per-level list. |
+| `coarsening_type` | `bfs`, `voronoi_centroid` (alias `voronoi`), `voronoi_inherit`, or `voronoi_seedmean`; scalar or per-level list. |
 | `voronoi_clusters` | Coarse node count for Voronoi coarsening, scalar or per-level list. |
 | `bipartite_unpool` | Enables learned bipartite unpooling instead of broadcast unpooling. |
 | `coarse_world_edges` | Enables world edges on coarse levels when world edges and multiscale are both enabled. |

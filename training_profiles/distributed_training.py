@@ -199,7 +199,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
     )
     use_fused = torch.cuda.is_available()
     if rank == 0:
-        print(f"Optimizer: AdamW (fused={use_fused}, weight_decay=1e-4)")
+        print(f"Optimizer: AdamW (fused={use_fused}, weight_decay={float(config.get('weight_decay', 1e-4))})")
         print(f"Scheduler: LinearLR warmup ({warmup_epochs} epochs) -> "
               f"CosineAnnealingWarmRestarts (T_0={cosine_T0}, T_mult=2, eta_min=1e-8)")
 

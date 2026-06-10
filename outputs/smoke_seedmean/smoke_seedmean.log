@@ -1,0 +1,58 @@
+Training epoch log file
+Time: 2026-06-11 08:39:58
+Log file absolute path: C:\Users\Lee\Desktop\Huni\MeshGraphNets\outputs\smoke_seedmean\smoke_seedmean.log
+model   MeshGraphNets
+mode    train  # Train / Inference
+gpu_ids 0    # SMOKE TEST: voronoi_seedmean mode, 1 epoch
+log_file_dir    smoke_seedmean/smoke_seedmean.log
+modelpath   c:/tmp/model_smoke_seedmean.pth
+%   Datasets
+dataset_dir ./dataset/ex1.h5
+infer_dataset   ./dataset/b8_main_sec_dataset_infer.h5
+infer_timesteps 1
+%   Common params
+input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
+output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (excluding node types)
+feature_loss_weights  0, 0, 0, 1.0  # Per-feature loss weights for [x_disp, y_disp, z_disp, stress]
+edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
+positional_features  4   # Rotation-invariant node features: [centroid_dist, mean_edge_len, + encoding]
+'
+%   Network parameters
+message_passing_num 15
+Training_epochs	1
+Batch_size	1
+LearningR	0.0001
+Latent_dim	128	# MeshGraphNets latent dimension
+num_workers 0
+std_noise   0.0
+residual_scale  1
+augment_geometry True
+grad_accum_steps    1
+'
+% Memory Optimization
+use_checkpointing   False
+'
+% Performance Optimization
+use_amp             True
+use_ema             True
+ema_decay           0.99
+test_interval       1000
+val_interval        1000
+'
+% Node Type Parameters
+use_node_types  True
+'
+% World Edge Parameters
+use_world_edges         False
+'
+% Test set control
+test_batch_idx  0
+plot_feature_idx    -1
+'
+% Multi-Scale / Hierarchical Parameters
+use_multiscale      True
+coarsening_type     voronoi_seedmean
+voronoi_clusters    5000, 1000, 200
+multiscale_levels   3
+mp_per_level        2, 4, 6, 8, 6, 4, 2
+bipartite_unpool    True

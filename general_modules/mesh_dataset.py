@@ -361,7 +361,9 @@ class MeshGraphDataset(Dataset):
         #   'voronoi'          — back-compat alias for 'voronoi_centroid'
         #   'voronoi_centroid' — FPS-Voronoi, centroid position + mean pool
         #   'voronoi_inherit'  — FPS-Voronoi, seed position + gather pool (variant C)
-        _VALID_COARSENERS = {'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit'}
+        #   'voronoi_seedmean' — FPS-Voronoi, seed position + mean pool
+        _VALID_COARSENERS = {'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit',
+                             'voronoi_seedmean'}
         raw_ct = config.get('coarsening_type', 'bfs')
         if isinstance(raw_ct, list):
             self.coarsening_types = [str(t).strip().lower() for t in raw_ct]
@@ -376,7 +378,8 @@ class MeshGraphDataset(Dataset):
             if t not in _VALID_COARSENERS:
                 raise ValueError(
                     f"Unknown coarsening_type '{t}'. Accepted values: "
-                    f"'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit'."
+                    f"'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit', "
+                    f"'voronoi_seedmean'."
                 )
             canonical.append('voronoi_centroid' if t == 'voronoi' else t)
         self.coarsening_types = canonical

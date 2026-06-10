@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 6    # ARCH SWEEP train17: L=2 inherit, mp 4,6,10,6,4 (30 blk: more budget at same depth, vs train1/train11)
+gpu_ids 6    # BATCH2: W16 arch + 5000 epochs (schedule-length effect on winner)
 log_file_dir    ex1/parametric_sweep/train17.log
 modelpath   ./outputs/ex1/parametric_sweep/model17.pth
 %   Datasets
@@ -16,18 +16,19 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 '
 %   Network parameters
 message_passing_num 15
-Training_epochs	2000
+Training_epochs	5000
 Batch_size	1
 LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
-std_noise   0.0   # ARCH AXIS: kept at 0 to compare against noise-sweep control train1. Set to noise-sweep winner before launch if train1-8 results are in.
+std_noise   0.0   # z-scored jitter; single-step -> node channels are zero, effect is edge-geometry noise
+weight_decay    0.0001   # AdamW decoupled weight decay (decimal form only; parser reads 1e-4 as string)
 residual_scale  1  # Scale factor for residual connections (1.0 = full residual, matches NVIDIA/DeepMind)
 augment_geometry True   # Random Z-rotation + reflection augmentation (training only)
 grad_accum_steps    1
 '
 % Memory Optimization
-use_checkpointing   False   # Recomputes all MP blocks in backward; only enable under real VRAM pressure
+use_checkpointing   False
 '
 % Performance Optimization
 use_amp             True    # Mixed precision training with bfloat16
@@ -48,8 +49,8 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 '
 % Multi-Scale / Hierarchical Parameters
 use_multiscale      True
-coarsening_type     voronoi_inherit
-voronoi_clusters    5000, 1000
-multiscale_levels   2
-mp_per_level        4, 6, 10, 6, 4
+coarsening_type     voronoi_centroid
+voronoi_clusters    2500, 500, 100
+multiscale_levels   3
+mp_per_level        2, 4, 6, 8, 6, 4, 2
 bipartite_unpool    True    # LOCKED: learned bipartite MP unpool (always)
