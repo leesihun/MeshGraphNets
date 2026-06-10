@@ -58,18 +58,19 @@ def single_worker(config, config_filename='config.txt'):
     pin_memory = torch.cuda.is_available()
     config['_pin_memory'] = pin_memory
     mp_context = 'spawn' if num_workers > 0 else None
+    prefetch_factor = int(config.get('prefetch_factor', 4)) if num_workers > 0 else None
     train_loader = DataLoader(
         train_dataset, batch_size=config['batch_size'], shuffle=True,
         num_workers=num_workers, pin_memory=pin_memory,
         persistent_workers=num_workers > 0,
-        prefetch_factor=1 if num_workers > 0 else None,
+        prefetch_factor=prefetch_factor,
         multiprocessing_context=mp_context,
     )
     val_loader = DataLoader(
         val_dataset, batch_size=config['batch_size'], shuffle=True,
         num_workers=num_workers, pin_memory=pin_memory,
         persistent_workers=num_workers > 0,
-        prefetch_factor=1 if num_workers > 0 else None,
+        prefetch_factor=prefetch_factor,
         multiprocessing_context=mp_context,
     )
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=True, pin_memory=pin_memory)

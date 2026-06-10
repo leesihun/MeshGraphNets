@@ -46,54 +46,59 @@ class GnBlock(nn.Module):
         else:
             self.nb_module = NodeBlock(custom_func=build_mlp(2 * latent_dim, latent_dim, latent_dim))
 
-    def forward(self, graph):
-        x_input = graph.x
-        world_edge_index = graph.world_edge_index if self.use_world_edges and hasattr(graph, 'world_edge_index') else None
-        world_edge_attr = (
-            graph.world_edge_attr
-            if self.use_world_edges and hasattr(graph, 'world_edge_attr')
-            and graph.world_edge_attr is not None and graph.world_edge_attr.shape[0] > 0
-            else None
+    def forward_tensors(self, x, edge_attr, edge_index, world_edge_attr=None, world_edge_index=None):
+        """Tensor fast path used by the training/inference hot loop.
+
+        Avoids constructing PyG Data objects per block (Python overhead and
+        torch.compile graph breaks). Returns (x, edge_attr, world_edge_attr);
+        edge_index and world_edge_index are unchanged by the block.
+        """
+        num_nodes = x.shape[0]
+        has_world = (
+            self.use_world_edges and world_edge_attr is not None
+            and world_edge_index is not None and world_edge_attr.shape[0] > 0
         )
 
-        mesh_graph = self.eb_module(graph)
-        edge_mlp_out = mesh_graph.edge_attr
+        edge_mlp_out = self.eb_module.compute(x, edge_attr, edge_index)
 
         world_edge_mlp_out = None
-        if self.use_world_edges and world_edge_attr is not None and world_edge_attr.shape[0] > 0:
-            world_graph = self.world_eb_module(
-                Data(x=x_input, edge_attr=world_edge_attr, edge_index=world_edge_index)
-            )
-            world_edge_mlp_out = world_graph.edge_attr
+        if has_world:
+            world_edge_mlp_out = self.world_eb_module.compute(x, world_edge_attr, world_edge_index)
 
-        node_graph = Data(x=x_input, edge_attr=edge_mlp_out, edge_index=mesh_graph.edge_index)
         if self.use_world_edges:
-            node_graph.world_edge_attr = (
-                world_edge_mlp_out if world_edge_mlp_out is not None
-                else torch.zeros(0, edge_mlp_out.shape[1], device=x_input.device)
+            x_update = self.nb_module.compute(
+                x, edge_mlp_out, edge_index,
+                world_edge_mlp_out, world_edge_index if has_world else None,
+                num_nodes,
             )
-            node_graph.world_edge_index = (
-                world_edge_index if world_edge_index is not None
-                else torch.zeros(2, 0, dtype=torch.long, device=x_input.device)
-            )
-        node_graph = self.nb_module(node_graph)
+        else:
+            x_update = self.nb_module.compute(x, edge_mlp_out, edge_index, num_nodes)
 
-        x = x_input + self.residual_scale * node_graph.x
+        x_out = x + self.residual_scale * x_update
         if self.use_pairnorm:
-            x_centered = x - x.mean(dim=0, keepdim=True)
-            rms = (x_centered.norm(p=2) / (x.shape[0] ** 0.5)) + 1e-8
-            x = x_centered / rms
+            x_centered = x_out - x_out.mean(dim=0, keepdim=True)
+            rms = (x_centered.norm(p=2) / (x_out.shape[0] ** 0.5)) + 1e-8
+            x_out = x_centered / rms
 
-        edge_attr = graph.edge_attr + self.residual_scale * edge_mlp_out
-        updated_world_edge_attr = (
+        edge_attr_out = edge_attr + self.residual_scale * edge_mlp_out
+        world_edge_attr_out = (
             (world_edge_attr + self.residual_scale * world_edge_mlp_out)
             if world_edge_mlp_out is not None else world_edge_attr
         )
+        return x_out, edge_attr_out, world_edge_attr_out
 
-        out = Data(x=x, edge_attr=edge_attr, edge_index=node_graph.edge_index)
+    def forward(self, graph):
+        world_edge_index = graph.world_edge_index if self.use_world_edges and hasattr(graph, 'world_edge_index') else None
+        world_edge_attr = graph.world_edge_attr if self.use_world_edges and hasattr(graph, 'world_edge_attr') else None
+
+        x, edge_attr, world_edge_attr = self.forward_tensors(
+            graph.x, graph.edge_attr, graph.edge_index, world_edge_attr, world_edge_index
+        )
+
+        out = Data(x=x, edge_attr=edge_attr, edge_index=graph.edge_index)
         if self.use_world_edges:
             out.world_edge_attr = (
-                updated_world_edge_attr if updated_world_edge_attr is not None
+                world_edge_attr if world_edge_attr is not None
                 else torch.zeros(0, edge_attr.shape[1], device=x.device)
             )
             out.world_edge_index = (
@@ -109,5 +114,6 @@ class Decoder(nn.Module):
         super().__init__()
         self.decode_module = build_mlp(latent_dim, latent_dim, node_output_size, layer_norm=False)
 
-    def forward(self, graph):
-        return self.decode_module(graph.x)
+    def forward(self, graph_or_x):
+        x = graph_or_x.x if hasattr(graph_or_x, 'x') else graph_or_x
+        return self.decode_module(x)

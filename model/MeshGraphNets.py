@@ -204,13 +204,9 @@ class EncoderProcessorDecoder(nn.Module):
         if debug:
             print(f"  After Encoder: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
 
-        if self.use_checkpointing and self.training:
-            graph = process_with_checkpointing(self.processer_list, graph)
-        else:
-            for i, model in enumerate(self.processer_list):
-                graph = model(graph)
-                if debug and i == len(self.processer_list) - 1:
-                    print(f"  After MP block {i}: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
+        graph = self._run_processor_blocks(self.processer_list, graph)
+        if debug:
+            print(f"  After {len(self.processer_list)} MP blocks: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
 
         output = self.decoder(graph)
         if debug:
@@ -321,11 +317,31 @@ class EncoderProcessorDecoder(nn.Module):
         return level_data
 
     def _run_processor_blocks(self, blocks, graph):
+        """Run a stack of GnBlocks on raw tensors (one Data rebuild at the end).
+
+        The per-block Data construction of the old path was measurable Python
+        overhead at batch_size=1 and breaks torch.compile graphs.
+        """
+        x, edge_attr = graph.x, graph.edge_attr
+        edge_index = graph.edge_index
+        world_edge_attr = getattr(graph, 'world_edge_attr', None)
+        world_edge_index = getattr(graph, 'world_edge_index', None)
+
         if self.use_checkpointing and self.training:
-            return process_with_checkpointing(blocks, graph)
-        for block in blocks:
-            graph = block(graph)
-        return graph
+            x, edge_attr, world_edge_attr = process_with_checkpointing(
+                blocks, x, edge_attr, edge_index, world_edge_attr, world_edge_index
+            )
+        else:
+            for block in blocks:
+                x, edge_attr, world_edge_attr = block.forward_tensors(
+                    x, edge_attr, edge_index, world_edge_attr, world_edge_index
+                )
+
+        out = Data(x=x, edge_attr=edge_attr, edge_index=edge_index)
+        if world_edge_attr is not None and world_edge_index is not None:
+            out.world_edge_attr = world_edge_attr
+            out.world_edge_index = world_edge_index
+        return out
 
     def set_checkpointing(self, enabled: bool):
         self.use_checkpointing = enabled

@@ -1004,8 +1004,12 @@ class MeshGraphDataset(Dataset):
             self._h5_handle = h5py.File(self.h5_file, 'r', swmr=True)
         return self._h5_handle
 
-    def _get_static_sample_data(self, sample_id: int, h5_handle, data: np.ndarray):
-        """Cache sample topology and positional features inside each worker."""
+    def _get_static_sample_data(self, sample_id: int, h5_handle, nodal_dset):
+        """Cache sample topology and positional features inside each worker.
+
+        `nodal_dset` is the open h5py dataset (not a loaded array); only
+        timestep 0 is read on a cache miss.
+        """
         cache = getattr(self, '_static_cache', None)
         if cache is None:
             cache = {}
@@ -1020,11 +1024,13 @@ class MeshGraphDataset(Dataset):
         mesh_edge = h5_handle[f'data/{sample_id}/mesh_edge'][:]  # [2, M]
         edge_index = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)  # [2, 2M]
 
-        node_types = data[-1, 0, :].astype(np.int32) if self.use_node_types else None
+        first_step = nodal_dset[:, 0, :]  # [features, N] — timestep 0 only
+
+        node_types = first_step[-1, :].astype(np.int32) if self.use_node_types else None
 
         x_pos = None
         if self.num_pos_features > 0:
-            ref_pos_0 = data[:3, 0, :].T
+            ref_pos_0 = first_step[:3, :].T
             x_pos = _compute_positional_features(
                 ref_pos_0, edge_index, self.num_pos_features, self.positional_encoding
             )
@@ -1111,27 +1117,26 @@ class MeshGraphDataset(Dataset):
 
         sample_id = self.sample_ids[sample_idx]
 
-        # Load data from HDF5 (persistent handle for performance — avoids open/close per sample)
+        # Load only the required timesteps from HDF5 (persistent handle). Reading
+        # the full trajectory per item ([:]) was the dominant dataloader cost for
+        # T>1 datasets: every __getitem__ decompressed all timesteps to use two.
         f = self._get_h5_handle()
-        data = f[f'data/{sample_id}/nodal_data'][:]  # [7 or 8, time, nodes]
-        edge_index, x_pos, node_types = self._get_static_sample_data(sample_id, f, data)
+        dset = f[f'data/{sample_id}/nodal_data']  # [7 or 8, time, nodes] on disk
+        edge_index, x_pos, node_types = self._get_static_sample_data(sample_id, f, dset)
         part_ids = node_types  # same raw IDs, stored separately in graph for visualization
-
-        # Transpose to [nodes, time, 7]
-        data = np.transpose(data, (2, 1, 0))
-        # Data shape: [nodes, time, features]
 
         # Extract data based on timesteps
         if self.num_timesteps == 1:  # Static case
-            data_t = data[:, 0, :]  # [N, 7]
+            data_t = dset[:, 0, :].T  # [N, 7]
             pos = data_t[:, :3]  # [N, 3]
             x_phys = np.zeros((data_t.shape[0], self.input_dim), dtype=np.float32)  # [N, input_var] zeros
             y_raw = data_t[:, 3:3+self.output_dim]  # [N, output_var]
             target_delta = y_raw.copy()  # Predict final displacement directly
         else:
-            # Multi-timestep: state t → state t+1
-            data_t = data[:, time_idx, :]  # [N, 7]
-            data_t1 = data[:, time_idx + 1, :]  # [N, 7]
+            # Multi-timestep: state t → state t+1 (read just the two steps)
+            pair = dset[:, time_idx:time_idx + 2, :]  # [7 or 8, 2, N]
+            data_t = pair[:, 0, :].T  # [N, 7]
+            data_t1 = pair[:, 1, :].T  # [N, 7]
             pos = data_t[:, :3]  # [N, 3]
             x_phys = data_t[:, 3:3+self.input_dim]  # [N, input_var]
             y_raw = data_t1[:, 3:3+self.output_dim]  # [N, output_var]

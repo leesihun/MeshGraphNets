@@ -67,11 +67,17 @@ def _per_node_loss(errors, loss_weights):
 
 
 def _loss_from_errors(errors, loss_weights):
-    """Return mean loss used for backprop plus exact aggregation stats."""
+    """Return mean loss used for backprop plus exact aggregation stats.
+
+    The batch sum is returned as a detached 0-dim GPU tensor, not a Python
+    float: .item() here would force a CPU<->GPU sync on every batch and
+    serialize the CUDA pipeline. Callers accumulate on-device and convert
+    once per epoch (or every N batches for progress display).
+    """
     per_node = _per_node_loss(errors, loss_weights)
     loss_sum = per_node.sum()
     loss_count = per_node.numel()
-    return loss_sum / loss_count, loss_sum.item(), loss_count
+    return loss_sum / loss_count, loss_sum.detach(), loss_count
 
 
 def _move_graph_to_device(graph, device, config):
@@ -84,6 +90,48 @@ def _accum_window_size(batch_idx, total_batches, actual_accum):
     window_start = (batch_idx // actual_accum) * actual_accum
     window_end = min(window_start + actual_accum, total_batches)
     return window_end - window_start
+
+
+# Batches skipped before profiling starts (allocator/cudnn warmup): 2 wait + 2 warmup.
+_PROFILE_SKIP_BATCHES = 4
+
+
+def _start_profiler(config, epoch):
+    """Start a torch profiler for the first `profile_batches` batches of epoch 0.
+
+    Set `profile_batches N` in the config to enable. Returns None when disabled.
+    """
+    profile_batches = int(config.get('profile_batches', 0))
+    if profile_batches <= 0 or epoch != 0:
+        return None
+
+    from torch.profiler import ProfilerActivity, profile, schedule
+    activities = [ProfilerActivity.CPU]
+    if torch.cuda.is_available():
+        activities.append(ProfilerActivity.CUDA)
+    profiler = profile(
+        activities=activities,
+        schedule=schedule(wait=2, warmup=2, active=profile_batches, repeat=1),
+    )
+    profiler.start()
+    tqdm.tqdm.write(
+        f"Profiling batches {_PROFILE_SKIP_BATCHES}..{_PROFILE_SKIP_BATCHES + profile_batches - 1} "
+        f"of epoch 0 (profile_batches={profile_batches})"
+    )
+    return profiler
+
+
+def _finish_profiler(profiler, config):
+    """Stop the profiler, print a kernel-time summary, and export a chrome trace."""
+    profiler.stop()
+    sort_key = 'self_cuda_time_total' if torch.cuda.is_available() else 'self_cpu_time_total'
+    print(profiler.key_averages().table(sort_by=sort_key, row_limit=30))
+    trace_path = os.path.join(config.get('log_dir', '.'), 'train_profile_trace.json')
+    try:
+        profiler.export_chrome_trace(trace_path)
+        print(f"Profiler trace written to {trace_path} (open in chrome://tracing or https://ui.perfetto.dev)")
+    except Exception as e:
+        print(f"Warning: could not export profiler trace: {e}")
 
 
 def log_training_config(config):
@@ -123,7 +171,9 @@ def log_training_config(config):
 
 def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=None, ema_model=None, *, _iter=None):
     model.train()
-    total_loss_sum = 0.0
+    # On-device accumulator: adding batch sums tensor-to-tensor keeps the loop
+    # free of CPU<->GPU syncs; converted to a Python float once at epoch end.
+    total_loss_sum = torch.zeros((), dtype=torch.float64, device=device)
     total_loss_count = 0
     total_grad_norm = 0.0
     num_steps = 0
@@ -141,6 +191,9 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
 
     optimizer.zero_grad(set_to_none=True)
     grad_norm = torch.tensor(0.0)
+
+    profiler = _start_profiler(config, epoch)
+    profile_end_batch = _PROFILE_SKIP_BATCHES + int(config.get('profile_batches', 0))
 
     iterable = _iter if _iter is not None else dataloader
     pbar = tqdm.tqdm(iterable, total=total_batches)
@@ -181,8 +234,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
                     f"std={per_feature_loss_std[feat_idx].item():.2e}"
                 )
 
-        loss_val = batch_loss_sum / batch_loss_count
-        total_loss_sum += batch_loss_sum
+        total_loss_sum += batch_loss_sum.double()
         total_loss_count += batch_loss_count
 
         is_last_batch = batch_idx == total_batches - 1
@@ -213,11 +265,24 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
             optimizer.zero_grad(set_to_none=True)
 
         if batch_idx % 10 == 0:
+            # The only deliberate sync in the loop: one .item() per 10 batches
+            # to keep the progress bar live without stalling the pipeline.
             mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+            loss_val = batch_loss_sum.item() / batch_loss_count
             postfix = {'loss': f'{loss_val:.2e}', 'mem': f'{mem_gb:.1f}GB'}
             if monitor_gradients:
                 postfix['grad'] = f'{grad_norm.item():.2e}'
             pbar.set_postfix(postfix)
+
+        if profiler is not None:
+            profiler.step()
+            if batch_idx + 1 >= profile_end_batch:
+                _finish_profiler(profiler, config)
+                profiler = None
+
+    if profiler is not None:  # dataloader shorter than the profiling window
+        _finish_profiler(profiler, config)
+        profiler = None
 
     avg_grad_norm = total_grad_norm / num_steps if num_steps > 0 else 0.0
     if monitor_gradients and num_steps > 0:
@@ -227,6 +292,7 @@ def train_epoch(model, dataloader, optimizer, device, config, epoch, scheduler=N
         elif avg_grad_norm > 1e2:
             tqdm.tqdm.write("  WARNING: Very large gradients detected (> 100).")
 
+    total_loss_sum = total_loss_sum.item()
     mean = total_loss_sum / total_loss_count
     return {'mean': mean, 'total_mean': mean, 'sum': total_loss_sum, 'count': total_loss_count}
 
@@ -247,7 +313,7 @@ def _evaluate_epoch(model, dataloader, device, config, epoch=0, *, progress_name
     amp_dtype = torch.bfloat16
 
     with torch.no_grad():
-        total_loss_sum = 0.0
+        total_loss_sum = torch.zeros((), dtype=torch.float64, device=device)
         total_loss_count = 0
         accumulated_per_feature_loss = None
         accumulated_per_feature_count = 0
@@ -276,10 +342,12 @@ def _evaluate_epoch(model, dataloader, device, config, epoch=0, *, progress_name
                 tqdm.tqdm.write(f"After: {mem_after:.2f}GB (+{mem_after-mem_before:.2f}GB)")
                 tqdm.tqdm.write(f"Peak: {peak:.2f}GB\n")
 
-            mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
-            pbar.set_postfix({'loss': f'{loss.item():.2e}', 'mem': f'{mem_gb:.1f}GB'})
+            if batch_idx % 10 == 0:
+                mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
+                loss_val = batch_loss_sum.item() / batch_loss_count
+                pbar.set_postfix({'loss': f'{loss_val:.2e}', 'mem': f'{mem_gb:.1f}GB'})
 
-            total_loss_sum += batch_loss_sum
+            total_loss_sum += batch_loss_sum.double()
             total_loss_count += batch_loss_count
 
         if verbose and accumulated_per_feature_loss is not None and accumulated_per_feature_count > 0:
@@ -290,6 +358,7 @@ def _evaluate_epoch(model, dataloader, device, config, epoch=0, *, progress_name
                 tqdm.tqdm.write(f"  {feat_name}: {avg_per_feature_loss[feat_idx].item():.2e}")
             tqdm.tqdm.write("")
 
+    total_loss_sum = total_loss_sum.item()
     mean = total_loss_sum / total_loss_count
     return {'mean': mean, 'total_mean': mean, 'sum': total_loss_sum, 'count': total_loss_count}
 
@@ -352,7 +421,9 @@ def test_model(model, dataloader, device, config, epoch, dataset=None, output_pr
             mem_gb = torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0
             pbar.set_postfix({'loss': f'{loss.item():.2e}', 'mem': f'{mem_gb:.1f}GB'})
 
-            total_loss_sum += batch_loss_sum
+            # Test runs rarely and already syncs for visualization output;
+            # a per-batch .item() here is harmless.
+            total_loss_sum += batch_loss_sum.item()
             total_loss_count += batch_loss_count
 
             if batch_idx in config.get('test_batch_idx', [0, 1, 2, 3]):

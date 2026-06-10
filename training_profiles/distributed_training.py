@@ -120,6 +120,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
     pin_memory = torch.cuda.is_available()
     config['_pin_memory'] = pin_memory
     mp_context = 'spawn' if num_workers > 0 else None
+    prefetch_factor = int(config.get('prefetch_factor', 4)) if num_workers > 0 else None
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['batch_size'],
@@ -127,7 +128,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=num_workers > 0,
-        prefetch_factor=1 if num_workers > 0 else None,
+        prefetch_factor=prefetch_factor,
         multiprocessing_context=mp_context,
     )
 
@@ -139,7 +140,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=num_workers > 0,
-            prefetch_factor=1 if num_workers > 0 else None,
+            prefetch_factor=prefetch_factor,
             multiprocessing_context=mp_context,
         )
     else:
@@ -261,7 +262,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 shuffle=False,
                 num_workers=num_workers,
                 pin_memory=pin_memory,
-                prefetch_factor=1 if num_workers > 0 else None,
+                prefetch_factor=prefetch_factor,
                 multiprocessing_context=mp_context,
             )
             train_eval_metrics = validate_epoch(model, train_eval_loader, device, config, epoch)

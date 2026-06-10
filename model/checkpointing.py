@@ -8,14 +8,12 @@ Usage:
     Set `use_checkpointing True` in config.txt to enable.
 """
 
-import torch
 from torch.utils.checkpoint import checkpoint
-from torch_geometric.data import Data
 
 
 def checkpoint_gn_block(block, x, edge_attr, edge_index, world_edge_attr=None, world_edge_index=None):
     """
-    Run a GnBlock with gradient checkpointing.
+    Run a GnBlock with gradient checkpointing via its tensor fast path.
 
     Args:
         block: GnBlock module
@@ -26,20 +24,10 @@ def checkpoint_gn_block(block, x, edge_attr, edge_index, world_edge_attr=None, w
         world_edge_index: World edge connectivity [2, E_world] (optional)
 
     Returns:
-        Tuple of (updated_x, updated_edge_attr, updated_world_edge_attr, updated_world_edge_index)
+        Tuple of (updated_x, updated_edge_attr, updated_world_edge_attr)
     """
-    def run_block(x, edge_attr, edge_index, world_edge_attr, world_edge_index):
-        graph = Data(x=x, edge_attr=edge_attr, edge_index=edge_index)
-        if world_edge_attr is not None and world_edge_index is not None:
-            graph.world_edge_attr = world_edge_attr
-            graph.world_edge_index = world_edge_index
-        out = block(graph)
-        out_world_edge_attr = out.world_edge_attr if hasattr(out, 'world_edge_attr') else None
-        out_world_edge_index = out.world_edge_index if hasattr(out, 'world_edge_index') else None
-        return out.x, out.edge_attr, out_world_edge_attr, out_world_edge_index
-
     return checkpoint(
-        run_block,
+        block.forward_tensors,
         x,
         edge_attr,
         edge_index,
@@ -49,29 +37,20 @@ def checkpoint_gn_block(block, x, edge_attr, edge_index, world_edge_attr=None, w
     )
 
 
-def process_with_checkpointing(processor_list, graph):
+def process_with_checkpointing(processor_list, x, edge_attr, edge_index,
+                               world_edge_attr=None, world_edge_index=None):
     """
-    Run processor blocks with gradient checkpointing.
+    Run processor blocks with gradient checkpointing on raw tensors.
 
     Args:
         processor_list: nn.ModuleList of GnBlock modules
-        graph: PyG Data object (after encoding)
+        x, edge_attr, edge_index: latent graph tensors (after encoding)
+        world_edge_attr, world_edge_index: optional world-edge tensors
     Returns:
-        PyG Data object with updated features
+        Tuple of (x, edge_attr, world_edge_attr); edge indices are unchanged.
     """
-    x = graph.x
-    edge_attr = graph.edge_attr
-    edge_index = graph.edge_index
-    world_edge_attr = graph.world_edge_attr if hasattr(graph, 'world_edge_attr') else None
-    world_edge_index = graph.world_edge_index if hasattr(graph, 'world_edge_index') else None
-
     for block in processor_list:
-        x, edge_attr, world_edge_attr, world_edge_index = checkpoint_gn_block(
+        x, edge_attr, world_edge_attr = checkpoint_gn_block(
             block, x, edge_attr, edge_index, world_edge_attr, world_edge_index
         )
-
-    out = Data(x=x, edge_attr=edge_attr, edge_index=edge_index)
-    if world_edge_attr is not None and world_edge_index is not None:
-        out.world_edge_attr = world_edge_attr
-        out.world_edge_index = world_edge_index
-    return out
+    return x, edge_attr, world_edge_attr
