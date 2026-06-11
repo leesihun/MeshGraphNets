@@ -1,20 +1,20 @@
 model   MeshGraphNets
-mode    inference  # Train / Inference
-gpu_ids 0    # Inference pipeline for NOISE SWEEP train1
-log_file_dir    ex1/parametric_sweep/infer1.log
+mode    inference
+gpu_ids 0
+log_file_dir    outputs/rollout/hex/model1/infer.log
 modelpath   ./outputs/ex1/parametric_sweep/model1.pth
 %   Datasets
-dataset_dir ./dataset/ex1.h5
-infer_dataset   ./dataset/ex1.h5
-inference_output_dir   outputs/rollout/parametric_sweep/model1
-infer_timesteps
+dataset_dir ./dataset/hex_dataset.h5
+infer_dataset   ./dataset/hex_dataset.h5
+inference_output_dir   outputs/rollout/hex/model1
+infer_timesteps  1
 %   Common params (architecture overridden by checkpoint model_config at load)
 input_var   4
 output_var  4
 feature_loss_weights  0, 0, 0, 1.0
 edge_var    8
 positional_features  4
-'
+positional_encoding  rwpe
 %   Network parameters (overridden by checkpoint)
 message_passing_num 15
 Training_epochs	1
@@ -26,31 +26,22 @@ std_noise   0.0
 residual_scale  1
 augment_geometry False
 grad_accum_steps    1
-'
 % Memory Optimization
 use_checkpointing   False
-'
 % Performance Optimization
 use_amp             True
 use_ema             True
 ema_decay           0.99
 test_interval       100
 val_interval        1
-'
 % Node Type Parameters
 use_node_types  True
-'
 % World Edge Parameters
 use_world_edges         False
-'
-% Test set control
-test_batch_idx  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 33, 34
-plot_feature_idx    -1
-'
-% Multi-Scale (overridden by checkpoint)
+% Multi-Scale (model1: single level)
 use_multiscale      True
 coarsening_type     voronoi_inherit
-voronoi_clusters    5000, 1000
-multiscale_levels   2
-mp_per_level        2, 4, 8, 4, 2
+voronoi_clusters    1000
+multiscale_levels   1
+mp_per_level        2, 10, 8
 bipartite_unpool    True
