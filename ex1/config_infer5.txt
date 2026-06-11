@@ -1,10 +1,10 @@
 model   MeshGraphNets
 mode    inference  # Train / Inference
-gpu_ids 4    # Inference pipeline for NOISE SWEEP train5
+gpu_ids 4    # Hex-dataset inference for BATCH3 train5
 log_file_dir    ex1/parametric_sweep/infer5.log
 modelpath   ./outputs/ex1/parametric_sweep/model5.pth
-%   Datasets
-dataset_dir ./dataset/ex1.h5
+%   Datasets (hex mesh, 42265 nodes; stored state = ground truth for single-step)
+dataset_dir ./dataset/hex_dataset.h5
 infer_dataset   ./dataset/hex_dataset.h5
 inference_output_dir   outputs/rollout/parametric_sweep/model5
 infer_timesteps 1
@@ -23,6 +23,7 @@ LearningR	0.0001
 Latent_dim	128
 num_workers 2
 std_noise   0.0
+weight_decay    0.0001
 residual_scale  1
 augment_geometry False
 grad_accum_steps    1
@@ -44,13 +45,13 @@ use_node_types  True
 use_world_edges         False
 '
 % Test set control
-test_batch_idx  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 33, 34
+test_batch_idx  0
 plot_feature_idx    -1
 '
 % Multi-Scale (overridden by checkpoint)
 use_multiscale      True
-coarsening_type     voronoi_centroid
-voronoi_clusters    2500, 500, 100
-multiscale_levels   3
-mp_per_level        2, 4, 6, 8, 6, 4, 2
+coarsening_type     voronoi_inherit
+voronoi_clusters    1500, 300, 60, 12
+multiscale_levels   4
+mp_per_level        1, 2, 4, 6, 8, 6, 4, 2, 1
 bipartite_unpool    True
