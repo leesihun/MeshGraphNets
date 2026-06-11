@@ -6,9 +6,10 @@ set -u
 
 GT=dataset/hex_GT.h5
 SUMMARY=outputs/rollout/parametric_sweep/l2_summary.csv
+PLOT_DIR=outputs/rollout/parametric_sweep/plots
 
-mkdir -p outputs/rollout/parametric_sweep
-echo "model,rollout_file,stress_relL2,disp_relL2,all_relL2" > "$SUMMARY"
+mkdir -p outputs/rollout/parametric_sweep "$PLOT_DIR"
+echo "model,rollout_file,stress_relL2" > "$SUMMARY"
 
 for i in $(seq 1 28); do
     cfg="ex1/config_infer${i}.txt"
@@ -34,17 +35,16 @@ for i in $(seq 1 28); do
         continue
     fi
 
-    if ! l2_line=$(python compare_rollout_gt.py "$rollout" "$GT"); then
+    if ! stress_l2=$(python compare_rollout_gt.py "$rollout" "$GT" --plot-dir "$PLOT_DIR" --name "model${i}"); then
         echo "!!! model${i}: GT comparison failed for $rollout"
         continue
     fi
-    read -r stress_l2 disp_l2 all_l2 <<< "$l2_line"
 
     renamed="${rollout%.h5}_L2_${stress_l2}.h5"
     mv "$rollout" "$renamed"
-    echo ">>> model${i}: stress relL2=${stress_l2}  disp relL2=${disp_l2}  all relL2=${all_l2}"
+    echo ">>> model${i}: stress relL2=${stress_l2}"
     echo ">>> saved: $renamed"
-    echo "model${i},${renamed},${stress_l2},${disp_l2},${all_l2}" >> "$SUMMARY"
+    echo "model${i},${renamed},${stress_l2}" >> "$SUMMARY"
 done
 
 echo ""
@@ -55,3 +55,4 @@ head -n1 "$SUMMARY"
 tail -n +2 "$SUMMARY" | sort -t, -k3 -g
 echo ""
 echo "Summary CSV: $SUMMARY"
+echo "Plots:       $PLOT_DIR"
