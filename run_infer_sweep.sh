@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run config_infer1..28 sequentially, compare each rollout against hex_GT,
-# and rename the rollout file so the stress relative-L2 appears in the filename.
+# and rename the rollout file so the stress R^2 appears in the filename.
 # Run from the repository root:  bash run_infer_sweep.sh
 set -u
 
@@ -9,7 +9,7 @@ SUMMARY=outputs/rollout/parametric_sweep/l2_summary.csv
 PLOT_DIR=outputs/rollout/parametric_sweep/plots
 
 mkdir -p outputs/rollout/parametric_sweep "$PLOT_DIR"
-echo "model,rollout_file,stress_relL2" > "$SUMMARY"
+echo "model,rollout_file,stress_R2" > "$SUMMARY"
 
 for i in $(seq 1 28); do
     cfg="ex1/config_infer${i}.txt"
@@ -35,24 +35,24 @@ for i in $(seq 1 28); do
         continue
     fi
 
-    if ! stress_l2=$(python compare_rollout_gt.py "$rollout" "$GT" --plot-dir "$PLOT_DIR" --name "model${i}"); then
+    if ! stress_r2=$(python compare_rollout_gt.py "$rollout" "$GT" --plot-dir "$PLOT_DIR" --name "model${i}"); then
         echo "!!! model${i}: GT comparison failed for $rollout"
         continue
     fi
 
-    renamed="${rollout%.h5}_L2_${stress_l2}.h5"
+    renamed="${rollout%.h5}_R2_${stress_r2}.h5"
     mv "$rollout" "$renamed"
-    echo ">>> model${i}: stress relL2=${stress_l2}"
+    echo ">>> model${i}: stress R2=${stress_r2}"
     echo ">>> saved: $renamed"
-    echo "model${i},${renamed},${stress_l2}" >> "$SUMMARY"
+    echo "model${i},${renamed},${stress_r2}" >> "$SUMMARY"
 done
 
 echo ""
 echo "============================================================"
-echo "=== Summary (sorted by stress relL2, best first)"
+echo "=== Summary (sorted by stress R2, best first)"
 echo "============================================================"
 head -n1 "$SUMMARY"
-tail -n +2 "$SUMMARY" | sort -t, -k3 -g
+tail -n +2 "$SUMMARY" | sort -t, -k3 -gr
 echo ""
 echo "Summary CSV: $SUMMARY"
 echo "Plots:       $PLOT_DIR"

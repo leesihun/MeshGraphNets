@@ -1,14 +1,16 @@
-"""Compare a rollout HDF5 against a ground-truth HDF5: stress relative L2 + plot.
+"""Compare a rollout HDF5 against a ground-truth HDF5: stress R^2 + elemental plot.
 
 Usage:
     python compare_rollout_gt.py <rollout.h5> <gt.h5> [--plot-dir DIR] [--name NAME]
 
-Prints one line to stdout: "<stress_relL2>"
+Prints one line to stdout: "<stress_R2>"
 Comparison is between the final rollout timestep and the final GT timestep,
 on the stress channel only (nodal_data[6]).
+R^2 = 1 - sum((pred-gt)^2) / sum((gt-mean(gt))^2); 1.0 is perfect, 0.0 means
+no better than predicting the GT mean everywhere, negative is worse than that.
 
-With --plot-dir, saves "<NAME>_L2_<stress_relL2>.png": GT vs prediction vs
-|error| panels for stress and displacement magnitude, stress L2 in the title.
+With --plot-dir, saves "<NAME>_R2_<stress_R2>.png": GT vs prediction vs |error|
+rendered as elemental (per-triangle) filled contours, stress R^2 in the title.
 """
 import argparse
 import os
@@ -28,48 +30,68 @@ def _load(path):
     return xy, state
 
 
-def _rel_l2(pred, gt):
-    denom = np.linalg.norm(gt)
-    err = np.linalg.norm(pred - gt)
-    return float(err / denom) if denom > 0 else float(err)
+def _r2(pred, gt):
+    ss_res = float(np.sum((pred - gt) ** 2))
+    ss_tot = float(np.sum((gt - gt.mean()) ** 2))
+    return 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
 
 
-def _panel(fig, ax, xy, vals, cmap, title, vmin=None, vmax=None):
+def _build_triangulation(xy):
+    import matplotlib.tri as mtri
+    tri = mtri.Triangulation(xy[:, 0], xy[:, 1])
+    # Delaunay bridges concave gaps/holes; mask triangles with abnormally long edges
+    pts = xy[tri.triangles]                      # [n_tri, 3, 2]
+    edge_len = np.stack([
+        np.linalg.norm(pts[:, 0] - pts[:, 1], axis=1),
+        np.linalg.norm(pts[:, 1] - pts[:, 2], axis=1),
+        np.linalg.norm(pts[:, 2] - pts[:, 0], axis=1),
+    ], axis=1)
+    max_edge = edge_len.max(axis=1)
+    tri.set_mask(max_edge > 3.0 * np.median(edge_len))
+    return tri
+
+
+def _panel(fig, ax, tri, vals, cmap, title, vmin=None, vmax=None):
+    # elemental rendering: one flat color per triangle (mean of its 3 nodes)
+    face_vals = vals[tri.triangles].mean(axis=1)
+    if tri.mask is not None:
+        face_vals = face_vals[~tri.mask]
     if vmin is None:
-        vmin, vmax = vals.min(), vals.max()
+        vmin, vmax = face_vals.min(), face_vals.max()
         if vmin == vmax:
             vmin -= 1e-6
             vmax += 1e-6
-    sc = ax.scatter(xy[:, 0], xy[:, 1], c=vals, cmap=cmap,
-                    s=0.8, linewidths=0, rasterized=True,
-                    vmin=vmin, vmax=vmax)
-    fig.colorbar(sc, ax=ax, fraction=0.04, pad=0.02)
+    tpc = ax.tripcolor(tri, facecolors=face_vals, cmap=cmap,
+                       vmin=vmin, vmax=vmax, rasterized=True)
+    fig.colorbar(tpc, ax=ax, fraction=0.04, pad=0.02)
     ax.set_aspect('equal')
     ax.axis('off')
     ax.set_title(title, fontsize=9)
 
 
-def _plot(xy, pred, gt, stress_l2, name, out_path):
+def _plot(xy, pred, gt, stress_r2, name, out_path):
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
+    tri = _build_triangulation(xy)
+
     rows = [
-        ('stress (MPa)', gt[3], pred[3], 'hot'),
+        ('stress (MPa)', gt[3], pred[3], 'jet'),
         ('|disp| (mm)', np.linalg.norm(gt[:3], axis=0),
-         np.linalg.norm(pred[:3], axis=0), 'plasma'),
+         np.linalg.norm(pred[:3], axis=0), 'jet'),
     ]
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 9))
-    fig.suptitle(f"{name}  —  stress relL2 = {stress_l2:.6f}", fontsize=12)
+    fig.suptitle(f"{name}  —  stress R² = {stress_r2:.6f}", fontsize=12)
     for ax_row, (label, gt_vals, pred_vals, cmap) in zip(axes, rows):
         vmin, vmax = gt_vals.min(), gt_vals.max()
         if vmin == vmax:
             vmin -= 1e-6
             vmax += 1e-6
-        _panel(fig, ax_row[0], xy, gt_vals, cmap, f"GT {label}", vmin, vmax)
-        _panel(fig, ax_row[1], xy, pred_vals, cmap, f"Prediction {label}", vmin, vmax)
-        _panel(fig, ax_row[2], xy, np.abs(pred_vals - gt_vals), 'viridis',
+        _panel(fig, ax_row[0], tri, gt_vals, cmap, f"GT {label}", vmin, vmax)
+        _panel(fig, ax_row[1], tri, pred_vals, cmap, f"Prediction {label}", vmin, vmax)
+        _panel(fig, ax_row[2], tri, np.abs(pred_vals - gt_vals), 'viridis',
                f"|error| {label}")
 
     plt.tight_layout()
@@ -95,13 +117,13 @@ def main():
         print(f"ERROR: shape mismatch pred {pred.shape} vs gt {gt.shape}", file=sys.stderr)
         sys.exit(1)
 
-    stress_l2 = _rel_l2(pred[3], gt[3])
-    print(f"{stress_l2:.6f}")
+    stress_r2 = _r2(pred[3], gt[3])
+    print(f"{stress_r2:.6f}")
 
     if args.plot_dir:
         os.makedirs(args.plot_dir, exist_ok=True)
-        out_path = os.path.join(args.plot_dir, f"{args.name}_L2_{stress_l2:.6f}.png")
-        _plot(xy, pred, gt, stress_l2, args.name, out_path)
+        out_path = os.path.join(args.plot_dir, f"{args.name}_R2_{stress_r2:.6f}.png")
+        _plot(xy, pred, gt, stress_r2, args.name, out_path)
 
 
 if __name__ == '__main__':
