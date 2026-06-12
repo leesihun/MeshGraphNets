@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 3    # BATCH3 L3 10000/2000/400: inherit
+gpu_ids 3    # BATCH6 gradual-to-100: L3 10000/2000/100 centroid (bridges 5k/100 vs 10k family)
 log_file_dir    ex1/parametric_sweep/train14.log
 modelpath   ./outputs/ex1/parametric_sweep/model14.pth
 %   Datasets
@@ -14,7 +14,7 @@ feature_loss_weights  0, 0, 0, 1.0  # Per-feature loss weights for [x_disp, y_di
 edge_var    8   # deformed dx/dy/dz/dist + reference dx/dy/dz/dist
 positional_features  4   # Rotation-invariant node features: [centroid_dist, mean_edge_len, + encoding]
 '
-%   Network parameters (BATCH3 mode x depth grid: only coarsening_type / clusters / levels / mp vary)
+%   Network parameters (BATCH6: depth-decoupling + MP-shape + mode coverage; only the 4 swept keys vary)
 message_passing_num 15
 Training_epochs	2000
 Batch_size	1
@@ -49,8 +49,8 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 '
 % Multi-Scale / Hierarchical Parameters (SWEPT)
 use_multiscale      True
-coarsening_type     voronoi_inherit
-voronoi_clusters    10000, 2000, 400
+coarsening_type     voronoi_centroid
+voronoi_clusters    10000, 2000, 100
 multiscale_levels   3
 mp_per_level        2, 4, 6, 8, 6, 4, 2
 bipartite_unpool    True    # LOCKED: learned bipartite MP unpool (always)

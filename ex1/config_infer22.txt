@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    inference  # Train / Inference
-gpu_ids 1    # Hex-dataset inference for BATCH5 train22 (exp1 coarsest28 seedmean)
+gpu_ids 1    # Hex-dataset inference for BATCH6 train22
 log_file_dir    ex1/parametric_sweep/infer22.log
 modelpath   ./outputs/ex1/parametric_sweep/model22.pth
 %   Datasets (hex mesh, 42265 nodes; stored state = ground truth for single-step)
@@ -50,8 +50,8 @@ plot_feature_idx    -1
 '
 % Multi-Scale (overridden by checkpoint)
 use_multiscale      True
-coarsening_type     voronoi_seedmean
-voronoi_clusters    1500, 300, 60, 28
+coarsening_type     voronoi_inherit
+voronoi_clusters    10000, 2000, 400, 80
 multiscale_levels   4
-mp_per_level        1, 2, 4, 6, 8, 6, 4, 2, 1
+mp_per_level        7, 5, 3, 2, 1, 2, 3, 5, 7
 bipartite_unpool    True
