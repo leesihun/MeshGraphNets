@@ -52,5 +52,5 @@ use_multiscale      True
 coarsening_type     BFS
 voronoi_clusters    0
 multiscale_levels   2
-mp_per_level        2, 4, 8, 4, 2
+mp_per_level        4, 6, 8, 6, 4
 bipartite_unpool    True    # Learned bipartite MP unpool (False = broadcast)

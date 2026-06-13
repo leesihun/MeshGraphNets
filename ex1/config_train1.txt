@@ -1,8 +1,8 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 0    # BATCH6 depth-decouple: L2 5000/100 centroid REP-A (spannable bottom, no middle levels)
-log_file_dir    ex1/parametric_sweep/train1.log
-modelpath   ./outputs/ex1/parametric_sweep/model1.pth
+gpu_ids 0    # BATCH6 champion: L4 10000/2000/400/80 seedmean
+log_file_dir    ex1/train1.log
+modelpath   ./outputs/ex1/model1.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/hex_dataset.h5
@@ -49,8 +49,8 @@ plot_feature_idx    -1  # Feature index to visualize in plots (-1 = last feature
 '
 % Multi-Scale / Hierarchical Parameters (SWEPT)
 use_multiscale      True
-coarsening_type     voronoi_centroid
-voronoi_clusters    5000, 100
-multiscale_levels   2
-mp_per_level        4, 6, 8, 6, 4
+coarsening_type     voronoi_seedmean
+voronoi_clusters    10000, 2000, 400, 80
+multiscale_levels   4
+mp_per_level        2, 2, 2, 2, 8, 4, 4, 4, 4
 bipartite_unpool    True    # LOCKED: learned bipartite MP unpool (always)

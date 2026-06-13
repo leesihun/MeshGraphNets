@@ -1,8 +1,8 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
 gpu_ids 1    # BATCH6 depth-decouple: L2 5000/100 seedmean (mode at maximal 50x jump)
-log_file_dir    ex1/parametric_sweep/train2.log
-modelpath   ./outputs/ex1/parametric_sweep/model2.pth
+log_file_dir    ex1/train2.log
+modelpath   ./outputs/ex1/model2.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/hex_dataset.h5
