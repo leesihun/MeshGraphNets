@@ -77,7 +77,7 @@ def _plot(xy, pred, gt, stress_r2, name, out_path):
     tri = _build_triangulation(xy)
 
     rows = [
-        ('stress (MPa)', gt[3], pred[3], 'jet'),
+        ('stress (Pa)', gt[3] * 1e6, pred[3] * 1e6, 'jet'),
         ('|disp| (mm)', np.linalg.norm(gt[:3], axis=0),
          np.linalg.norm(pred[:3], axis=0), 'jet'),
     ]
