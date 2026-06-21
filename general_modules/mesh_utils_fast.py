@@ -429,14 +429,22 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
     target_colors_denorm = target_values_denorm[:, feature_idx].astype(np.float64)
 
     # Feature name and units
-    feature_names = ['Delta Disp X', 'Delta Disp Y', 'Delta Disp Z', 'Delta Stress']
-    feature_units = ['mm', 'mm', 'mm', 'MPa']
+    feature_names = ['Delta Disp X', 'Delta Disp Y', 'Delta Disp Z', 'Stress']
+    feature_units_norm   = ['mm', 'mm', 'mm', 'MPa']
+    feature_units_denorm = ['mm', 'mm', 'mm', 'Pa']
     feature_name = (feature_names[actual_feature_idx]
                     if actual_feature_idx < len(feature_names)
                     else f'Feature {actual_feature_idx}')
-    feature_unit = (feature_units[actual_feature_idx]
-                    if actual_feature_idx < len(feature_units)
-                    else '')
+    feature_unit_norm   = (feature_units_norm[actual_feature_idx]
+                           if actual_feature_idx < len(feature_units_norm) else '')
+    feature_unit_denorm = (feature_units_denorm[actual_feature_idx]
+                           if actual_feature_idx < len(feature_units_denorm) else '')
+
+    # Convert denormalized stress from MPa to Pa
+    is_stress = actual_feature_idx == 3
+    if is_stress:
+        pred_colors_denorm  = pred_colors_denorm  * 1e6
+        target_colors_denorm = target_colors_denorm * 1e6
 
     # Shared color ranges (same scale for pred vs target within each row)
     eps = 1e-12
@@ -454,9 +462,14 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
     if clim_denorm[1] - clim_denorm[0] < eps:
         clim_denorm[1] = clim_denorm[0] + eps
 
-    # MSE for each row
-    mse_norm = float(((pred_colors_norm - target_colors_norm) ** 2).mean())
-    mse_denorm = float(((pred_colors_denorm - target_colors_denorm) ** 2).mean())
+    # Pearson r² for each row
+    def _pearson_r2(a, b):
+        if a.std() < 1e-12 or b.std() < 1e-12:
+            return float('nan')
+        return float(np.corrcoef(a, b)[0, 1] ** 2)
+
+    r2_norm   = _pearson_r2(pred_colors_norm,   target_colors_norm)
+    r2_denorm = _pearson_r2(pred_colors_denorm, target_colors_denorm)
 
     # Build VTK-format faces: [3, v0, v1, v2, 3, v0, v1, v2, ...]
     n_faces = faces.shape[0]
@@ -474,21 +487,21 @@ def plot_mesh_comparison(pos, faces, pred_values_norm, target_values_norm,
         if n_parts > 1:
             header_parts.append(f'{n_parts} Parts')
 
-    mse_str_norm = f'MSE: {mse_norm:.4f}'
-    mse_str_denorm = (f'MSE: {mse_denorm:.4f} {feature_unit}'.strip()
-                      if feature_unit else f'MSE: {mse_denorm:.4f}')
+    r2_str_norm   = f'r²: {r2_norm:.4f}'
+    r2_str_denorm = f'r²: {r2_denorm:.4f}'
 
     # Colorbar labels
-    cbar_label_norm = f'{feature_name} (Normalized)'
-    cbar_label_denorm = (f'{feature_name} ({feature_unit})'
-                         if feature_unit else f'{feature_name} (Denormalized)')
+    cbar_label_norm   = f'{feature_name} (Normalized)'
+    cbar_label_denorm = (f'Stress (Pa)' if is_stress
+                         else (f'{feature_name} ({feature_unit_denorm})'
+                               if feature_unit_denorm else f'{feature_name} (Denormalized)'))
 
     # Subplot definitions: (row, col, scalars, title, clim, show_cbar, cbar_title)
     subplot_configs = [
-        (0, 0, pred_colors_norm,    'Normalized - Predicted',                         clim_norm,   False, ''),
-        (0, 1, target_colors_norm,  f'Normalized - Ground Truth | {mse_str_norm}',    clim_norm,   True,  cbar_label_norm),
-        (1, 0, pred_colors_denorm,  'Denormalized - Predicted',                       clim_denorm, False, ''),
-        (1, 1, target_colors_denorm, f'Denormalized - Ground Truth | {mse_str_denorm}', clim_denorm, True,  cbar_label_denorm),
+        (0, 0, pred_colors_norm,    'Normalized - Predicted',                           clim_norm,   False, ''),
+        (0, 1, target_colors_norm,  f'Normalized - Ground Truth | {r2_str_norm}',       clim_norm,   True,  cbar_label_norm),
+        (1, 0, pred_colors_denorm,  'Denormalized - Predicted',                         clim_denorm, False, ''),
+        (1, 1, target_colors_denorm, f'Denormalized - Ground Truth | {r2_str_denorm}',  clim_denorm, True,  cbar_label_denorm),
     ]
 
     # Create 2x2 off-screen plotter
