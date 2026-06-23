@@ -1,4 +1,4 @@
-"""Compare all ex1 model rollouts against hex_GT.h5.
+"""Compare all ex1 model rollouts against rect_GT.h5.
 
 Produces:
   outputs/plots/ex1_comparison/
@@ -23,7 +23,7 @@ import matplotlib.tri as mtri
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-GT_PATH = 'dataset/hex_GT.h5'
+GT_PATH = 'dataset/rect_GT.h5'
 
 MODELS = {
     'model1': {
