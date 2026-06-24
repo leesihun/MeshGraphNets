@@ -1,17 +1,17 @@
-﻿model   MeshGraphNets
+model   MeshGraphNets
 mode    inference  # Train / Inference
-gpu_ids 2    # Hex-dataset inference for L2OPT train3
-log_file_dir    ex1/parametric_sweep/infer3.log
-modelpath   ./outputs/ex1/parametric_sweep/model3.pth
+gpu_ids 0    # Hex-dataset inference for L2OPT train1
+log_file_dir    ex1/parametric_sweep/infer1.log
+modelpath   ./outputs/ex1/parametric_sweep/model1.pth
 %   Datasets (hex mesh, 42265 nodes; stored state = ground truth for single-step)
 dataset_dir ./dataset/rect_dataset.h5
 infer_dataset   ./dataset/rect_dataset.h5
-inference_output_dir   outputs/rollout/parametric_sweep/model3
+inference_output_dir   outputs/rollout/parametric_sweep/model1
 infer_timesteps 1
 %   Common params (architecture overridden by checkpoint model_config at load)
 input_var   4
 output_var  4
-feature_loss_weights  0, 0, 0, 1.0
+feature_loss_weights  0.0, 0.0, 0.0, 1.0
 edge_var    8
 positional_features  4
 '

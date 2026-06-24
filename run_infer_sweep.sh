@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Run config_infer1..28 sequentially, compare each rollout against hex_GT,
+# Run config_infer1..28 sequentially, compare each rollout against rect_GT,
 # and rename the rollout file so the stress R^2 appears in the filename.
 # Run from the repository root:  bash run_infer_sweep.sh
 set -u
 
-GT=dataset/hex_GT.h5
+GT=dataset/rect_GT.h5
 SUMMARY=outputs/rollout/parametric_sweep/l2_summary.csv
 PLOT_DIR=outputs/rollout/parametric_sweep/plots
 
 mkdir -p outputs/rollout/parametric_sweep "$PLOT_DIR"
 echo "model,rollout_file,stress_R2" > "$SUMMARY"
 
-for i in $(seq 1 28); do
+for i in $(seq 1 4); do
     cfg="ex1/config_infer${i}.txt"
     if [ ! -f "$cfg" ]; then
         echo "--- model${i}: $cfg not found, skipping"
