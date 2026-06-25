@@ -1,8 +1,8 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 1    # L2OPT baseline: 5000/100 mp 4,6,8,6,4 bs1 lr1e-4
-log_file_dir    ex1/parametric_sweep/train1.log
-modelpath   ./outputs/ex1/parametric_sweep/model1.pth
+gpu_ids 1    # stress-only loss, voronoi_seedmean 5000/100 mp 4,6,8,6,4
+log_file_dir    ex1/train2.log
+modelpath   ./outputs/ex1/model2.pth
 %   Datasets
 dataset_dir ./dataset/ex1.h5
 infer_dataset   ./dataset/rect_dataset.h5
