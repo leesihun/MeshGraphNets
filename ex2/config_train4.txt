@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 3    # ex2 train4 (ex1-cfg4 mirror)
+gpu_ids 6, 7    # ex2 train4 (ex1-cfg4 mirror)
 log_file_dir    ex2/train4.log
 modelpath   ./outputs/ex2/model4.pth
 %   Datasets (ex2.h5: 50 samples x 50 timesteps, 3D mesh -> multi-step delta training)
@@ -17,18 +17,18 @@ positional_features  4   # Rotation-invariant node features: [centroid_dist, mea
 %   Network parameters
 message_passing_num 24
 Training_epochs	500
-Batch_size	2
+Batch_size	4
 LearningR	0.0001
 Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
-std_noise   0.1   # input-noise injection for autoregressive stability (multi-step)
+std_noise   0.01   # input-noise injection for autoregressive stability (multi-step)
 weight_decay    0.0001   # AdamW decoupled weight decay (decimal form only)
 residual_scale  1
 augment_geometry False   # OFF for ex2: directional y-sag breaks the Z-rotation/reflection isotropy assumption
 grad_accum_steps    1
 '
 % Memory Optimization
-use_checkpointing   True
+use_checkpointing   False
 '
 % Performance Optimization
 use_amp             True    # Mixed precision training with bfloat16
