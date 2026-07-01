@@ -16,7 +16,7 @@ edge_var    8
 positional_features  4
 '
 %   Network parameters (overridden by checkpoint)
-message_passing_num 28
+message_passing_num 24
 Training_epochs	1
 Batch_size	1
 LearningR	0.0001
@@ -42,7 +42,7 @@ val_interval        1
 use_node_types  True
 '
 % World Edge Parameters
-use_world_edges         False
+use_world_edges         True
 '
 % Test set control
 test_batch_idx  0
