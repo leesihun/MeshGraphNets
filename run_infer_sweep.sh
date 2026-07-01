@@ -12,7 +12,7 @@ mkdir -p outputs/rollout/parametric_sweep "$PLOT_DIR"
 echo "model,rollout_file,stress_R2" > "$SUMMARY"
 
 for i in $(seq 1 4); do
-    cfg="ex1/config_infer${i}.txt"
+    cfg="ex2/config_infer${i}.txt"
     if [ ! -f "$cfg" ]; then
         echo "--- model${i}: $cfg not found, skipping"
         continue

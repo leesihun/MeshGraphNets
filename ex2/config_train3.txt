@@ -1,6 +1,6 @@
 model   MeshGraphNets
 mode    train  # Train / Inference
-gpu_ids 0, 1, 2, 3    # ex2 train3 (ex1-cfg3 mirror)
+gpu_ids 2    # ex2 train3 (ex1-cfg3 mirror)
 log_file_dir    ex2/train3.log
 modelpath   ./outputs/ex2/model3.pth
 %   Datasets (ex2.h5: 50 samples x 50 timesteps, 3D mesh -> multi-step delta training)
