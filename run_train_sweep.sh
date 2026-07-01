@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Run every ex1/config_train*.txt (24 configs, ex1/old excluded) ALL at once,
+# Run every ex2/config_train*.txt (24 configs, ex2/old excluded) ALL at once,
 # each as a background process.
 # Each config declares its own gpu_ids, so configs sharing a GPU run
 # concurrently on it (e.g. train1/train11/train21 together on GPU 0) —
 # make sure GPU memory fits 3 jobs per GPU.
 # Already-trained models (existing model{i}.pth) are skipped so the sweep can
 # be resumed after an interruption; pass --force to retrain everything.
-# Per-config stdout goes to ex1/parametric_sweep/sweep_logs/train{i}.out.
+# Per-config stdout goes to ex2/parametric_sweep/sweep_logs/train{i}.out.
 # Run from the repository root:  bash run_train_sweep.sh [--force]
 set -u
 
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
 
-LOG_DIR=ex1/parametric_sweep/sweep_logs
+LOG_DIR=ex2/parametric_sweep/sweep_logs
 mkdir -p "$LOG_DIR"
 
 get_key() {
@@ -39,8 +39,8 @@ run_one() {
 sweep_start=$(date +%s)
 launched=0
 
-# only configs directly inside ex1/ — ex1/old is not matched by this glob
-for cfg in ex1/config_train*.txt; do
+# only configs directly inside ex2/ — ex2/old is not matched by this glob
+for cfg in ex2/config_train*.txt; do
     i=$(basename "$cfg" .txt)
     i=${i#config_train}
 
@@ -63,7 +63,7 @@ sweep_end=$(date +%s)
 echo ""
 echo "============================================================"
 echo "=== Training sweep finished in $(( (sweep_end - sweep_start) / 3600 ))h $(( ((sweep_end - sweep_start) % 3600) / 60 ))m"
-for cfg in ex1/config_train*.txt; do
+for cfg in ex2/config_train*.txt; do
     i=$(basename "$cfg" .txt)
     i=${i#config_train}
     ckpt=$(get_key "$cfg" modelpath)
