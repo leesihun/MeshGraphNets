@@ -6,7 +6,7 @@ modelpath   ./outputs/ex2/model3.pth
 %   Datasets (ex2.h5: 50 samples x 50 timesteps, 3D mesh -> multi-step delta training)
 dataset_dir ./dataset/ex2.h5
 infer_dataset   ./dataset/ex2.h5
-infer_timesteps 50   # autoregressive rollout steps from t=0
+infer_timesteps 49   # autoregressive rollout steps from t=0
 %   Common params
 input_var   4   # number of input variables: x_disp, y_disp, z_disp, stress (excluding node types)
 output_var  4   # number of output variables: x_disp, y_disp, z_disp, stress (z_disp is REAL for ex2)

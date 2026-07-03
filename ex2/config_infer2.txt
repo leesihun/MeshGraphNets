@@ -7,7 +7,7 @@ modelpath   ./outputs/ex2/model2.pth
 dataset_dir ./dataset/ex2.h5
 infer_dataset   ./dataset/ex2.h5
 inference_output_dir   outputs/rollout/ex2/model2
-infer_timesteps 50   # autoregressive rollout steps from t=0
+infer_timesteps 49   # autoregressive rollout steps from t=0
 %   Common params (architecture overridden by checkpoint model_config at load)
 input_var   4
 output_var  4
