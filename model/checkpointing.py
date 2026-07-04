@@ -3,12 +3,28 @@ Gradient Checkpointing Utilities for MeshGraphNets
 
 Reduces VRAM usage by recomputing activations during backward pass
 instead of storing them. Trades ~20-30% more compute for ~60-70% less memory.
+Covers the processor GnBlocks (per block) plus the encoder, coarse edge
+encoders, and unpool/skip-merge steps of the multiscale V-cycle.
 
 Usage:
     Set `use_checkpointing True` in config.txt to enable.
 """
 
 from torch.utils.checkpoint import checkpoint
+
+
+def run_checkpointed(fn, *args, enabled: bool = True):
+    """Run fn(*args), optionally under non-reentrant gradient checkpointing.
+
+    Used for the non-GnBlock stages (encoder, coarse edge encoders, unpool +
+    skip merge) so `use_checkpointing True` covers the whole forward pass, not
+    just the processor blocks. Non-reentrant checkpointing tracks module
+    parameters and closures, so fn may be an nn.Module or a bound method and
+    args may include non-tensors.
+    """
+    if enabled:
+        return checkpoint(fn, *args, use_reentrant=False)
+    return fn(*args)
 
 
 def checkpoint_gn_block(block, x, edge_attr, edge_index, world_edge_attr=None, world_edge_index=None):

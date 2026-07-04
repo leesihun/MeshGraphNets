@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch_geometric.data import Data
 
 from general_modules.edge_features import EDGE_FEATURE_DIM
-from model.checkpointing import process_with_checkpointing
+from model.checkpointing import process_with_checkpointing, run_checkpointed
 from model.coarsening import pool_features, unpool_features
 from model.encoder_decoder import Decoder, Encoder, GnBlock
 from model.mlp import build_mlp, init_weights
@@ -199,8 +199,16 @@ class EncoderProcessorDecoder(nn.Module):
             return self._forward_flat(graph, debug)
         return self._forward_multiscale(graph, debug)
 
+    def _encode(self, graph):
+        """Encoder wrapped by use_checkpointing: its edge MLP internals scale
+        with E and would otherwise stay resident for the whole backward."""
+        return run_checkpointed(
+            self.encoder, graph,
+            enabled=self.use_checkpointing and self.training,
+        )
+
     def _forward_flat(self, graph, debug):
-        graph = self.encoder(graph)
+        graph = self._encode(graph)
         if debug:
             print(f"  After Encoder: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
 
@@ -218,7 +226,7 @@ class EncoderProcessorDecoder(nn.Module):
         level_data = self._extract_level_data(graph, L)
         actual_levels = len(level_data)
 
-        graph = self.encoder(graph)
+        graph = self._encode(graph)
         if debug:
             print(f"  [MS] After Encoder: x std={graph.x.std().item():.4f}")
 
@@ -246,7 +254,10 @@ class EncoderProcessorDecoder(nn.Module):
                 h_coarse = current_graph.x[ld['seeds']]
             else:
                 h_coarse = pool_features(current_graph.x, ld['ftc'], ld['n_c'])
-            e_coarse = self.coarse_eb_encoders[i](ld['c_ea'])
+            e_coarse = run_checkpointed(
+                self.coarse_eb_encoders[i], ld['c_ea'],
+                enabled=self.use_checkpointing and self.training,
+            )
             current_graph = Data(x=h_coarse, edge_attr=e_coarse, edge_index=ld['c_ei'])
             if self.use_coarse_world_edges and ld['c_we_idx'] is not None and ld['c_we_idx'].shape[1] > 0:
                 current_graph.world_edge_attr = ld['c_we_attr']
@@ -261,20 +272,11 @@ class EncoderProcessorDecoder(nn.Module):
 
         for i in range(actual_levels - 1, -1, -1):
             ld = level_data[i]
-            if getattr(self, 'bipartite_unpool', False):
-                src, dst = ld['up_ei']
-                rel_pos = ld['fine_pos'][dst] - ld['coarse_centroid'][src]
-                h_up = self.unpool_blocks[i](
-                    h_coarse=current_graph.x,
-                    h_fine_skip=skip_states[i]['x'],
-                    unpool_edge_index=ld['up_ei'],
-                    rel_pos=rel_pos,
-                )
-            else:
-                h_up = unpool_features(current_graph.x, ld['ftc'])
-
             skip = skip_states[i]
-            h_merged = self.skip_projs[i](torch.cat([skip['x'], h_up], dim=-1))
+            h_merged = run_checkpointed(
+                self._unpool_merge_level, i, current_graph.x, skip['x'], ld,
+                enabled=self.use_checkpointing and self.training,
+            )
             current_graph = Data(x=h_merged, edge_attr=skip['edge_attr'], edge_index=skip['edge_index'])
             use_we_here = self.use_world_edges and (i == 0 or self.use_coarse_world_edges)
             if use_we_here and skip['w_attr'] is not None:
@@ -289,6 +291,27 @@ class EncoderProcessorDecoder(nn.Module):
         if debug:
             print(f"  [MS] After Decoder: out std={output.std().item():.4f}")
         return output
+
+    def _unpool_merge_level(self, i, coarse_x, skip_x, ld):
+        """Unpool level-i coarse features to fine and merge with the skip state.
+
+        One method so use_checkpointing can recompute the whole step: with
+        bipartite unpool the edge MLP runs on ~(1 + coarse degree) * N_fine
+        unpool edges, otherwise one of the largest saved-activation buffers
+        in the V-cycle.
+        """
+        if getattr(self, 'bipartite_unpool', False):
+            src, dst = ld['up_ei']
+            rel_pos = ld['fine_pos'][dst] - ld['coarse_centroid'][src]
+            h_up = self.unpool_blocks[i](
+                h_coarse=coarse_x,
+                h_fine_skip=skip_x,
+                unpool_edge_index=ld['up_ei'],
+                rel_pos=rel_pos,
+            )
+        else:
+            h_up = unpool_features(coarse_x, ld['ftc'])
+        return self.skip_projs[i](torch.cat([skip_x, h_up], dim=-1))
 
     def _extract_level_data(self, graph, L):
         """Extract per-level coarsening topology before the encoder drops custom attrs."""
