@@ -10,6 +10,11 @@ import torch.nn as nn
 from torch_geometric.data import Data
 
 from general_modules.edge_features import EDGE_FEATURE_DIM
+from model.checkpointing import (
+    checkpoint_gn_block,
+    process_with_checkpointing,
+    run_checkpointed,
+)
 from model.coarsening import pool_features, unpool_features
 from model.encoder_decoder import Decoder, Encoder, GnBlock
 from model.mlp import build_mlp
@@ -415,6 +420,8 @@ class ModelSplitStage(nn.Module):
             and self.use_world_edges
             and self.use_multiscale
         )
+        self.use_checkpointing = bool(config.get('use_checkpointing', False))
+        self._bipartite_unpool = bool(config.get('bipartite_unpool', False))
 
         my_blocks = sorted(assignment[stage_idx])
         self.my_block_indices = my_blocks
@@ -440,6 +447,7 @@ class ModelSplitStage(nn.Module):
             ops_sequence = _build_stage_ops(my_blocks, L, mp_per_level)
             self._in_skip_depth = _compute_in_skip_depth(my_blocks, L, mp_per_level)
             self._out_skip_depth = _compute_out_skip_depth(my_blocks, L, mp_per_level, self._in_skip_depth)
+        self._ops_sequence = ops_sequence
 
         self.model = _StageInner(
             is_first=self.is_first,
@@ -518,10 +526,16 @@ class ModelSplitStage(nn.Module):
             graph.y = graph.y - noise_gamma * noise * ratio
         graph.edge_attr = graph.edge_attr + torch.randn_like(graph.edge_attr) * noise_std
 
+    def _ckpt_enabled(self) -> bool:
+        """Gradient checkpointing is active only while training with the flag on."""
+        return self.use_checkpointing and self.training
+
     def encode(self, graph) -> Tuple:
         if not self.is_first:
             raise RuntimeError("encode() called on non-first stage")
-        encoded = self.model.encoder(graph)
+        encoded = run_checkpointed(
+            self.model.encoder, graph, enabled=self._ckpt_enabled(),
+        )
         wea = getattr(encoded, 'world_edge_attr', None) if self.use_world_edges else None
         wei = getattr(encoded, 'world_edge_index', None) if self.use_world_edges else None
         return encoded.x, encoded.edge_attr, encoded.edge_index, wea, wei
@@ -534,21 +548,61 @@ class ModelSplitStage(nn.Module):
         world_edge_attr: Optional[torch.Tensor] = None,
         world_edge_index: Optional[torch.Tensor] = None,
     ) -> Tuple:
-        graph = Data(x=x, edge_attr=edge_attr, edge_index=edge_index)
-        if self.use_world_edges and world_edge_attr is not None:
-            graph.world_edge_attr = world_edge_attr
-            graph.world_edge_index = world_edge_index
+        blocks = [self.model.processer_list[str(i)] for i in self.my_block_indices]
+        if self._ckpt_enabled():
+            x, edge_attr, world_edge_attr = process_with_checkpointing(
+                blocks, x, edge_attr, edge_index, world_edge_attr, world_edge_index,
+            )
+        else:
+            for block in blocks:
+                x, edge_attr, world_edge_attr = block.forward_tensors(
+                    x, edge_attr, edge_index, world_edge_attr, world_edge_index,
+                )
 
-        for i in self.my_block_indices:
-            graph = self.model.processer_list[str(i)](graph)
+        return x, edge_attr, edge_index, world_edge_attr, world_edge_index
 
-        return (
-            graph.x,
-            graph.edge_attr,
-            graph.edge_index,
-            getattr(graph, 'world_edge_attr', None),
-            getattr(graph, 'world_edge_index', None),
-        )
+    def _run_block(self, block, g) -> Data:
+        """Run one GnBlock on a Data, optionally gradient-checkpointed.
+
+        Mirrors the serial path's tensor fast path so use_checkpointing recomputes
+        the block internals in backward instead of holding them resident.
+        """
+        x, edge_attr = g.x, g.edge_attr
+        edge_index = g.edge_index
+        wea = getattr(g, 'world_edge_attr', None)
+        wei = getattr(g, 'world_edge_index', None)
+        if self._ckpt_enabled():
+            x, edge_attr, wea = checkpoint_gn_block(block, x, edge_attr, edge_index, wea, wei)
+        else:
+            x, edge_attr, wea = block.forward_tensors(x, edge_attr, edge_index, wea, wei)
+        out = Data(x=x, edge_attr=edge_attr, edge_index=edge_index)
+        if wea is not None and wei is not None:
+            out.world_edge_attr = wea
+            out.world_edge_index = wei
+        return out
+
+    def _unpool_merge(self, unpool_level, coarse_x, skip_x, ld):
+        """Unpool level coarse features to fine and merge with the skip state.
+
+        Bundled into one method (mirrors MeshGraphNets._unpool_merge_level) so
+        use_checkpointing can recompute the whole unpool + skip-projection step,
+        whose bipartite edge MLP is one of the largest saved buffers in the V-cycle.
+        """
+        up_ei = ld.get('up_ei')
+        if (self._bipartite_unpool and hasattr(self.model, 'unpool_blocks')
+                and up_ei is not None
+                and ld.get('coarse_centroid') is not None
+                and ld.get('fine_pos') is not None):
+            rel_pos = ld['fine_pos'][up_ei[1]] - ld['coarse_centroid'][up_ei[0]]
+            h_up = self.model.unpool_blocks[str(unpool_level)](
+                h_coarse=coarse_x,
+                h_fine_skip=skip_x,
+                unpool_edge_index=up_ei,
+                rel_pos=rel_pos,
+            )
+        else:
+            h_up = unpool_features(coarse_x, ld['ftc'])
+        return self.model.skip_projs[str(unpool_level)](torch.cat([skip_x, h_up], dim=-1))
 
     def _extract_level_data(self, graph, level: int) -> dict:
         ld = {
@@ -587,7 +641,6 @@ class ModelSplitStage(nn.Module):
             current_graph.world_edge_attr = world_edge_attr
             current_graph.world_edge_index = world_edge_index
 
-        bipartite_unpool = bool(self.config.get('bipartite_unpool', False))
         level_idx = current_level_idx
 
         for op in self._ops_sequence:
@@ -595,11 +648,11 @@ class ModelSplitStage(nn.Module):
                 _, kind, level, local_idx = op
                 lv, li = str(level), str(local_idx)
                 if kind == 'pre':
-                    current_graph = self.model.pre_blocks[lv][li](current_graph)
+                    current_graph = self._run_block(self.model.pre_blocks[lv][li], current_graph)
                 elif kind == 'coarsest':
-                    current_graph = self.model.coarsest_blocks[li](current_graph)
+                    current_graph = self._run_block(self.model.coarsest_blocks[li], current_graph)
                 else:
-                    current_graph = self.model.post_blocks[lv][li](current_graph)
+                    current_graph = self._run_block(self.model.post_blocks[lv][li], current_graph)
 
             elif op[0] == 'save_pool':
                 pool_level = op[1]
@@ -617,7 +670,10 @@ class ModelSplitStage(nn.Module):
                     h_coarse = current_graph.x[ld['seeds']]
                 else:
                     h_coarse = pool_features(current_graph.x, ld['ftc'], ld['n_c'])
-                e_coarse = self.model.coarse_eb_encoders[str(pool_level)](ld['c_ea'])
+                e_coarse = run_checkpointed(
+                    self.model.coarse_eb_encoders[str(pool_level)], ld['c_ea'],
+                    enabled=self._ckpt_enabled(),
+                )
                 current_graph = Data(x=h_coarse, edge_attr=e_coarse, edge_index=ld['c_ei'])
                 if self.use_coarse_world_edges:
                     c_we_idx = ld.get('c_we_idx')
@@ -631,22 +687,10 @@ class ModelSplitStage(nn.Module):
                 ld = self._extract_level_data(graph, unpool_level)
                 skip = skip_stack[-1]
 
-                up_ei = ld.get('up_ei')
-                if (bipartite_unpool and hasattr(self.model, 'unpool_blocks')
-                        and up_ei is not None
-                        and ld.get('coarse_centroid') is not None
-                        and ld.get('fine_pos') is not None):
-                    rel_pos = ld['fine_pos'][up_ei[1]] - ld['coarse_centroid'][up_ei[0]]
-                    h_up = self.model.unpool_blocks[str(unpool_level)](
-                        h_coarse=current_graph.x,
-                        h_fine_skip=skip['x'],
-                        unpool_edge_index=up_ei,
-                        rel_pos=rel_pos,
-                    )
-                else:
-                    h_up = unpool_features(current_graph.x, ld['ftc'])
-
-                h_merged = self.model.skip_projs[str(unpool_level)](torch.cat([skip['x'], h_up], dim=-1))
+                h_merged = run_checkpointed(
+                    self._unpool_merge, unpool_level, current_graph.x, skip['x'], ld,
+                    enabled=self._ckpt_enabled(),
+                )
                 current_graph = Data(x=h_merged, edge_attr=skip['edge_attr'], edge_index=skip['edge_index'])
                 use_we_here = self.use_world_edges and (unpool_level == 0 or self.use_coarse_world_edges)
                 if use_we_here and skip.get('w_attr') is not None:

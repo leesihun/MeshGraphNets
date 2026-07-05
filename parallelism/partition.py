@@ -7,15 +7,22 @@ minimized. Classic O(L^2 * K) dynamic program.
 
 from __future__ import annotations
 
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 
-def partition_stages(block_costs: Sequence[float], num_stages: int) -> List[List[int]]:
+def partition_stages(
+    block_costs: Sequence[float],
+    num_stages: int,
+    entry_penalty: Optional[Sequence[float]] = None,
+) -> List[List[int]]:
     """Partition L contiguous blocks into `num_stages` groups.
 
     Args:
         block_costs: cost (bytes / flops / whatever) for each of L blocks in order.
         num_stages: number of stages K. Must satisfy 1 <= K <= L.
+        entry_penalty: optional per-block cost added to a stage that *begins* at
+            that block. Used to charge a stage for skip tensors it must receive
+            and hold across its lifetime, biasing cuts toward cheap boundaries.
 
     Returns:
         List of K lists of block indices. Indices within a stage are contiguous
@@ -33,12 +40,16 @@ def partition_stages(block_costs: Sequence[float], num_stages: int) -> List[List
         return [[i] for i in range(L)]
 
     costs = [float(c) for c in block_costs]
+    penalty = [0.0] * L if entry_penalty is None else [float(p) for p in entry_penalty]
+    if len(penalty) != L:
+        raise ValueError(f"entry_penalty length {len(penalty)} != block count {L}")
     prefix = [0.0] * (L + 1)
     for i in range(L):
         prefix[i + 1] = prefix[i] + costs[i]
 
     def segment_cost(i: int, j: int) -> float:
-        return prefix[j + 1] - prefix[i]
+        # i is the stage's first block, so it pays that block's entry penalty.
+        return prefix[j + 1] - prefix[i] + penalty[i]
 
     INF = float('inf')
     # dp[k][i] = min over splits of the max-stage cost when assigning blocks [0..i] to k stages

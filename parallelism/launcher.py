@@ -16,11 +16,15 @@ from torch.multiprocessing.spawn import ProcessExitedException
 from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
 from torch_geometric.loader import DataLoader
 
-from model.MeshGraphNets import MeshGraphNets
+from torch_geometric.data import Data
+
 from parallelism.checkpoint_io import merge_stage_state_dicts_to_rank0
-from parallelism.model_split import ModelSplitStage
+from parallelism.model_split import (
+    ModelSplitStage,
+    _block_vcycle_info,
+    _parse_mp_per_level,
+)
 from parallelism.partition import partition_stages, partition_summary
-from parallelism.profile import profile_activation_memory
 from training_profiles.setup import (
     build_dataset_splits,
     build_model_config,
@@ -207,26 +211,91 @@ def _split_worker_inner(rank: int, num_stages: int, config: dict, gpu_ids: list,
     cleanup_dataloaders(train_loader)
 
 
+def _resolution_counts(probe, L):
+    """Return node+edge count at each V-cycle resolution 0..L, read from a probe.
+
+    Resolution 0 is the fine mesh; resolution r (1..L) is the graph produced by
+    pooling level r-1. Shapes only — the probe never leaves CPU.
+    """
+    counts = [int(probe.num_nodes) + int(probe.edge_index.shape[1])]
+    for r in range(1, L + 1):
+        n = int(probe[f'num_coarse_{r - 1}'].sum())
+        e = int(probe[f'coarse_edge_index_{r - 1}'].shape[1])
+        counts.append(n + e)
+    return counts
+
+
+def _block_costs_from_counts(counts, L, mp_per_level):
+    """Per-block cost in V-cycle order: pre[0..L-1], coarsest, post[L-1..0].
+
+    Each block's cost is the node+edge count at the resolution it runs on, a
+    proxy for its activation memory (fixed feature dim cancels out).
+    """
+    block_costs = []
+    for i in range(L):
+        block_costs.extend([counts[i]] * mp_per_level[i])
+    block_costs.extend([counts[L]] * mp_per_level[L])
+    for i in range(L - 1, -1, -1):
+        block_costs.extend([counts[i]] * mp_per_level[2 * L - i])
+    return block_costs
+
+
+def _entry_skip_penalty(L, mp_per_level, counts):
+    """Skip bytes resident when a stage begins at each block index.
+
+    A stage starting mid-V-cycle must receive and hold (through backward) the
+    fine-level skip tensors of every level pooled-but-not-yet-unpooled at that
+    boundary. Feeding this to the partitioner biases cuts toward boundaries that
+    carry small (coarse) skips rather than large fine-level ones (cause #4).
+    """
+    L_total = sum(mp_per_level)
+    entry = [0.0] * L_total
+    live_levels = []
+    for b in range(L_total):
+        kind, level, local_idx = _block_vcycle_info(b, L, mp_per_level)
+        entry[b] = float(sum(counts[lv] for lv in live_levels))
+        if kind == 'post' and local_idx == 0 and live_levels:
+            live_levels.pop()
+        if kind == 'pre' and local_idx == mp_per_level[level] - 1:
+            live_levels.append(level)
+    return entry
+
+
 def _profile_and_partition(rank, config, train_loader, device, L, num_stages):
+    """Assign contiguous processor blocks to stages with an analytic cost model.
+
+    Replaces the old profiler that built a full MeshGraphNets and ran a full-mesh
+    forward on rank 0 (GPU 0), spiking it to the whole-model peak before any
+    stage existed. Flat models split evenly; multiscale weights each block by its
+    resolution's node+edge count and penalizes skip-carrying cut boundaries.
+    """
+    use_ms = bool(config.get('use_multiscale', False))
     if rank == 0:
-        print("[model_split rank=0] building full model briefly for profiling...")
-        assignment = None
         try:
-            full_model = MeshGraphNets(config, str(device)).to(device)
-            probe = next(iter(train_loader)).to(device)
-            estimates = profile_activation_memory(full_model, probe, device)
-            costs = [max(e.peak_bytes, 1) for e in estimates]
-            assignment = partition_stages(costs, num_stages)
-            print("[model_split rank=0] " + partition_summary(costs, assignment))
-            del full_model, probe
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except torch.cuda.OutOfMemoryError:
-            print("[model_split rank=0] WARNING: OOM during profiling. Falling back to equal split.")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            costs = [1] * L
-            assignment = partition_stages(costs, num_stages)
+            if not use_ms:
+                block_costs = [1.0] * L
+                assignment = partition_stages(block_costs, num_stages)
+                print(f"[model_split rank=0] flat model: equal split of {L} blocks "
+                      f"across {num_stages} stages.")
+            else:
+                Lms = int(config.get('multiscale_levels', 1))
+                mp_per_level = _parse_mp_per_level(config, Lms)
+                probe = next(iter(train_loader))  # CPU tensors; shapes only
+                counts = _resolution_counts(probe, Lms)
+                del probe
+                block_costs = _block_costs_from_counts(counts, Lms, mp_per_level)
+                entry_penalty = _entry_skip_penalty(Lms, mp_per_level, counts)
+                assignment = partition_stages(block_costs, num_stages, entry_penalty=entry_penalty)
+                print("[model_split rank=0] " + partition_summary(block_costs, assignment))
+        except Exception as e:
+            if use_ms:
+                Lms = int(config.get('multiscale_levels', 1))
+                n_blocks = sum(_parse_mp_per_level(config, Lms))
+            else:
+                n_blocks = L
+            print(f"[model_split rank=0] WARNING: analytic cost model failed ({e}); "
+                  "falling back to equal split.")
+            assignment = partition_stages([1.0] * n_blocks, num_stages)
         payload = [assignment]
     else:
         payload = [None]
@@ -279,6 +348,41 @@ def _forward_step(stage: ModelSplitStage, graph, device):
     return sentinel.sum(), None, None
 
 
+def _needed_graph_keys(stage) -> set:
+    """Graph attributes a middle multiscale stage actually reads.
+
+    Only the coarsening topology for the levels this stage pools/unpools — never
+    the fine mesh x/y/edge tensors, which middle stages never touch.
+    """
+    levels = {op[1] for op in stage._ops_sequence if op[0] in ('save_pool', 'unpool')}
+    keys: set = set()
+    for lvl in levels:
+        keys.update([
+            f'fine_to_coarse_{lvl}', f'coarse_edge_index_{lvl}',
+            f'coarse_edge_attr_{lvl}', f'num_coarse_{lvl}',
+            f'coarse_world_edge_index_{lvl}', f'coarse_world_edge_attr_{lvl}',
+            f'coarse_seed_idx_{lvl}',
+        ])
+        if stage._bipartite_unpool:
+            keys.update([f'unpool_edge_index_{lvl}', f'coarse_centroid_{lvl}'])
+            keys.add('pos' if lvl == 0 else f'coarse_centroid_{lvl - 1}')
+    return keys
+
+
+def _move_partial_graph(graph, stage, device):
+    """Move only the level attrs a middle multiscale stage needs to GPU.
+
+    Avoids replicating the whole graph (fine x/y/edges + every level's topology)
+    on every stage; each middle stage lands only its own levels' coarse tensors.
+    """
+    out = Data()
+    for k in _needed_graph_keys(stage):
+        v = getattr(graph, k, None)
+        if torch.is_tensor(v):
+            out[k] = v.to(device, non_blocking=True)
+    return out
+
+
 def _train_one_epoch(
     *, stage: ModelSplitStage, loader, optimizer, device, config,
     use_amp: bool, amp_dtype, ema_model,
@@ -292,8 +396,10 @@ def _train_one_epoch(
     use_ms = stage.use_multiscale
 
     for graph in loader:
-        if use_ms or stage.is_first or is_last:
+        if stage.is_first or is_last:
             graph = graph.to(device, non_blocking=True)
+        elif use_ms:
+            graph = _move_partial_graph(graph, stage, device)
 
         optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast('cuda', dtype=amp_dtype, enabled=use_amp):
