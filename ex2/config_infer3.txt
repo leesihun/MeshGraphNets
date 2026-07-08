@@ -24,7 +24,6 @@ Latent_dim	128
 num_workers 2
 std_noise   0.0
 weight_decay    0.0001
-residual_scale  1
 augment_geometry False
 grad_accum_steps    1
 '
@@ -54,4 +53,3 @@ coarsening_type     bfs
 voronoi_clusters    0
 multiscale_levels   2
 mp_per_level        4, 6, 8, 6, 4
-bipartite_unpool    True

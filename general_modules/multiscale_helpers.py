@@ -25,22 +25,12 @@ from model.coarsening import (
 
 
 def _normalize_method(method: str) -> str:
-    """Canonicalize a coarsening method string. 'voronoi' aliases to 'voronoi_centroid'."""
-    m = method.strip().lower()
-    if m == 'voronoi':
-        return 'voronoi_centroid'
-    return m
+    return method.strip().lower()
 
 
 def _is_inherit(method: str) -> bool:
     """Return True for the seed-anchored (variant C) voronoi mode."""
     return _normalize_method(method) == 'voronoi_inherit'
-
-
-def _uses_seed_anchor(method: str) -> bool:
-    """Return True for modes whose coarse positions are FPS seed positions
-    (voronoi_inherit: gather pool; voronoi_seedmean: mean pool)."""
-    return _normalize_method(method) in ('voronoi_inherit', 'voronoi_seedmean')
 
 
 def build_multiscale_hierarchy(
@@ -50,7 +40,6 @@ def build_multiscale_hierarchy(
     multiscale_levels: int,
     coarsening_types: Sequence[str],
     voronoi_clusters: Sequence[int],
-    bipartite_unpool: bool = False,
 ) -> List[dict]:
     """
     Build coarsening topology for a single sample.
@@ -64,7 +53,7 @@ def build_multiscale_hierarchy(
         'n_c':   int             number of coarse nodes
         'seeds': [n_c]           fine-node index per coarse cluster (np.int64)
         'mode':  'centroid' | 'inherit' | 'seedmean'   per-level pool/position mode
-        'up_ei': [2, E_up]       bipartite unpool edges (only if bipartite_unpool)
+        'up_ei': [2, E_up]       bipartite unpool edges
     """
     hierarchy: List[dict] = []
     current_ei, current_n = edge_index, num_nodes
@@ -84,9 +73,10 @@ def build_multiscale_hierarchy(
             mode = 'seedmean'
         else:
             mode = 'centroid'
-        entry = {'ftc': ftc, 'c_ei': c_ei, 'n_c': n_c, 'seeds': seeds, 'mode': mode}
-        if bipartite_unpool:
-            entry['up_ei'] = build_unpool_edges(ftc, c_ei, n_c)
+        entry = {
+            'ftc': ftc, 'c_ei': c_ei, 'n_c': n_c, 'seeds': seeds, 'mode': mode,
+            'up_ei': build_unpool_edges(ftc, c_ei, n_c),
+        }
         hierarchy.append(entry)
 
         if n_c <= 1 or c_ei.shape[1] == 0:

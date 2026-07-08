@@ -363,9 +363,8 @@ def _needed_graph_keys(stage) -> set:
             f'coarse_world_edge_index_{lvl}', f'coarse_world_edge_attr_{lvl}',
             f'coarse_seed_idx_{lvl}',
         ])
-        if stage._bipartite_unpool:
-            keys.update([f'unpool_edge_index_{lvl}', f'coarse_centroid_{lvl}'])
-            keys.add('pos' if lvl == 0 else f'coarse_centroid_{lvl - 1}')
+        keys.update([f'unpool_edge_index_{lvl}', f'coarse_centroid_{lvl}'])
+        keys.add('pos' if lvl == 0 else f'coarse_centroid_{lvl - 1}')
     return keys
 
 
@@ -453,5 +452,8 @@ def _save_checkpoint(
     if ema_merged is not None:
         save_dict['ema_state_dict'] = ema_merged
 
+    model_dir = os.path.dirname(modelpath)
+    if model_dir:
+        os.makedirs(model_dir, exist_ok=True)
     torch.save(save_dict, modelpath)
     print(f"  -> saved checkpoint at epoch {epoch} ({modelpath})")

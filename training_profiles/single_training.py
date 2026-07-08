@@ -1,13 +1,9 @@
-import os
 import time
 
-import numpy as np
 import torch
-from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 
 from training_profiles.setup import (
-    analyze_debug_files,
     build_dataset_splits,
     build_model_and_ema,
     build_optimizer_scheduler,
@@ -18,7 +14,7 @@ from training_profiles.setup import (
 )
 from training_profiles.training_loop import (
     log_training_config,
-    test_model,
+    run_periodic_test,
     train_epoch,
     validate_epoch,
 )
@@ -108,7 +104,7 @@ def single_worker(config, config_filename='config.txt'):
     start_time = time.time()
 
     # ---- Logging ----
-    log_file, log_dir = init_log_file(config, config_filename)
+    log_file = init_log_file(config, config_filename)
 
     modelname = config.get('modelpath')
 
@@ -160,24 +156,7 @@ def single_worker(config, config_filename='config.txt'):
             test_interval = int(config.get('test_interval', 10))
             last_epoch = epoch == total_epochs - 1
             if epoch % test_interval == 0 or last_epoch:
-                test_loss = test_model(eval_model, test_loader, device, config, epoch, train_dataset)
-                print(f"  Test loss: {test_loss:.2e}")
-
-                if config.get('display_trainset', True):
-                    train_viz_indices = config.get('test_batch_idx', [0, 1, 2, 3, 4, 5, 6, 7])
-                    train_viz_indices = [i for i in train_viz_indices if i < len(train_dataset)]
-                    if train_viz_indices:
-                        train_viz_loader = DataLoader(
-                            Subset(train_dataset, train_viz_indices),
-                            batch_size=1, shuffle=False, pin_memory=torch.cuda.is_available()
-                        )
-                        viz_config = dict(config)
-                        viz_config['test_batch_idx'] = list(range(len(train_viz_indices)))
-                        train_viz_loss = test_model(
-                            eval_model, train_viz_loader, device, viz_config, epoch,
-                            train_dataset, output_prefix='train'
-                        )
-                        print(f"  Train reconstruction loss: {train_viz_loss:.2e}")
+                run_periodic_test(eval_model, test_loader, device, config, epoch, train_dataset)
 
         save_checkpoint(
             epoch, model, ema_model, optimizer, scheduler,
@@ -186,7 +165,5 @@ def single_worker(config, config_filename='config.txt'):
         print(f"\nTraining finished. Final model saved at epoch {epoch} with validation loss {valid_loss:.2e}")
     except KeyboardInterrupt:
         print("\nTraining interrupted by user. No checkpoint saved.")
-
-    analyze_debug_files(log_dir)
 
     cleanup_dataloaders(train_loader, val_loader, test_loader)

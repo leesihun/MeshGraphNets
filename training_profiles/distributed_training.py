@@ -14,7 +14,6 @@ from torch.utils.data import Subset
 from torch_geometric.loader import DataLoader
 
 from training_profiles.setup import (
-    analyze_debug_files,
     build_dataset_splits,
     build_model_and_ema,
     build_optimizer_scheduler,
@@ -25,7 +24,7 @@ from training_profiles.setup import (
 )
 from training_profiles.training_loop import (
     log_training_config,
-    test_model,
+    run_periodic_test,
     train_epoch,
     validate_epoch,
 )
@@ -215,9 +214,9 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
 
     start_time = time.time()
 
-    log_file, log_dir = None, None
+    log_file = None
     if rank == 0:
-        log_file, log_dir = init_log_file(config, config_filename)
+        log_file = init_log_file(config, config_filename)
 
     # Synchronize all processes before starting training
     dist.barrier(device_ids=[gpu_id])
@@ -318,23 +317,7 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
         last_epoch = epoch == config.get('training_epochs') - 1
         if epoch % test_interval == 0 or last_epoch:
             if rank == 0:
-                _test_start = time.time()
-                test_loss = test_model(eval_model, test_loader, device, config, epoch, train_dataset)
-                print(f"  Test completed in {time.time() - _test_start:.1f}s")
-
-                # Optionally visualize training set reconstruction (same batch indices)
-                if config.get('display_trainset', True):
-                    train_viz_indices = config.get('test_batch_idx', [0, 1, 2, 3, 4, 5, 6, 7])
-                    train_viz_indices = [i for i in train_viz_indices if i < len(train_dataset)]
-                    if train_viz_indices:
-                        train_viz_loader = DataLoader(
-                            Subset(train_dataset, train_viz_indices),
-                            batch_size=1, shuffle=False, pin_memory=pin_memory
-                        )
-                        viz_config = dict(config)
-                        viz_config['test_batch_idx'] = list(range(len(train_viz_indices)))
-                        train_viz_loss = test_model(eval_model, train_viz_loader, device, viz_config, epoch, train_dataset, output_prefix='train')
-                        print(f"  Train reconstruction loss: {train_viz_loss:.2e}")
+                run_periodic_test(eval_model, test_loader, device, config, epoch, train_dataset)
             dist.barrier(device_ids=[gpu_id])
 
     if rank == 0:
@@ -346,10 +329,6 @@ def _train_worker_inner(rank, world_size, config, gpu_ids, config_filename):
                 train_loss, valid_loss, config, train_dataset, modelname,
             )
             print(f"\nTraining finished. Final model saved at epoch {epoch} with validation loss {valid_loss:.2e}")
-
-    # Analyze debug files if they exist
-    if rank == 0:
-        analyze_debug_files(log_dir)
 
     cleanup_dataloaders(train_loader, val_loader, test_loader)
 

@@ -5,7 +5,6 @@ Both `single_training.py` and `distributed_training.py` use these builders to
 avoid maintaining duplicate dataset/model/optimizer/checkpoint logic.
 """
 
-import glob
 import os
 import time
 
@@ -161,15 +160,11 @@ def build_model_config(config) -> dict:
         'use_node_types':    config.get('use_node_types', False),
         'num_node_types':    config.get('num_node_types', 0),
         'positional_features': config.get('positional_features', 0),
-        'positional_encoding': config.get('positional_encoding', 'rwpe'),
         'use_world_edges':   config.get('use_world_edges', False),
         'use_checkpointing': config.get('use_checkpointing', False),
         'use_multiscale':    config.get('use_multiscale', False),
         'multiscale_levels': config.get('multiscale_levels', 1),
         'mp_per_level':      config.get('mp_per_level', None),
-        'fine_mp_pre':       config.get('fine_mp_pre', 5),
-        'coarse_mp_num':     config.get('coarse_mp_num', 5),
-        'fine_mp_post':      config.get('fine_mp_post', 5),
         'coarsening_type':   config.get('coarsening_type', 'bfs'),
         'voronoi_clusters':  config.get('voronoi_clusters', None),
     }
@@ -210,33 +205,6 @@ def save_checkpoint(
 # Post-training helpers
 # ---------------------------------------------------------------------------
 
-def analyze_debug_files(log_dir: str) -> None:
-    """Print a summary of any debug_*.npz files written during training."""
-    if not log_dir:
-        return
-    debug_files = sorted(glob.glob(os.path.join(log_dir, 'debug_*.npz')))
-    if not debug_files:
-        return
-
-    print("\n" + "=" * 60)
-    print("DEBUG OUTPUT ANALYSIS (first 5 epochs)")
-    print("=" * 60)
-    for f in debug_files[:5]:
-        try:
-            data = np.load(f)
-            fname = os.path.basename(f)
-            print(f"\n{fname}")
-            print(f"  Input (x):      mean={data['x_mean']}  std={data['x_std']}")
-            print(f"  Target (y):     mean={data['y_mean']}  std={data['y_std']}")
-            print(f"  Prediction:     mean={data['pred_mean']}  std={data['pred_std']}")
-            ratio = data['pred_std'] / (data['y_std'] + 1e-8)
-            print(f"  Pred/Target std ratio: {ratio}")
-            if np.any(ratio < 0.1):
-                print("    ^ WARNING: Pred much smaller than target!")
-        except Exception as e:
-            print(f"  Error reading {f}: {e}")
-
-
 def cleanup_dataloaders(*loaders) -> None:
     """Explicitly shut down DataLoader persistent workers before process exit.
 
@@ -265,10 +233,14 @@ def cleanup_dataloaders(*loaders) -> None:
 
 
 def init_log_file(config, config_filename: str):
-    """Create the epoch log file and return (log_file, log_dir), or (None, None)."""
+    """Create the epoch log file (config embedded) and return its path, or None.
+
+    Also records `config['log_dir']`, which the training profiler uses as the
+    destination for its chrome trace.
+    """
     log_file_dir = config.get('log_file_dir')
     if not log_file_dir:
-        return None, None
+        return None
 
     log_file = 'outputs/' + log_file_dir
     log_dir = os.path.dirname(log_file)
@@ -281,4 +253,4 @@ def init_log_file(config, config_filename: str):
         f.write(f"Log file absolute path: {os.path.abspath(log_file)}\n")
         with open(config_filename, 'r') as fc:
             f.write(fc.read())
-    return log_file, log_dir
+    return log_file

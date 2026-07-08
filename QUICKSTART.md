@@ -1,8 +1,7 @@
 # QUICKSTART
 
 This is the short operational guide for the deterministic MeshGraphNets checkout.
-For details, read [README.md](README.md), [CLAUDE.md](CLAUDE.md), and
-[docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md).
+For details, read [README.md](README.md) and [CLAUDE.md](CLAUDE.md).
 
 ## Fast Commands
 
@@ -10,7 +9,7 @@ Train:
 
 ```bash
 python MeshGraphNets_main.py --config ex1/config_train1.txt
-python MeshGraphNets_main.py --config _warpage_input_deterministic/config_train3.txt
+python MeshGraphNets_main.py --config ex2/config_train10.txt
 ```
 
 Roll out:

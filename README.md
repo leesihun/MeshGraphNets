@@ -31,7 +31,7 @@ Example deterministic training configs:
 
 ```bash
 python MeshGraphNets_main.py --config ex1/config_train1.txt
-python MeshGraphNets_main.py --config _warpage_input_deterministic/config_train3.txt
+python MeshGraphNets_main.py --config ex2/config_train10.txt
 ```
 
 Example deterministic rollout config:
@@ -147,10 +147,7 @@ before constructing the model, so the saved architecture is the inference truth.
 |------|---------|
 | [QUICKSTART.md](QUICKSTART.md) | Short run guide and failure checks |
 | [CLAUDE.md](CLAUDE.md) | Agent-facing engineering map |
-| [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md) | Current config keys and legacy-input rejection |
-| [docs/MESHGRAPHNET_ARCHITECTURE.md](docs/MESHGRAPHNET_ARCHITECTURE.md) | Architecture details grounded in live code |
-| [docs/multiscale_coarsening.md](docs/multiscale_coarsening.md) | Hierarchical V-cycle and coarsening |
-| [docs/WORLD_EDGES_DOCUMENTATION.md](docs/WORLD_EDGES_DOCUMENTATION.md) | World-edge runtime path |
+| [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md) | HDF5 dataset layout |
 | [hierarchical_interpolation_mgn_comparison.md](hierarchical_interpolation_mgn_comparison.md) | Paper-style comparison for deterministic hierarchical MGN |
 
 ## Installation

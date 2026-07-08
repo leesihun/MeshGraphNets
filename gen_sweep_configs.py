@@ -111,7 +111,6 @@ Latent_dim	128	# MeshGraphNets latent dimension
 num_workers 2
 std_noise   {"0.1" if is_train else "0.0"}
 weight_decay    0.0001
-residual_scale  1
 augment_geometry {"True" if is_train else "False"}
 grad_accum_steps    1
 '
@@ -141,7 +140,6 @@ coarsening_type     {ctype}
 voronoi_clusters    {clusters_s}
 multiscale_levels   {L}
 mp_per_level        {mp_s}
-bipartite_unpool    True    # LOCKED: learned bipartite MP unpool (always)
 """
 
 

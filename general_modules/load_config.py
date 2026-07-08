@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import os
 from general_modules.removed_feature_guard import validate_config
 
 def load_config(config_path):

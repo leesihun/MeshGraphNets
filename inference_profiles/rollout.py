@@ -7,7 +7,7 @@ import torch
 from torch_geometric.data import Data
 
 from general_modules.edge_features import EDGE_FEATURE_DIM, compute_edge_attr
-from general_modules.mesh_dataset import _compute_positional_features
+from general_modules.positional_features import compute_positional_features
 from general_modules.removed_feature_guard import validate_checkpoint
 from general_modules.world_edges import HAS_TORCH_CLUSTER, compute_world_edges
 from model.MeshGraphNets import MeshGraphNets
@@ -67,9 +67,6 @@ def run_rollout(config, config_filename='config.txt'):
     if 'coarse_edge_means' in norm:
         coarse_edge_means = norm['coarse_edge_means']
         coarse_edge_stds = norm['coarse_edge_stds']
-    elif 'coarse_edge_mean' in norm:
-        coarse_edge_means = [norm['coarse_edge_mean']]
-        coarse_edge_stds = [norm['coarse_edge_std']]
     else:
         coarse_edge_means = [edge_mean]
         coarse_edge_stds = [edge_std]
@@ -133,7 +130,6 @@ def run_rollout(config, config_filename='config.txt'):
     input_dim = config.get('input_var')
     output_dim = config.get('output_var')
     num_pos_features = int(config.get('positional_features', 0))
-    positional_encoding = str(config.get('positional_encoding', 'rwpe')).lower().strip()
 
     print("\nLoading initial condition...")
     print(f"  Dataset: {dataset_dir}")
@@ -181,10 +177,8 @@ def run_rollout(config, config_filename='config.txt'):
         edge_index = np.concatenate([mesh_edge, mesh_edge[[1, 0], :]], axis=1)
 
         if num_pos_features > 0:
-            pos_features = _compute_positional_features(
-                ref_pos, edge_index, num_pos_features, positional_encoding
-            )
-            print(f"  Positional features: {pos_features.shape} ({positional_encoding})")
+            pos_features = compute_positional_features(ref_pos, edge_index, num_pos_features)
+            print(f"  Positional features: {pos_features.shape}")
         else:
             pos_features = None
 
@@ -208,7 +202,6 @@ def run_rollout(config, config_filename='config.txt'):
         if len(voronoi_clusters) == 1 and multiscale_levels > 1:
             voronoi_clusters = voronoi_clusters * multiscale_levels
 
-        bipartite_unpool = config.get('bipartite_unpool', False)
         coarse_hierarchy = None
         if use_multiscale:
             if not HAS_COARSENING:
@@ -216,7 +209,6 @@ def run_rollout(config, config_filename='config.txt'):
             coarse_hierarchy = build_multiscale_hierarchy(
                 edge_index, num_nodes, ref_pos,
                 multiscale_levels, coarsening_types, voronoi_clusters,
-                bipartite_unpool=bipartite_unpool,
             )
             current_n_report = num_nodes
             for level, entry in enumerate(coarse_hierarchy):

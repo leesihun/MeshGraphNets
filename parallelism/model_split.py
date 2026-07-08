@@ -15,7 +15,7 @@ from model.checkpointing import (
     process_with_checkpointing,
     run_checkpointed,
 )
-from model.coarsening import pool_features, unpool_features
+from model.coarsening import pool_features
 from model.encoder_decoder import Decoder, Encoder, GnBlock
 from model.mlp import build_mlp
 
@@ -228,11 +228,10 @@ def _unpack_bundle_indexed(
 def _parse_mp_per_level(config: dict, L: int) -> List[int]:
     mp = config.get('mp_per_level', None)
     if mp is None:
-        mp = [
-            int(config.get('fine_mp_pre', 5)),
-            int(config.get('coarse_mp_num', 5)),
-            int(config.get('fine_mp_post', 5)),
-        ]
+        raise ValueError(
+            'use_multiscale=True requires mp_per_level '
+            '(2 * multiscale_levels + 1 entries)'
+        )
     if not isinstance(mp, list):
         mp = [int(mp)]
     else:
@@ -318,9 +317,6 @@ class _StageInner(nn.Module):
         mp_per_level: Optional[List[int]] = None,
     ):
         super().__init__()
-        coarse_config = dict(config)
-        coarse_config['use_world_edges'] = False
-
         if is_first:
             self.encoder = Encoder(edge_input_size, node_input_size, latent_dim, use_world_edges=use_world_edges)
 
@@ -329,17 +325,17 @@ class _StageInner(nn.Module):
 
         if not use_multiscale:
             self.processer_list = nn.ModuleDict({
-                str(i): GnBlock(config, latent_dim, use_world_edges=use_world_edges)
+                str(i): GnBlock(latent_dim, use_world_edges=use_world_edges)
                 for i in my_blocks
             })
         else:
             assert L > 0 and mp_per_level is not None
             self._build_multiscale_blocks(
-                ops_sequence, config, coarse_config, latent_dim,
+                ops_sequence, config, latent_dim,
                 edge_input_size, use_world_edges, L,
             )
 
-    def _build_multiscale_blocks(self, ops_sequence, config, coarse_config,
+    def _build_multiscale_blocks(self, ops_sequence, config,
                                  latent_dim, edge_input_size, use_world_edges, L):
         pre_dict: Dict[str, Dict[str, nn.Module]] = {}
         post_dict: Dict[str, Dict[str, nn.Module]] = {}
@@ -348,7 +344,6 @@ class _StageInner(nn.Module):
         skip_proj_dict: Dict[str, nn.Module] = {}
         unpool_dict: Dict[str, nn.Module] = {}
 
-        bipartite_unpool = bool(config.get('bipartite_unpool', False))
         use_coarse_we = bool(config.get('coarse_world_edges', False)) and use_world_edges
 
         for op in ops_sequence:
@@ -358,27 +353,25 @@ class _StageInner(nn.Module):
                     lv, li = str(level), str(local_idx)
                     pre_dict.setdefault(lv, {})
                     use_we = use_world_edges if (level == 0 or use_coarse_we) else False
-                    pre_dict[lv].setdefault(li, GnBlock(config if use_we else coarse_config, latent_dim, use_world_edges=use_we))
+                    pre_dict[lv].setdefault(li, GnBlock(latent_dim, use_world_edges=use_we))
                 elif kind == 'coarsest':
                     li = str(local_idx)
                     coarsest_dict.setdefault(
-                        li,
-                        GnBlock(config if use_coarse_we else coarse_config, latent_dim, use_world_edges=use_coarse_we),
+                        li, GnBlock(latent_dim, use_world_edges=use_coarse_we),
                     )
                 elif kind == 'post':
                     lv, li = str(level), str(local_idx)
                     post_dict.setdefault(lv, {})
                     use_we = use_world_edges if (level == 0 or use_coarse_we) else False
-                    post_dict[lv].setdefault(li, GnBlock(config if use_we else coarse_config, latent_dim, use_world_edges=use_we))
+                    post_dict[lv].setdefault(li, GnBlock(latent_dim, use_world_edges=use_we))
             elif op[0] == 'save_pool':
                 lv = str(op[1])
                 coarse_eb_dict.setdefault(lv, build_mlp(edge_input_size, latent_dim, latent_dim))
             elif op[0] == 'unpool':
                 lv = str(op[1])
                 skip_proj_dict.setdefault(lv, nn.Linear(2 * latent_dim, latent_dim))
-                if bipartite_unpool:
-                    from model.blocks import UnpoolBlock
-                    unpool_dict.setdefault(lv, UnpoolBlock(latent_dim, build_mlp))
+                from model.blocks import UnpoolBlock
+                unpool_dict.setdefault(lv, UnpoolBlock(latent_dim, build_mlp))
 
         if pre_dict:
             self.pre_blocks = nn.ModuleDict({lv: nn.ModuleDict(blocks) for lv, blocks in pre_dict.items()})
@@ -421,7 +414,6 @@ class ModelSplitStage(nn.Module):
             and self.use_multiscale
         )
         self.use_checkpointing = bool(config.get('use_checkpointing', False))
-        self._bipartite_unpool = bool(config.get('bipartite_unpool', False))
 
         my_blocks = sorted(assignment[stage_idx])
         self.my_block_indices = my_blocks
@@ -588,20 +580,14 @@ class ModelSplitStage(nn.Module):
         use_checkpointing can recompute the whole unpool + skip-projection step,
         whose bipartite edge MLP is one of the largest saved buffers in the V-cycle.
         """
-        up_ei = ld.get('up_ei')
-        if (self._bipartite_unpool and hasattr(self.model, 'unpool_blocks')
-                and up_ei is not None
-                and ld.get('coarse_centroid') is not None
-                and ld.get('fine_pos') is not None):
-            rel_pos = ld['fine_pos'][up_ei[1]] - ld['coarse_centroid'][up_ei[0]]
-            h_up = self.model.unpool_blocks[str(unpool_level)](
-                h_coarse=coarse_x,
-                h_fine_skip=skip_x,
-                unpool_edge_index=up_ei,
-                rel_pos=rel_pos,
-            )
-        else:
-            h_up = unpool_features(coarse_x, ld['ftc'])
+        up_ei = ld['up_ei']
+        rel_pos = ld['fine_pos'][up_ei[1]] - ld['coarse_centroid'][up_ei[0]]
+        h_up = self.model.unpool_blocks[str(unpool_level)](
+            h_coarse=coarse_x,
+            h_fine_skip=skip_x,
+            unpool_edge_index=up_ei,
+            rel_pos=rel_pos,
+        )
         return self.model.skip_projs[str(unpool_level)](torch.cat([skip_x, h_up], dim=-1))
 
     def _extract_level_data(self, graph, level: int) -> dict:
@@ -617,12 +603,9 @@ class ModelSplitStage(nn.Module):
         seed_key = f'coarse_seed_idx_{level}'
         if hasattr(graph, seed_key):
             ld['seeds'] = graph[seed_key]
-        if bool(self.config.get('bipartite_unpool', False)):
-            up_ei = getattr(graph, f'unpool_edge_index_{level}', None)
-            if up_ei is not None:
-                ld['up_ei'] = up_ei
-                ld['coarse_centroid'] = getattr(graph, f'coarse_centroid_{level}', None)
-                ld['fine_pos'] = graph.pos if level == 0 else getattr(graph, f'coarse_centroid_{level - 1}', None)
+        ld['up_ei'] = graph[f'unpool_edge_index_{level}']
+        ld['coarse_centroid'] = getattr(graph, f'coarse_centroid_{level}', None)
+        ld['fine_pos'] = graph.pos if level == 0 else getattr(graph, f'coarse_centroid_{level - 1}', None)
         return ld
 
     def run_local_blocks_multiscale(

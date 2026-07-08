@@ -17,7 +17,7 @@ Removed branch artifacts are rejected by
 
 ```bash
 python MeshGraphNets_main.py --config ex1/config_train1.txt
-python MeshGraphNets_main.py --config _warpage_input_deterministic/config_train3.txt
+python MeshGraphNets_main.py --config ex2/config_train10.txt
 python MeshGraphNets_main.py --config ex1/config_infer1.txt
 ```
 
@@ -42,8 +42,10 @@ a merged checkpoint for standard rollout.
 | [model/MeshGraphNets.py](model/MeshGraphNets.py) | Top-level deterministic model, flat/multiscale processor. |
 | [model/encoder_decoder.py](model/encoder_decoder.py) | Encoder, GnBlock, Decoder. |
 | [model/blocks.py](model/blocks.py) | EdgeBlock, NodeBlock, HybridNodeBlock, UnpoolBlock. |
-| [model/coarsening.py](model/coarsening.py) | BFS and Voronoi coarsening, pool/unpool, `MultiscaleData`. |
-| [general_modules/mesh_dataset.py](general_modules/mesh_dataset.py) | HDF5 loading, split, normalization, positional features, world/multiscale attrs. |
+| [model/coarsening.py](model/coarsening.py) | BFS and Voronoi coarsening, pooling, `MultiscaleData`. |
+| [general_modules/mesh_dataset.py](general_modules/mesh_dataset.py) | HDF5 loading, split, normalization, world/multiscale attrs. |
+| [general_modules/dataset_stats.py](general_modules/dataset_stats.py) | Parallel normalization-statistics computation. |
+| [general_modules/positional_features.py](general_modules/positional_features.py) | Rotation-invariant positional node features (centroid dist, edge length, RWPE). |
 | [general_modules/edge_features.py](general_modules/edge_features.py) | 8-D reference/deformed edge features. |
 | [general_modules/world_edges.py](general_modules/world_edges.py) | scipy KDTree or torch-cluster world-edge construction. |
 | [general_modules/multiscale_helpers.py](general_modules/multiscale_helpers.py) | Shared hierarchy build/attach used by dataset and rollout. |
@@ -60,16 +62,17 @@ a merged checkpoint for standard rollout.
 - LayerNorm is appended once at the MLP output when `layer_norm=True`.
 - Decoder output has no LayerNorm. For time-transient runs, decoder final weights
   are scaled by `0.01` at initialization.
-- Node aggregation is sum.
+- Node aggregation is sum. GnBlock residual connections are unscaled (x + dx).
 - World edges use a separate edge encoder/block and a hybrid node block that
   aggregates mesh and world messages separately.
-- Multiscale V-cycle uses per-level skip states merged by
-  `Linear(2 * latent_dim, latent_dim)`.
+- Multiscale requires `mp_per_level` (2·L+1 entries) and always uses the learned
+  bipartite unpool (`UnpoolBlock`); the broadcast unpool was removed. Per-level
+  skip states are merged by `Linear(2 * latent_dim, latent_dim)`.
 - Coarsening modes (`coarsening_type`, per-level): `bfs` (BFS bi-stride,
   centroid pool), `voronoi_centroid` (FPS-Voronoi, centroid position + mean
-  pool; `voronoi` is a back-compat alias), `voronoi_inherit` (FPS-Voronoi,
-  seed position + gather pool — coarse node = FPS seed, pool is `x[seeds]`),
-  `voronoi_seedmean` (FPS-Voronoi, seed position + mean pool).
+  pool), `voronoi_inherit` (FPS-Voronoi, seed position + gather pool — coarse
+  node = FPS seed, pool is `x[seeds]`), `voronoi_seedmean` (FPS-Voronoi, seed
+  position + mean pool). The bare `voronoi` alias was removed.
   Inherit-mode levels additionally write a `coarse_seed_idx_{i}` graph
   attribute consumed by the model's pool step; seedmean levels do not write
   it, which is what selects mean pooling in the model.
@@ -99,10 +102,6 @@ The authoritative docs are:
 
 - [README.md](README.md)
 - [QUICKSTART.md](QUICKSTART.md)
-- [docs/CONFIG_REFERENCE.md](docs/CONFIG_REFERENCE.md)
-- [docs/MESHGRAPHNET_ARCHITECTURE.md](docs/MESHGRAPHNET_ARCHITECTURE.md)
-- [docs/multiscale_coarsening.md](docs/multiscale_coarsening.md)
-- [docs/WORLD_EDGES_DOCUMENTATION.md](docs/WORLD_EDGES_DOCUMENTATION.md)
 - [dataset/DATASET_FORMAT.md](dataset/DATASET_FORMAT.md)
 
 Files named `*_PLAN.md` or `*_RESEARCH.md` can be historical and should not be

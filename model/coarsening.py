@@ -16,7 +16,7 @@ Supports two coarsening methods:
 Both methods produce the same output signature:
   (fine_to_coarse [N], coarse_edge_index [2, E_c], num_coarse int)
 
-Methods can be mixed per level via ``coarsening_type`` config (e.g., ``bfs, voronoi``).
+Methods can be mixed per level via ``coarsening_type`` config (e.g., ``bfs, voronoi_centroid``).
 Coarse edges are always boundary edges: two coarse nodes connect iff any of their
 fine members share a fine edge.
 
@@ -350,9 +350,8 @@ def coarsen_graph(
     Args:
         edge_index_np: [2, E] int numpy array — bidirectional mesh edges.
         num_nodes:     N — total number of fine nodes.
-        method:        'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit',
-                       or 'voronoi_seedmean'.
-                       'voronoi' is a back-compat alias for 'voronoi_centroid'.
+        method:        'bfs', 'voronoi_centroid', 'voronoi_inherit', or
+                       'voronoi_seedmean'.
                        All voronoi modes call the same FPS-Voronoi coarsener;
                        the difference is only in how downstream code uses the
                        result (centroid vs seed-anchored coarse positions,
@@ -366,14 +365,14 @@ def coarsen_graph(
     method = method.strip().lower()
     if method == 'bfs':
         return bfs_bistride_coarsen(edge_index_np, num_nodes)
-    elif method in ('voronoi', 'voronoi_centroid', 'voronoi_inherit', 'voronoi_seedmean'):
+    elif method in ('voronoi_centroid', 'voronoi_inherit', 'voronoi_seedmean'):
         if num_clusters is None:
             raise ValueError(f"num_clusters is required for '{method}' coarsening")
         return fps_voronoi_coarsen(edge_index_np, num_nodes, num_clusters, ref_pos)
     else:
         raise ValueError(
             f"Unknown coarsening method: '{method}'. "
-            f"Use 'bfs', 'voronoi', 'voronoi_centroid', 'voronoi_inherit', "
+            f"Use 'bfs', 'voronoi_centroid', 'voronoi_inherit', "
             f"or 'voronoi_seedmean'."
         )
 
@@ -427,23 +426,6 @@ def pool_features(
         h_coarse: [M, D] coarse node features.
     """
     return scatter(h_fine, fine_to_coarse, dim=0, dim_size=num_coarse, reduce='mean')
-
-
-def unpool_features(
-    h_coarse: torch.Tensor,
-    fine_to_coarse: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Broadcast coarse node features back to fine nodes via simple gather (no learned weights).
-
-    Args:
-        h_coarse:       [M, D] coarse node features.
-        fine_to_coarse: [N] long tensor, coarse cluster index for each fine node.
-
-    Returns:
-        h_fine: [N, D] — each fine node receives its coarse cluster's features.
-    """
-    return h_coarse[fine_to_coarse]
 
 
 def build_unpool_edges(

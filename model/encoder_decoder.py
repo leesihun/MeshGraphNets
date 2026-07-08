@@ -30,12 +30,11 @@ class Encoder(nn.Module):
 
 
 class GnBlock(nn.Module):
+    """One message-passing step: edge update, node update, residual add."""
 
-    def __init__(self, config, latent_dim, use_world_edges=False):
+    def __init__(self, latent_dim, use_world_edges=False):
         super().__init__()
         self.use_world_edges = use_world_edges
-        self.residual_scale = config.get('residual_scale', 1.0)
-        self.use_pairnorm = config.get('use_pairnorm', False)
 
         eb_input_dim = 3 * latent_dim
         self.eb_module = EdgeBlock(custom_func=build_mlp(eb_input_dim, latent_dim, latent_dim))
@@ -74,15 +73,10 @@ class GnBlock(nn.Module):
         else:
             x_update = self.nb_module.compute(x, edge_mlp_out, edge_index, num_nodes)
 
-        x_out = x + self.residual_scale * x_update
-        if self.use_pairnorm:
-            x_centered = x_out - x_out.mean(dim=0, keepdim=True)
-            rms = (x_centered.norm(p=2) / (x_out.shape[0] ** 0.5)) + 1e-8
-            x_out = x_centered / rms
-
-        edge_attr_out = edge_attr + self.residual_scale * edge_mlp_out
+        x_out = x + x_update
+        edge_attr_out = edge_attr + edge_mlp_out
         world_edge_attr_out = (
-            (world_edge_attr + self.residual_scale * world_edge_mlp_out)
+            (world_edge_attr + world_edge_mlp_out)
             if world_edge_mlp_out is not None else world_edge_attr
         )
         return x_out, edge_attr_out, world_edge_attr_out

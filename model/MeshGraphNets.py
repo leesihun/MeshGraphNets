@@ -4,7 +4,7 @@ from torch_geometric.data import Data
 
 from general_modules.edge_features import EDGE_FEATURE_DIM
 from model.checkpointing import process_with_checkpointing, run_checkpointed
-from model.coarsening import pool_features, unpool_features
+from model.coarsening import pool_features
 from model.encoder_decoder import Decoder, Encoder, GnBlock
 from model.mlp import build_mlp, init_weights
 
@@ -30,7 +30,7 @@ class MeshGraphNets(nn.Module):
     def set_checkpointing(self, enabled: bool):
         self.model.set_checkpointing(enabled)
 
-    def forward(self, graph, debug=False, add_noise=None):
+    def forward(self, graph, add_noise=None):
         """
         Forward pass of the deterministic simulator.
 
@@ -64,7 +64,7 @@ class MeshGraphNets(nn.Module):
                     graph.y = graph.y - noise_gamma * noise * ratio
                 graph.edge_attr = graph.edge_attr + torch.randn_like(graph.edge_attr) * noise_std
 
-        predicted = self.model(graph, debug=debug)
+        predicted = self.model(graph)
         return predicted, getattr(graph, 'y', None)
 
 
@@ -114,7 +114,7 @@ class EncoderProcessorDecoder(nn.Module):
 
         if not self.use_multiscale:
             self.processer_list = nn.ModuleList([
-                GnBlock(config, self.latent_dim, use_world_edges=self.use_world_edges)
+                GnBlock(self.latent_dim, use_world_edges=self.use_world_edges)
                 for _ in range(self.message_passing_num)
             ])
         else:
@@ -128,10 +128,10 @@ class EncoderProcessorDecoder(nn.Module):
 
         mp_per_level = config.get('mp_per_level', None)
         if mp_per_level is None:
-            fine_pre = int(config.get('fine_mp_pre', 5))
-            coarse_mp = int(config.get('coarse_mp_num', 5))
-            fine_post = int(config.get('fine_mp_post', 5))
-            mp_per_level = [fine_pre] + [coarse_mp] + [fine_post]
+            raise ValueError(
+                "use_multiscale=True requires mp_per_level "
+                "(2 * multiscale_levels + 1 entries, e.g. '4, 6, 8, 6, 4' for 2 levels)"
+            )
         if not isinstance(mp_per_level, list):
             mp_per_level = [int(mp_per_level)]
         else:
@@ -153,9 +153,6 @@ class EncoderProcessorDecoder(nn.Module):
             parts.append(f"post[{i}]={mp_per_level[2 * L - i]}")
         print(f"  Multiscale V-cycle ({L} levels): {', '.join(parts)}")
 
-        coarse_config = dict(config)
-        coarse_config['use_world_edges'] = False
-
         self.pre_blocks = nn.ModuleList()
         self.post_blocks = nn.ModuleList()
         self.coarse_eb_encoders = nn.ModuleList()
@@ -164,15 +161,16 @@ class EncoderProcessorDecoder(nn.Module):
         for i in range(L):
             pre_count = mp_per_level[i]
             post_count = mp_per_level[2 * L - i]
+            # World edges exist only at the finest level unless coarse world
+            # edges are enabled.
             use_we = self.use_world_edges if (i == 0 or self.use_coarse_world_edges) else False
-            cfg = config if use_we else coarse_config
 
             self.pre_blocks.append(nn.ModuleList([
-                GnBlock(cfg, self.latent_dim, use_world_edges=use_we)
+                GnBlock(self.latent_dim, use_world_edges=use_we)
                 for _ in range(pre_count)
             ]))
             self.post_blocks.append(nn.ModuleList([
-                GnBlock(cfg, self.latent_dim, use_world_edges=use_we)
+                GnBlock(self.latent_dim, use_world_edges=use_we)
                 for _ in range(post_count)
             ]))
             self.coarse_eb_encoders.append(
@@ -180,24 +178,22 @@ class EncoderProcessorDecoder(nn.Module):
             )
             self.skip_projs.append(nn.Linear(2 * self.latent_dim, self.latent_dim))
 
-        self.bipartite_unpool = config.get('bipartite_unpool', False)
-        if self.bipartite_unpool:
-            from model.blocks import UnpoolBlock
-            self.unpool_blocks = nn.ModuleList([
-                UnpoolBlock(self.latent_dim, build_mlp) for _ in range(L)
-            ])
+        # Learned bipartite unpool (coarse -> fine message passing) per level.
+        from model.blocks import UnpoolBlock
+        self.unpool_blocks = nn.ModuleList([
+            UnpoolBlock(self.latent_dim, build_mlp) for _ in range(L)
+        ])
 
         coarsest_count = mp_per_level[L]
-        coarsest_cfg = config if self.use_coarse_world_edges else coarse_config
         self.coarsest_blocks = nn.ModuleList([
-            GnBlock(coarsest_cfg, self.latent_dim, use_world_edges=self.use_coarse_world_edges)
+            GnBlock(self.latent_dim, use_world_edges=self.use_coarse_world_edges)
             for _ in range(coarsest_count)
         ])
 
-    def forward(self, graph, debug=False):
+    def forward(self, graph):
         if not self.use_multiscale:
-            return self._forward_flat(graph, debug)
-        return self._forward_multiscale(graph, debug)
+            return self._forward_flat(graph)
+        return self._forward_multiscale(graph)
 
     def _encode(self, graph):
         """Encoder wrapped by use_checkpointing: its edge MLP internals scale
@@ -207,36 +203,23 @@ class EncoderProcessorDecoder(nn.Module):
             enabled=self.use_checkpointing and self.training,
         )
 
-    def _forward_flat(self, graph, debug):
+    def _forward_flat(self, graph):
         graph = self._encode(graph)
-        if debug:
-            print(f"  After Encoder: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
-
         graph = self._run_processor_blocks(self.processer_list, graph)
-        if debug:
-            print(f"  After {len(self.processer_list)} MP blocks: x std={graph.x.std().item():.4f}, mean={graph.x.mean().item():.4f}")
+        return self.decoder(graph)
 
-        output = self.decoder(graph)
-        if debug:
-            print(f"  After Decoder: out std={output.std().item():.4f}, mean={output.mean().item():.4f}")
-        return output
-
-    def _forward_multiscale(self, graph, debug):
+    def _forward_multiscale(self, graph):
         L = self.multiscale_levels
         level_data = self._extract_level_data(graph, L)
         actual_levels = len(level_data)
 
         graph = self._encode(graph)
-        if debug:
-            print(f"  [MS] After Encoder: x std={graph.x.std().item():.4f}")
 
         skip_states = []
         current_graph = graph
 
         for i in range(actual_levels):
             current_graph = self._run_processor_blocks(self.pre_blocks[i], current_graph)
-            if debug:
-                print(f"  [MS] After pre[{i}] ({len(self.pre_blocks[i])} blocks): x std={current_graph.x.std().item():.4f}")
 
             use_we_here = self.use_world_edges and (i == 0 or self.use_coarse_world_edges)
             skip_states.append({
@@ -263,12 +246,7 @@ class EncoderProcessorDecoder(nn.Module):
                 current_graph.world_edge_attr = ld['c_we_attr']
                 current_graph.world_edge_index = ld['c_we_idx']
 
-            if debug:
-                print(f"  [MS] After pool[{i}]: {skip_states[-1]['x'].shape[0]} -> {h_coarse.shape[0]} nodes")
-
         current_graph = self._run_processor_blocks(self.coarsest_blocks, current_graph)
-        if debug:
-            print(f"  [MS] After coarsest ({len(self.coarsest_blocks)} blocks): x std={current_graph.x.std().item():.4f}")
 
         for i in range(actual_levels - 1, -1, -1):
             ld = level_data[i]
@@ -284,33 +262,24 @@ class EncoderProcessorDecoder(nn.Module):
                 current_graph.world_edge_index = skip['w_idx']
 
             current_graph = self._run_processor_blocks(self.post_blocks[i], current_graph)
-            if debug:
-                print(f"  [MS] After post[{i}] ({len(self.post_blocks[i])} blocks): x std={current_graph.x.std().item():.4f}")
 
-        output = self.decoder(current_graph)
-        if debug:
-            print(f"  [MS] After Decoder: out std={output.std().item():.4f}")
-        return output
+        return self.decoder(current_graph)
 
     def _unpool_merge_level(self, i, coarse_x, skip_x, ld):
         """Unpool level-i coarse features to fine and merge with the skip state.
 
-        One method so use_checkpointing can recompute the whole step: with
-        bipartite unpool the edge MLP runs on ~(1 + coarse degree) * N_fine
-        unpool edges, otherwise one of the largest saved-activation buffers
-        in the V-cycle.
+        One method so use_checkpointing can recompute the whole step: the
+        bipartite edge MLP runs on ~(1 + coarse degree) * N_fine unpool edges,
+        otherwise one of the largest saved-activation buffers in the V-cycle.
         """
-        if getattr(self, 'bipartite_unpool', False):
-            src, dst = ld['up_ei']
-            rel_pos = ld['fine_pos'][dst] - ld['coarse_centroid'][src]
-            h_up = self.unpool_blocks[i](
-                h_coarse=coarse_x,
-                h_fine_skip=skip_x,
-                unpool_edge_index=ld['up_ei'],
-                rel_pos=rel_pos,
-            )
-        else:
-            h_up = unpool_features(coarse_x, ld['ftc'])
+        src, dst = ld['up_ei']
+        rel_pos = ld['fine_pos'][dst] - ld['coarse_centroid'][src]
+        h_up = self.unpool_blocks[i](
+            h_coarse=coarse_x,
+            h_fine_skip=skip_x,
+            unpool_edge_index=ld['up_ei'],
+            rel_pos=rel_pos,
+        )
         return self.skip_projs[i](torch.cat([skip_x, h_up], dim=-1))
 
     def _extract_level_data(self, graph, L):
@@ -332,10 +301,9 @@ class EncoderProcessorDecoder(nn.Module):
             seed_key = f'coarse_seed_idx_{i}'
             if hasattr(graph, seed_key):
                 ld['seeds'] = graph[seed_key]
-            if self.use_multiscale and getattr(self, 'bipartite_unpool', False):
-                ld['up_ei'] = graph[f'unpool_edge_index_{i}']
-                ld['coarse_centroid'] = graph[f'coarse_centroid_{i}']
-                ld['fine_pos'] = graph.pos if i == 0 else graph[f'coarse_centroid_{i - 1}']
+            ld['up_ei'] = graph[f'unpool_edge_index_{i}']
+            ld['coarse_centroid'] = graph[f'coarse_centroid_{i}']
+            ld['fine_pos'] = graph.pos if i == 0 else graph[f'coarse_centroid_{i - 1}']
             level_data[i] = ld
         return level_data
 
