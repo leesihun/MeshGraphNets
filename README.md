@@ -115,8 +115,15 @@ DDP training is in
 | `0,1` | PyTorch DDP via `mp.spawn` |
 
 `parallel_mode model_split` activates [parallelism/launcher.py](parallelism/launcher.py).
-It slices processor blocks across GPUs for memory fit and saves a merged checkpoint
-that normal rollout can load.
+It slices processor blocks across GPUs and saves a merged checkpoint that normal
+rollout can load. Stages run a 1F1B pipeline schedule: `pipeline_microbatches`
+(default `2 * num_stages`) batches are pipelined per optimizer step (gradient
+accumulation — effective batch = `batch_size * pipeline_microbatches`). Peak
+activation memory stays bounded at `num_stages` in-flight micro-batches per stage
+no matter how large `pipeline_microbatches` is, so raising it buys speed at no
+VRAM cost; `pipeline_microbatches 1` restores the sequential legacy behavior.
+Combine with `use_checkpointing True` on the largest meshes. Gradients are
+clipped by their global norm across all stages, matching single-GPU training.
 
 Training uses Huber loss on normalized deltas, optional normalized feature
 weights, Adam, linear warmup into cosine restarts, `max_norm=3.0` gradient

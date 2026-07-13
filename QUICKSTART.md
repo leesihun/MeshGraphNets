@@ -67,6 +67,10 @@ being treated as active options.
 - Node type one-hot features are appended after node normalization.
 - `parallel_mode model_split` is a memory-fit training path that saves a merged
   checkpoint for normal rollout.
+- `pipeline_microbatches` (model_split only, default `2 * num_stages`) sets how
+  many batches are pipelined per optimizer step (1F1B). One optimizer step
+  consumes that many batches (effective batch = `batch_size *
+  pipeline_microbatches`); VRAM does not grow with it. `1` = legacy sequential.
 
 ## Outputs
 
